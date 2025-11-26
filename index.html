@@ -61,6 +61,18 @@
             color: #0ff;
         }
 
+        #mute-toggle {
+            top: 100px;
+            right: 200px;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: background 0.3s;
+        }
+
+        #mute-toggle:hover {
+            background: rgba(0, 40, 0, 0.8);
+        }
+
         #radar {
             bottom: 20px;
             right: 20px;
@@ -168,6 +180,11 @@
             <div id="follow-status">OFF</div>
         </div>
 
+        <div id="mute-toggle" class="panel" onclick="toggleMute()">
+            <div>🔊 AUDIO</div>
+            <div id="mute-status">ON</div>
+        </div>
+
         <div id="center-reticle"></div>
 
         <div id="radar">
@@ -228,6 +245,188 @@
         let startTime = 0;
         let elapsedTime = 0;
         let highScore = 0;
+
+        // --- AUDIO CONTROLLER ---
+        const AudioController = {
+            ctx: null,
+            isInit: false,
+            isMuted: false,
+            masterGain: null,
+
+            // Nodes
+            motorOsc: null,
+            motorGain: null,
+            servoOsc: null,
+            servoGain: null,
+            gunOsc: null,
+            gunNoise: null,
+            gunGain: null,
+
+            init: function () {
+                if (this.isInit) return;
+                const AudioContext = window.AudioContext || window.webkitAudioContext;
+                this.ctx = new AudioContext();
+
+                this.masterGain = this.ctx.createGain();
+                this.masterGain.connect(this.ctx.destination);
+
+                // --- Motor Whine (High pitch turbine sound) ---
+                this.motorOsc = this.ctx.createOscillator();
+                this.motorOsc.type = 'sawtooth';
+                this.motorOsc.frequency.value = 200;
+                this.motorOsc.start();
+
+                this.motorGain = this.ctx.createGain();
+                this.motorGain.gain.value = 0;
+
+                // Highpass to make it thin/whiny
+                const motorFilter = this.ctx.createBiquadFilter();
+                motorFilter.type = 'bandpass';
+                motorFilter.frequency.value = 1000;
+                motorFilter.Q.value = 1;
+
+                this.motorOsc.connect(motorFilter);
+                motorFilter.connect(this.motorGain);
+                this.motorGain.connect(this.masterGain);
+
+                // --- Servo Sound (Mechanical groaning) ---
+                this.servoOsc = this.ctx.createOscillator();
+                this.servoOsc.type = 'sawtooth'; // Sawtooth for grit
+                this.servoOsc.frequency.value = 100;
+                this.servoOsc.start();
+
+                this.servoGain = this.ctx.createGain();
+                this.servoGain.gain.value = 0;
+
+                const servoFilter = this.ctx.createBiquadFilter();
+                servoFilter.type = 'lowpass';
+                servoFilter.frequency.value = 200;
+
+                this.servoOsc.connect(servoFilter);
+                servoFilter.connect(this.servoGain);
+                this.servoGain.connect(this.masterGain);
+
+                // --- Gun Sound (The RIP) ---
+                // 1. Tonal component (The 75Hz hum/buzz of the shots)
+                this.gunOsc = this.ctx.createOscillator();
+                this.gunOsc.type = 'sawtooth';
+                this.gunOsc.frequency.value = 75; // ~4500 RPM
+                this.gunOsc.start();
+
+                // 2. Noise component (The blast)
+                const bufferSize = this.ctx.sampleRate * 2.0;
+                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const data = buffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) {
+                    data[i] = (Math.random() * 2 - 1) * 0.8;
+                }
+                this.gunNoise = this.ctx.createBufferSource();
+                this.gunNoise.buffer = buffer;
+                this.gunNoise.loop = true;
+                this.gunNoise.start();
+
+                this.gunGain = this.ctx.createGain();
+                this.gunGain.gain.value = 0;
+
+                // Mix both into gunGain
+                this.gunOsc.connect(this.gunGain);
+                this.gunNoise.connect(this.gunGain);
+
+                // Compressor to glue it together and prevent clipping
+                const compressor = this.ctx.createDynamicsCompressor();
+                this.gunGain.connect(compressor);
+                compressor.connect(this.masterGain);
+
+                this.isInit = true;
+                console.log("Audio Initialized");
+            },
+
+            toggleMute: function () {
+                this.isMuted = !this.isMuted;
+                if (this.masterGain) {
+                    this.masterGain.gain.setTargetAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime, 0.1);
+                }
+                return this.isMuted;
+            },
+
+            stopAll: function () {
+                if (this.masterGain) {
+                    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
+                }
+            },
+
+            playExplosion: function (distance) {
+                if (!this.isInit || this.isMuted) return;
+
+                // Speed of sound delay (approx 343 m/s)
+                // In our sim, let's assume 1 unit = 1 meter for audio purposes
+                const speedOfSound = 343;
+                const delay = distance / speedOfSound;
+
+                setTimeout(() => {
+                    if (this.isMuted) return; // Check again in case muted during delay
+
+                    const t = this.ctx.currentTime;
+
+                    // Create noise burst
+                    const dur = 0.5 + Math.random() * 0.5;
+                    const osc = this.ctx.createOscillator();
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(50, t);
+                    osc.frequency.exponentialRampToValueAtTime(10, t + dur);
+
+                    const noiseGain = this.ctx.createGain();
+
+                    // Distance attenuation (Inverse square law approximation)
+                    // Clamp distance to avoid infinite volume
+                    const vol = Math.min(1.0, 50.0 / (distance + 10));
+
+                    noiseGain.gain.setValueAtTime(vol, t);
+                    noiseGain.gain.exponentialRampToValueAtTime(0.01, t + dur);
+
+                    // Lowpass filter for distant explosions (muffling)
+                    const filter = this.ctx.createBiquadFilter();
+                    filter.type = 'lowpass';
+                    // Further away = lower cutoff
+                    const cutoff = Math.max(200, 20000 - (distance * 50));
+                    filter.frequency.setValueAtTime(cutoff, t);
+
+                    osc.connect(filter);
+                    filter.connect(noiseGain);
+                    noiseGain.connect(this.masterGain);
+
+                    osc.start(t);
+                    osc.stop(t + dur);
+
+                }, delay * 1000); // setTimeout uses ms
+            },
+
+            update: function (barrelSpeed, servoSpeed, isFiring) {
+                if (!this.isInit) return;
+                const t = this.ctx.currentTime;
+
+                // Motor
+                // Pitch: 200Hz -> 800Hz
+                this.motorOsc.frequency.setTargetAtTime(200 + (barrelSpeed * 600), t, 0.1);
+                this.motorGain.gain.setTargetAtTime(barrelSpeed * 0.1, t, 0.1);
+
+                // Servo
+                const normalizedServo = Math.min(1.0, servoSpeed * 20); // Amplify small movements
+                this.servoOsc.frequency.setTargetAtTime(100 + (normalizedServo * 100), t, 0.1);
+                this.servoGain.gain.setTargetAtTime(normalizedServo * 0.15, t, 0.1);
+
+                // Gun
+                if (isFiring) {
+                    this.gunGain.gain.setTargetAtTime(0.4, t, 0.01);
+                } else {
+                    this.gunGain.gain.setTargetAtTime(0, t, 0.05);
+                }
+            }
+        };
+
+        // Audio State
+        let currentBarrelSpeed = 0;
+        let isFiring = false;
 
         // --- RADAR SETUP ---
         const radarCanvas = document.getElementById('radar-canvas');
@@ -301,6 +500,16 @@
 
             // Start Loop
             clock = new THREE.Clock();
+
+            // Initialize Audio on first interaction
+            const startAudio = () => {
+                AudioController.init();
+                document.removeEventListener('mousedown', startAudio);
+                document.removeEventListener('keydown', startAudio);
+            };
+            document.addEventListener('mousedown', startAudio);
+            document.addEventListener('keydown', startAudio);
+
             animate();
         }
 
@@ -520,6 +729,10 @@
         }
 
         function createExplosion(position, size) {
+            // Audio: Calculate distance to camera/player (at 0,0,0 roughly)
+            const dist = position.distanceTo(camera.position);
+            AudioController.playExplosion(dist);
+
             const particleCount = 15;
             for (let i = 0; i < particleCount; i++) {
                 const geo = new THREE.BoxGeometry(size, size, size);
@@ -658,8 +871,10 @@
                     if (health <= 0) {
                         isGameOver = true;
                         document.getElementById('game-over').style.display = 'block';
-                        document.getElementById('status-text').innerText = "OFFLINE";
                         document.getElementById('status-text').style.color = "red";
+
+                        // Stop Audio
+                        AudioController.stopAll();
 
                         // Show final stats
                         document.getElementById('final-score').innerText = score;
@@ -676,6 +891,9 @@
             }
 
             // 2. Turret Tracking
+            let servoSpeed = 0;
+            isFiring = false;
+
             if (target) {
                 // Calculate Yaw (Left/Right)
                 const targetPos = target.mesh.position.clone();
@@ -735,18 +953,29 @@
                 const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
                 const targetPitch = -Math.atan2(localTarget.y, xzDist);
 
+                // Calculate servo speed for audio
+                servoSpeed = Math.abs(diff) + Math.abs(targetPitch - turretPitch.rotation.x);
+
                 // Smoothly rotate Pitch
                 turretPitch.rotation.x += (targetPitch - turretPitch.rotation.x) * ROTATION_SPEED;
 
                 // Spin Barrels
-                barrels.rotation.z += 1.0;
+                currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05);
+                barrels.rotation.z += currentBarrelSpeed;
 
                 // Fire logic: if we are roughly looking at the target
                 const yawDiff = Math.abs(diff);
                 if (yawDiff < 0.2 && frameCount % FIRE_RATE === 0) {
                     shoot();
+                    isFiring = true;
                 }
+            } else {
+                // Spin down
+                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.02);
+                barrels.rotation.z += currentBarrelSpeed;
             }
+
+            AudioController.update(currentBarrelSpeed, servoSpeed, isFiring);
 
             // 3. Projectiles & Collision
             for (let i = projectiles.length - 1; i >= 0; i--) {
@@ -843,8 +1072,27 @@
             }
         }
 
+        function toggleMute() {
+            const isMuted = AudioController.toggleMute();
+            const toggleBtn = document.getElementById('mute-toggle');
+            const statusText = document.getElementById('mute-status');
+
+            if (isMuted) {
+                toggleBtn.style.background = "rgba(60, 0, 0, 0.8)";
+                toggleBtn.style.borderColor = "#f00";
+                toggleBtn.style.color = "#f00";
+                statusText.innerText = 'OFF';
+            } else {
+                toggleBtn.style.background = "";
+                toggleBtn.style.borderColor = "";
+                toggleBtn.style.color = "";
+                statusText.innerText = 'ON';
+            }
+        }
+
         // Expose to global scope for onclick handler
         window.toggleCameraFollow = toggleCameraFollow;
+        window.toggleMute = toggleMute;
 
         function updateCameraFollow() {
             if (!cameraFollowMode || !turretPitch || !turretYaw) return;
