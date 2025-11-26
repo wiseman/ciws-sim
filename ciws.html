@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Phalanx CIWS Defense Simulator</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Courier New', Courier, monospace;
+        }
+
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            display: block;
+        }
+
+        /* HUD Styling */
+        #hud {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            user-select: none;
+        }
+
+        .panel {
+            position: absolute;
+            background: rgba(0, 20, 0, 0.6);
+            border: 1px solid #0f0;
+            padding: 15px;
+            color: #0f0;
+            border-radius: 4px;
+        }
+
+        #stats {
+            top: 20px;
+            left: 20px;
+        }
+
+        #camera-toggle {
+            top: 20px;
+            right: 200px;
+            cursor: pointer;
+            pointer-events: auto;
+            transition: background 0.3s;
+        }
+
+        #camera-toggle:hover {
+            background: rgba(0, 40, 0, 0.8);
+        }
+
+        #camera-toggle.active {
+            background: rgba(0, 60, 0, 0.8);
+            border-color: #0ff;
+            color: #0ff;
+        }
+
+        #radar {
+            bottom: 20px;
+            right: 20px;
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            border: 2px solid #0f0;
+            background: rgba(0, 20, 0, 0.8);
+            position: absolute;
+            overflow: hidden;
+        }
+
+        #radar-sweep {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            background: conic-gradient(from 0deg, transparent 0deg, rgba(0, 255, 0, 0.5) 360deg);
+            animation: sweep 2s linear infinite;
+        }
+
+        #center-reticle {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 40px;
+            height: 40px;
+            border: 1px dashed rgba(0, 255, 0, 0.5);
+            border-radius: 50%;
+        }
+
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.9);
+            padding: 40px;
+            border: 2px solid red;
+            pointer-events: auto;
+            cursor: pointer;
+        }
+
+        h1 {
+            margin: 0 0 10px 0;
+            font-size: 24px;
+            color: #fff;
+            text-shadow: 0 0 5px #0f0;
+        }
+
+        .red-alert {
+            color: #f00;
+            animation: blink 0.5s infinite;
+            display: none;
+        }
+
+        @keyframes sweep {
+            from {
+                transform: rotate(0deg);
+            }
+
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @keyframes blink {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="canvas-container"></div>
+
+    <div id="hud">
+        <div id="stats" class="panel">
+            <h1>PHALANX SYSTEM</h1>
+            <div>STATUS: <span id="status-text">AUTO-ENGAGE</span></div>
+            <div>WAVE: <span id="wave-count">1</span></div>
+            <div>TARGETS DESTROYED: <span id="kill-count">0</span></div>
+            <div>HIGH SCORE: <span id="high-score">0</span></div>
+            <div>TIME ELAPSED: <span id="time-elapsed">00:00</span></div>
+            <div>INTEGRITY: <span id="health-bar">100%</span></div>
+            <div id="warning" class="red-alert">INCOMING MISSILE DETECTED</div>
+        </div>
+
+        <div id="camera-toggle" class="panel" onclick="toggleCameraFollow()">
+            <div>📹 CAMERA FOLLOW</div>
+            <div id="follow-status">OFF</div>
+        </div>
+
+        <div id="center-reticle"></div>
+
+        <div id="radar">
+            <div id="radar-sweep"></div>
+            <canvas id="radar-canvas" width="150" height="150"></canvas>
+        </div>
+
+        <div id="game-over">
+            <h1 style="color:red">CRITICAL FAILURE</h1>
+            <p>SYSTEM DESTROYED</p>
+            <p>TARGETS DESTROYED: <span id="final-score">0</span></p>
+            <p>TIME SURVIVED: <span id="final-time">00:00</span></p>
+            <p>HIGH SCORE: <span id="final-high-score">0</span></p>
+            <button onclick="location.reload()"
+                style="padding: 10px 20px; background: #333; color: white; border: 1px solid white; cursor: pointer;">REBOOT
+                SYSTEM</button>
+        </div>
+    </div>
+
+    <!-- Load Three.js -->
+    <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+</script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- CONFIGURATION ---
+        const MISSILE_SPEED_BASE = 0.8;
+        const BULLET_SPEED = 8.0;
+        const GRAVITY = 0.02; // Gravity acceleration (units/frame²)
+        const FIRE_RATE = 2; // Frames between shots (lower is faster)
+        const ROTATION_SPEED = 0.15; // Turret traverse speed
+
+        // --- STATE ---
+        let scene, camera, renderer, controls;
+        let clock, deltaTime;
+        let ciwsGroup, turretYaw, turretPitch, barrels;
+        let projectiles = [];
+        let missiles = [];
+        let particles = [];
+        let target = null;
+        let lastFireTime = 0;
+        let score = 0;
+        let wave = 1;
+        let health = 100;
+        let isGameOver = false;
+        let frameCount = 0;
+        let missileSpawnRate = 120; // Frames between spawns
+        let cameraFollowMode = false;
+        let cameraShake = 0;
+        let startTime = 0;
+        let elapsedTime = 0;
+        let highScore = 0;
+
+        // --- RADAR SETUP ---
+        const radarCanvas = document.getElementById('radar-canvas');
+        const radarCtx = radarCanvas.getContext('2d');
+
+        function init() {
+            // Load high score from localStorage
+            const savedHighScore = localStorage.getItem('ciwsHighScore');
+            if (savedHighScore) {
+                highScore = parseInt(savedHighScore);
+                document.getElementById('high-score').innerText = highScore;
+            }
+
+            // Initialize start time
+            startTime = Date.now();
+
+            // Scene Setup
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x4682b4); // Steel blue sky
+            scene.fog = new THREE.FogExp2(0x87ceeb, 0.0005); // Light fog, much less dense
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(-15, 10, 20);
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // Controls
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.target.set(0, 5, 0); // Rotate around the top of the gun tower
+            controls.enablePan = false;
+            controls.maxDistance = 400;
+            controls.minDistance = 5;
+            controls.maxPolarAngle = Math.PI / 2 - 0.1; // Prevent going under water
+
+            // Lighting
+            const ambientLight = new THREE.AmbientLight(0x404040, 3);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+            dirLight.position.set(50, 100, 50);
+            dirLight.castShadow = true;
+            scene.add(dirLight);
+
+            // Environment (Ocean)
+            const waterGeo = new THREE.PlaneGeometry(1000, 1000);
+            const waterMat = new THREE.MeshPhongMaterial({
+                color: 0x001e0f,
+                shininess: 60,
+                specular: 0x111111
+            });
+            const water = new THREE.Mesh(waterGeo, waterMat);
+            water.rotation.x = -Math.PI / 2;
+            water.receiveShadow = true;
+            scene.add(water);
+
+            // Grid helper for tactical look
+            const gridHelper = new THREE.GridHelper(200, 50, 0x004400, 0x002200);
+            scene.add(gridHelper);
+
+            createPhalanxCIWS();
+            createClouds();
+            createMountains();
+
+            // Resize Handler
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Start Loop
+            clock = new THREE.Clock();
+            animate();
+        }
+
+        function createPhalanxCIWS() {
+            // 1. Static Base
+            const baseGeo = new THREE.CylinderGeometry(2, 2.5, 3, 16);
+            const greyMat = new THREE.MeshStandardMaterial({ color: 0x555555, roughness: 0.5 });
+            const base = new THREE.Mesh(baseGeo, greyMat);
+            base.position.y = 1.5;
+            base.castShadow = true;
+            scene.add(base);
+
+            // 2. Yaw Group (Rotates Left/Right)
+            ciwsGroup = new THREE.Group(); // The root anchor
+            scene.add(ciwsGroup);
+
+            turretYaw = new THREE.Group();
+            turretYaw.position.y = 3;
+            ciwsGroup.add(turretYaw);
+
+            // Body of turret
+            const bodyGeo = new THREE.BoxGeometry(2, 3, 2);
+            const body = new THREE.Mesh(bodyGeo, greyMat);
+            body.position.y = 1.5;
+            body.castShadow = true;
+            turretYaw.add(body);
+
+            // White Radome (The R2D2 looking top)
+            const domeGeo = new THREE.CylinderGeometry(1.2, 1.2, 2.5, 16);
+            const whiteMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
+            const dome = new THREE.Mesh(domeGeo, whiteMat);
+            dome.position.y = 3.5; // Sit on top of body
+            turretYaw.add(dome);
+
+            // Radome Cap
+            const capGeo = new THREE.SphereGeometry(1.2, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
+            const cap = new THREE.Mesh(capGeo, whiteMat);
+            cap.position.y = 4.75;
+            turretYaw.add(cap);
+
+            // 3. Pitch Group (The Gun Arms)
+            turretPitch = new THREE.Group();
+            turretPitch.position.set(0, 2, 0.5); // Pivot point
+            turretYaw.add(turretPitch);
+
+            // Gun Block
+            const gunBlockGeo = new THREE.BoxGeometry(1, 1, 3);
+            const gunBlock = new THREE.Mesh(gunBlockGeo, greyMat);
+            gunBlock.position.z = 1.5;
+            turretPitch.add(gunBlock);
+
+            // Barrels (The Vulcan cannon)
+            barrels = new THREE.Group();
+            for (let i = 0; i < 6; i++) {
+                const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 3.5, 8);
+                const blackMat = new THREE.MeshBasicMaterial({ color: 0x111111 });
+                const barrel = new THREE.Mesh(barrelGeo, blackMat);
+                const angle = (i / 6) * Math.PI * 2;
+                barrel.position.x = Math.cos(angle) * 0.2;
+                barrel.position.y = Math.sin(angle) * 0.2;
+                barrel.position.z = 1.75; // extend out
+                barrel.rotation.x = Math.PI / 2;
+                barrels.add(barrel);
+            }
+            gunBlock.add(barrels); // Add barrels to gunblock, gunblock is in pitch group
+        }
+
+        function createClouds() {
+            const cloudGeo = new THREE.SphereGeometry(1, 8, 8);
+            const cloudMat = new THREE.MeshLambertMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.8,
+                flatShading: true
+            });
+
+            for (let i = 0; i < 25; i++) {
+                const cloudGroup = new THREE.Group();
+
+                // Random position in sky
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 200 + Math.random() * 200;
+                const height = 60 + Math.random() * 60;
+
+                cloudGroup.position.set(
+                    Math.cos(angle) * dist,
+                    height,
+                    Math.sin(angle) * dist
+                );
+
+                // Create blobs for this cloud
+                const blobs = 3 + Math.floor(Math.random() * 5);
+                for (let j = 0; j < blobs; j++) {
+                    const mesh = new THREE.Mesh(cloudGeo, cloudMat);
+                    mesh.position.set(
+                        (Math.random() - 0.5) * 15,
+                        (Math.random() - 0.5) * 5,
+                        (Math.random() - 0.5) * 10
+                    );
+                    const scale = 5 + Math.random() * 10;
+                    mesh.scale.set(scale, scale * 0.6, scale);
+                    cloudGroup.add(mesh);
+                }
+
+                cloudGroup.lookAt(0, height, 0); // Face center roughly
+                scene.add(cloudGroup);
+            }
+        }
+
+        function createMountains() {
+            const mountainGeo = new THREE.ConeGeometry(1, 1, 4); // Low poly pyramid
+            const mountainMat = new THREE.MeshLambertMaterial({
+                color: 0x2a3a2a, // Dark green-grey
+                flatShading: true
+            });
+
+            const count = 40;
+            for (let i = 0; i < count; i++) {
+                const angle = (i / count) * Math.PI * 2;
+                const dist = 450 + Math.random() * 50;
+
+                const mesh = new THREE.Mesh(mountainGeo, mountainMat);
+
+                const w = 40 + Math.random() * 60;
+                const h = 30 + Math.random() * 50;
+
+                mesh.position.set(
+                    Math.cos(angle) * dist,
+                    h / 2 - 5, // Sink slightly
+                    Math.sin(angle) * dist
+                );
+
+                mesh.scale.set(w, h, w);
+
+                // Random rotation
+                mesh.rotation.y = Math.random() * Math.PI;
+
+                scene.add(mesh);
+            }
+        }
+
+        function spawnMissile() {
+            // Spawn randomly in the sky
+            const angle = Math.random() * Math.PI * 2;
+            const distance = 300;
+
+            // Determine if this is a mortar round (50% chance)
+            const isMortar = Math.random() < 0.5;
+
+            let height, x, z;
+
+            if (isMortar) {
+                // Mortars spawn high for steep angle
+                height = 40 + Math.random() * 20;
+                x = Math.cos(angle) * distance;
+                z = Math.sin(angle) * distance;
+            } else {
+                // Regular missiles spawn at medium height
+                height = 20 + Math.random() * 40;
+                x = Math.cos(angle) * distance;
+                z = Math.sin(angle) * distance;
+            }
+
+            // Model
+            const geo = new THREE.CylinderGeometry(0.4, 0.8, 6, 8);
+            geo.rotateX(Math.PI / 2); // Point forward
+            // Mortars are darker colored
+            const mat = new THREE.MeshPhongMaterial({ color: isMortar ? 0x884400 : 0xaa0000 });
+            const missile = new THREE.Mesh(geo, mat);
+
+            missile.position.set(x, height, z);
+
+            let velocity;
+            if (isMortar) {
+                // Calculate high-angle ballistic arc trajectory towards CIWS
+                const targetPos = new THREE.Vector3(0, 2, 0);
+                const toTarget = targetPos.clone().sub(missile.position);
+                const horizontalDist = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+
+                // Longer time of flight for high arc
+                const timeOfFlight = 90 + Math.random() * 40; // frames
+
+                // Calculate velocity components
+                const horizontalVel = new THREE.Vector3(toTarget.x, 0, toTarget.z).normalize().multiplyScalar(horizontalDist / timeOfFlight);
+
+                // Vertical velocity needs to account for gravity
+                // y = y0 + vy*t - 0.5*g*t^2
+                // Solve for vy: vy = (y - y0 + 0.5*g*t^2) / t
+                // Add extra upward velocity for steeper arc
+                const verticalVel = (targetPos.y - height + 0.5 * GRAVITY * timeOfFlight * timeOfFlight) / timeOfFlight;
+
+                velocity = horizontalVel.clone();
+                velocity.y = verticalVel;
+
+                missile.lookAt(missile.position.clone().add(velocity));
+            } else {
+                // Regular missile - straight line to target
+                missile.lookAt(0, 2, 0);
+                velocity = new THREE.Vector3().subVectors(new THREE.Vector3(0, 2, 0), missile.position).normalize().multiplyScalar(MISSILE_SPEED_BASE + (wave * 0.05));
+            }
+
+            // Add simple engine glow (dimmer for mortars)
+            const glowGeo = new THREE.SphereGeometry(0.3);
+            const glowMat = new THREE.MeshBasicMaterial({ color: isMortar ? 0xaa6600 : 0xffaa00 });
+            const glow = new THREE.Mesh(glowGeo, glowMat);
+            glow.position.z = -1.5;
+            missile.add(glow);
+
+            scene.add(missile);
+
+            missiles.push({
+                mesh: missile,
+                velocity: velocity,
+                health: 2,
+                isMortar: isMortar
+            });
+
+            document.getElementById('warning').style.display = 'block';
+        }
+
+        function createExplosion(position, size) {
+            const particleCount = 15;
+            for (let i = 0; i < particleCount; i++) {
+                const geo = new THREE.BoxGeometry(size, size, size);
+                const mat = new THREE.MeshBasicMaterial({ color: 0xffaa00 });
+                const mesh = new THREE.Mesh(geo, mat);
+                mesh.position.copy(position);
+
+                // Random velocity
+                const vel = new THREE.Vector3(
+                    (Math.random() - 0.5) * 1,
+                    (Math.random() - 0.5) * 1,
+                    (Math.random() - 0.5) * 1
+                );
+
+                scene.add(mesh);
+                particles.push({ mesh: mesh, velocity: vel, life: 1.0 });
+            }
+        }
+
+        function shoot() {
+            // Muzzle flash location (approximate end of barrels)
+            const muzzlePos = new THREE.Vector3(0, 0, 3.5);
+            muzzlePos.applyMatrix4(barrels.matrixWorld);
+
+            // Create Tracer
+            const geo = new THREE.BoxGeometry(0.1, 0.1, 2);
+            const mat = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+            const bullet = new THREE.Mesh(geo, mat);
+
+            bullet.position.copy(muzzlePos);
+
+            // Slight spread
+            const spread = 0.0125;
+            bullet.quaternion.copy(turretPitch.getWorldQuaternion(new THREE.Quaternion()));
+            bullet.rotateX((Math.random() - 0.5) * spread);
+            bullet.rotateY((Math.random() - 0.5) * spread);
+
+            scene.add(bullet);
+
+            // Calculate velocity vector based on rotation
+            const velocity = new THREE.Vector3(0, 0, 1);
+            velocity.applyQuaternion(bullet.quaternion);
+            velocity.multiplyScalar(BULLET_SPEED);
+
+            projectiles.push({
+                mesh: bullet,
+                velocity: velocity.clone(), // Current velocity (will be affected by gravity)
+                life: 60
+            });
+
+            if (cameraFollowMode) cameraShake = 0.3;
+        }
+
+        function updateRadar() {
+            radarCtx.clearRect(0, 0, 150, 150);
+            const center = 75;
+            const scale = 0.4; // Scale world coords to radar
+
+            radarCtx.fillStyle = '#0f0';
+            radarCtx.fillRect(center - 2, center - 2, 4, 4); // Player
+
+            radarCtx.fillStyle = '#f00';
+            missiles.forEach(m => {
+                const x = center + (m.mesh.position.x * scale);
+                const y = center + (m.mesh.position.z * scale);
+
+                // Only draw if inside circle
+                const d = Math.sqrt(Math.pow(x - center, 2) + Math.pow(y - center, 2));
+                if (d < 75) {
+                    radarCtx.beginPath();
+                    radarCtx.arc(x, y, 2, 0, Math.PI * 2);
+                    radarCtx.fill();
+                }
+            });
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function updateLogic() {
+            if (isGameOver) return;
+
+            // Update elapsed time
+            elapsedTime = (Date.now() - startTime) / 1000; // Convert to seconds
+            document.getElementById('time-elapsed').innerText = formatTime(elapsedTime);
+
+            // 1. Manage Missiles
+            if (frameCount % missileSpawnRate === 0) spawnMissile();
+
+            // Difficulty ramp
+            if (frameCount % 1000 === 0) {
+                wave++;
+                missileSpawnRate = Math.max(20, 120 - (wave * 5));
+                document.getElementById('wave-count').innerText = wave;
+            }
+
+            if (missiles.length === 0) document.getElementById('warning').style.display = 'none';
+
+            // Find target (Closest)
+            let closestDist = Infinity;
+            target = null;
+
+            for (let i = missiles.length - 1; i >= 0; i--) {
+                const m = missiles[i];
+
+                // Apply gravity to mortar rounds
+                if (m.isMortar) {
+                    m.velocity.y -= GRAVITY;
+                }
+
+                // Move Missile
+                m.mesh.position.add(m.velocity);
+
+                // Update orientation based on type
+                if (m.isMortar) {
+                    // Mortars point along their velocity vector (ballistic arc)
+                    const lookTarget = m.mesh.position.clone().add(m.velocity.clone().normalize());
+                    m.mesh.lookAt(lookTarget);
+                } else {
+                    // Regular missiles always point at CIWS
+                    m.mesh.lookAt(0, 2, 0);
+                }
+
+                const dist = m.mesh.position.distanceTo(new THREE.Vector3(0, 0, 0));
+
+                // Impact Check
+                if (dist < 5) {
+                    createExplosion(m.mesh.position, 1);
+                    scene.remove(m.mesh);
+                    missiles.splice(i, 1);
+                    health -= 25;
+                    document.getElementById('health-bar').innerText = health + '%';
+                    if (health <= 0) {
+                        isGameOver = true;
+                        document.getElementById('game-over').style.display = 'block';
+                        document.getElementById('status-text').innerText = "OFFLINE";
+                        document.getElementById('status-text').style.color = "red";
+
+                        // Show final stats
+                        document.getElementById('final-score').innerText = score;
+                        document.getElementById('final-time').innerText = formatTime(elapsedTime);
+                        document.getElementById('final-high-score').innerText = highScore;
+                    }
+                    continue;
+                }
+
+                if (dist < closestDist) {
+                    closestDist = dist;
+                    target = m;
+                }
+            }
+
+            // 2. Turret Tracking
+            if (target) {
+                // Calculate Yaw (Left/Right)
+                const targetPos = target.mesh.position.clone();
+
+                // Get actual muzzle position (where bullets spawn from)
+                const muzzlePos = new THREE.Vector3(0, 0, 3.5);
+                muzzlePos.applyMatrix4(barrels.matrixWorld);
+
+                // Calculate ballistic solution
+                // We need to account for: target position, target velocity, bullet speed, and gravity
+                const toTarget = targetPos.clone().sub(muzzlePos);
+
+                // Estimate time to intercept (iterative approximation)
+                let timeToIntercept = toTarget.length() / BULLET_SPEED;
+
+                // Predict where target will be
+                const predictedPos = targetPos.clone().add(target.velocity.clone().multiplyScalar(timeToIntercept));
+
+                // If target is a mortar (affected by gravity), account for its gravity drop during flight
+                if (target.isMortar) {
+                    // Target will also fall: drop = 0.25 * g * t² (reduced because velocity already includes gravity)
+                    predictedPos.y -= 0.25 * GRAVITY * timeToIntercept * timeToIntercept;
+                }
+
+                const toPredicted = predictedPos.clone().sub(muzzlePos);
+
+                // Recalculate time based on predicted position
+                const horizontalDist = Math.sqrt(toPredicted.x * toPredicted.x + toPredicted.z * toPredicted.z);
+                timeToIntercept = Math.sqrt(horizontalDist * horizontalDist + toPredicted.y * toPredicted.y) / BULLET_SPEED;
+
+                // Recalculate predicted position with updated time
+                const finalPredictedPos = targetPos.clone().add(target.velocity.clone().multiplyScalar(timeToIntercept));
+                if (target.isMortar) {
+                    finalPredictedPos.y -= 0.25 * GRAVITY * timeToIntercept * timeToIntercept;
+                }
+
+                // Calculate gravity drop for our bullets over flight time: drop = 0.5 * g * t²
+                const gravityDrop = 0.5 * GRAVITY * timeToIntercept * timeToIntercept;
+
+                // Aim point compensates for our bullet's drop
+                const aimPoint = finalPredictedPos.clone();
+                aimPoint.y += gravityDrop;
+
+                const localTarget = aimPoint.clone().sub(muzzlePos);
+                const targetYaw = Math.atan2(localTarget.x, localTarget.z);
+
+                // Smoothly rotate Yaw
+                const currentYaw = turretYaw.rotation.y;
+                let diff = targetYaw - currentYaw;
+                // Normalize angle
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+
+                turretYaw.rotation.y += diff * ROTATION_SPEED;
+
+                // Calculate Pitch (Up/Down) with ballistic compensation
+                const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
+                const targetPitch = -Math.atan2(localTarget.y, xzDist);
+
+                // Smoothly rotate Pitch
+                turretPitch.rotation.x += (targetPitch - turretPitch.rotation.x) * ROTATION_SPEED;
+
+                // Spin Barrels
+                barrels.rotation.z += 1.0;
+
+                // Fire logic: if we are roughly looking at the target
+                const yawDiff = Math.abs(diff);
+                if (yawDiff < 0.2 && frameCount % FIRE_RATE === 0) {
+                    shoot();
+                }
+            }
+
+            // 3. Projectiles & Collision
+            for (let i = projectiles.length - 1; i >= 0; i--) {
+                const p = projectiles[i];
+                p.life--;
+                if (p.life <= 0) {
+                    scene.remove(p.mesh);
+                    projectiles.splice(i, 1);
+                    continue;
+                }
+
+                const prevPos = p.mesh.position.clone();
+
+                // Apply gravity to velocity
+                p.velocity.y -= GRAVITY;
+
+                // Update position
+                p.mesh.position.add(p.velocity);
+
+                // Check collision with missiles
+                // Raycast approximation for high speed
+                const travelVec = p.mesh.position.clone().sub(prevPos);
+                const ray = new THREE.Ray(prevPos, travelVec.clone().normalize());
+                const travelDist = travelVec.length();
+
+                let hit = false;
+                for (let j = missiles.length - 1; j >= 0; j--) {
+                    const m = missiles[j];
+                    const mPos = m.mesh.position;
+
+                    // Simple sphere check first
+                    if (mPos.distanceTo(p.mesh.position) < 3.0) {
+                        // More precise check not strictly needed for arcade feel, 
+                        // but let's check distance to ray
+                        const distToRay = ray.distanceSqToPoint(mPos);
+                        if (distToRay < 1.0) {
+                            // HIT
+                            createExplosion(mPos, 0.5);
+                            m.health--;
+
+                            // Remove bullet
+                            scene.remove(p.mesh);
+                            projectiles.splice(i, 1);
+                            hit = true;
+
+                            if (m.health <= 0) {
+                                createExplosion(mPos, 2.0);
+                                scene.remove(m.mesh);
+                                missiles.splice(j, 1);
+                                score++;
+                                document.getElementById('kill-count').innerText = score;
+
+                                // Update high score if beaten
+                                if (score > highScore) {
+                                    highScore = score;
+                                    localStorage.setItem('ciwsHighScore', highScore);
+                                    document.getElementById('high-score').innerText = highScore;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+                if (hit) continue;
+            }
+
+            // 4. Particles
+            for (let i = particles.length - 1; i >= 0; i--) {
+                const part = particles[i];
+                part.mesh.position.add(part.velocity);
+                part.mesh.material.opacity = part.life;
+                part.mesh.material.transparent = true;
+                part.life -= 0.05;
+                if (part.life <= 0) {
+                    scene.remove(part.mesh);
+                    particles.splice(i, 1);
+                }
+            }
+        }
+
+        function toggleCameraFollow() {
+            cameraFollowMode = !cameraFollowMode;
+            const toggleBtn = document.getElementById('camera-toggle');
+            const statusText = document.getElementById('follow-status');
+
+            if (cameraFollowMode) {
+                toggleBtn.classList.add('active');
+                statusText.innerText = 'ON';
+                controls.enabled = false; // Disable manual control when following
+            } else {
+                toggleBtn.classList.remove('active');
+                statusText.innerText = 'OFF';
+                controls.enabled = true; // Re-enable manual control
+            }
+        }
+
+        // Expose to global scope for onclick handler
+        window.toggleCameraFollow = toggleCameraFollow;
+
+        function updateCameraFollow() {
+            if (!cameraFollowMode || !turretPitch || !turretYaw) return;
+
+            // Gunsight camera: positioned next to the gun barrels, pointing parallel
+
+            // Get the gun's world position (at the barrel pivot point)
+            const gunPos = new THREE.Vector3();
+            turretPitch.getWorldPosition(gunPos);
+
+            // Get the gun's world quaternion for exact rotation matching
+            const gunQuaternion = new THREE.Quaternion();
+            turretPitch.getWorldQuaternion(gunQuaternion);
+
+            // Action camera: "Over the shoulder" view
+            // Offset to the right (X+) and up (Y+) and back (Z-) to clear the gun mesh
+            const offset = new THREE.Vector3(4.0, 2.5, -6.0);
+            offset.applyQuaternion(gunQuaternion);
+
+            // Position camera
+            camera.position.copy(gunPos).add(offset);
+
+            // Apply camera shake
+            if (cameraShake > 0) {
+                camera.position.add(new THREE.Vector3(
+                    (Math.random() - 0.5) * cameraShake,
+                    (Math.random() - 0.5) * cameraShake,
+                    (Math.random() - 0.5) * cameraShake
+                ));
+                cameraShake *= 0.8; // Fast decay
+            }
+
+            // Point camera in direction of gun
+            camera.quaternion.copy(gunQuaternion);
+            camera.rotateY(Math.PI);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            deltaTime = clock.getDelta();
+            frameCount++;
+
+            updateLogic();
+            updateRadar();
+            updateCameraFollow();
+
+            if (!cameraFollowMode) {
+                controls.update();
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Init
+        init();
+
+    </script>
+</body>
+
+</html>
