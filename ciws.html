@@ -155,14 +155,12 @@
 
     <div id="hud">
         <div id="stats" class="panel">
-            <h1>PHALANX SYSTEM</h1>
             <div>STATUS: <span id="status-text">AUTO-ENGAGE</span></div>
             <div>WAVE: <span id="wave-count">1</span></div>
             <div>TARGETS DESTROYED: <span id="kill-count">0</span></div>
             <div>HIGH SCORE: <span id="high-score">0</span></div>
             <div>TIME ELAPSED: <span id="time-elapsed">00:00</span></div>
             <div>INTEGRITY: <span id="health-bar">100%</span></div>
-            <div id="warning" class="red-alert">INCOMING MISSILE DETECTED</div>
         </div>
 
         <div id="camera-toggle" class="panel" onclick="toggleCameraFollow()">
@@ -519,8 +517,6 @@
                 health: 2,
                 isMortar: isMortar
             });
-
-            document.getElementById('warning').style.display = 'block';
         }
 
         function createExplosion(position, size) {
@@ -580,7 +576,7 @@
         function updateRadar() {
             radarCtx.clearRect(0, 0, 150, 150);
             const center = 75;
-            const scale = 0.4; // Scale world coords to radar
+            const scale = 0.1; // Scale world coords to radar (quadrupled range - lower scale = longer range)
 
             radarCtx.fillStyle = '#0f0';
             radarCtx.fillRect(center - 2, center - 2, 4, 4); // Player
@@ -623,7 +619,7 @@
                 document.getElementById('wave-count').innerText = wave;
             }
 
-            if (missiles.length === 0) document.getElementById('warning').style.display = 'none';
+
 
             // Find target (Closest)
             let closestDist = Infinity;
