@@ -258,6 +258,7 @@
         let startTime = 0;
         let elapsedTime = 0;
         let highScore = 0;
+        let lastShake = { x: 0, y: 0 };
 
         // --- AUDIO CONTROLLER ---
         const AudioController = {
@@ -1113,6 +1114,23 @@
         function updateCameraFollow() {
             if (!cameraFollowMode || !turretPitch || !turretYaw) return;
 
+            // Apply Rotational Shake to the GUN
+            // This rotates the gun mesh, and since the camera is attached to it, the camera rotates too.
+            // Result: Gun is stable in view, World shakes.
+            if (cameraShake > 0) {
+                const shakeIntensity = 0.0125; // Radians
+                const rx = (Math.random() - 0.5) * cameraShake * shakeIntensity;
+                const ry = (Math.random() - 0.5) * cameraShake * shakeIntensity;
+
+                turretPitch.rotation.x += rx;
+                turretPitch.rotation.y += ry;
+
+                lastShake.x = rx;
+                lastShake.y = ry;
+
+                cameraShake *= 0.85; // Decay
+            }
+
             // Gunsight camera: positioned next to the gun barrels, pointing parallel
 
             // Get the gun's world position (at the barrel pivot point)
@@ -1131,16 +1149,6 @@
             // Position camera
             camera.position.copy(gunPos).add(offset);
 
-            // Apply camera shake
-            if (cameraShake > 0) {
-                camera.position.add(new THREE.Vector3(
-                    (Math.random() - 0.5) * cameraShake,
-                    (Math.random() - 0.5) * cameraShake,
-                    (Math.random() - 0.5) * cameraShake
-                ));
-                cameraShake *= 0.8; // Fast decay
-            }
-
             // Point camera in direction of gun
             camera.quaternion.copy(gunQuaternion);
             camera.rotateY(Math.PI);
@@ -1148,6 +1156,13 @@
 
         function animate() {
             requestAnimationFrame(animate);
+
+            // Revert shake from previous frame so logic/aiming is clean
+            if (turretPitch) {
+                turretPitch.rotation.x -= lastShake.x;
+                turretPitch.rotation.y -= lastShake.y;
+                lastShake = { x: 0, y: 0 };
+            }
 
             deltaTime = clock.getDelta();
             frameCount++;
