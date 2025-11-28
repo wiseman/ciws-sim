@@ -43,45 +43,22 @@
             left: 20px;
         }
 
-        #controls {
-            position: absolute;
+        #camera-toggle {
             top: 20px;
-            right: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .toggle-btn {
-            background: rgba(0, 20, 0, 0.6);
-            border: 1px solid #0f0;
-            padding: 10px 15px;
-            color: #0f0;
-            border-radius: 4px;
+            right: 200px;
             cursor: pointer;
             pointer-events: auto;
             transition: background 0.3s;
-            min-width: 150px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 12px;
         }
 
-        .toggle-btn:hover {
+        #camera-toggle:hover {
             background: rgba(0, 40, 0, 0.8);
         }
 
-        .toggle-btn.active {
+        #camera-toggle.active {
             background: rgba(0, 60, 0, 0.8);
             border-color: #0ff;
             color: #0ff;
-        }
-
-        .toggle-btn.muted {
-            background: rgba(60, 0, 0, 0.8);
-            border-color: #f00;
-            color: #f00;
         }
 
         #radar {
@@ -178,29 +155,17 @@
 
     <div id="hud">
         <div id="stats" class="panel">
+            <h1>PHALANX SYSTEM</h1>
             <div>STATUS: <span id="status-text">AUTO-ENGAGE</span></div>
             <div>WAVE: <span id="wave-count">1</span></div>
             <div>TARGETS DESTROYED: <span id="kill-count">0</span></div>
-            <div>HIGH SCORE: <span id="high-score">0</span></div>
-            <div>TIME ELAPSED: <span id="time-elapsed">00:00</span></div>
             <div>INTEGRITY: <span id="health-bar">100%</span></div>
+            <div id="warning" class="red-alert">INCOMING MISSILE DETECTED</div>
         </div>
 
-        <div id="controls">
-            <div id="camera-toggle" class="toggle-btn" onclick="toggleCameraFollow()">
-                <span>CAMERA FOLLOW</span>
-                <span id="follow-status">OFF</span>
-            </div>
-
-            <div id="audio-toggle" class="toggle-btn muted" onclick="toggleMute()">
-                <span>AUDIO</span>
-                <span id="mute-status">OFF</span>
-            </div>
-
-            <div id="slowmo-toggle" class="toggle-btn" onclick="toggleSlowMo()">
-                <span>SLOW MOTION</span>
-                <span id="slowmo-status">OFF</span>
-            </div>
+        <div id="camera-toggle" class="panel" onclick="toggleCameraFollow()">
+            <div>📹 CAMERA FOLLOW</div>
+            <div id="follow-status">OFF</div>
         </div>
 
         <div id="center-reticle"></div>
@@ -213,9 +178,6 @@
         <div id="game-over">
             <h1 style="color:red">CRITICAL FAILURE</h1>
             <p>SYSTEM DESTROYED</p>
-            <p>TARGETS DESTROYED: <span id="final-score">0</span></p>
-            <p>TIME SURVIVED: <span id="final-time">00:00</span></p>
-            <p>HIGH SCORE: <span id="final-high-score">0</span></p>
             <button onclick="location.reload()"
                 style="padding: 10px 20px; background: #333; color: white; border: 1px solid white; cursor: pointer;">REBOOT
                 SYSTEM</button>
@@ -260,237 +222,12 @@
         let missileSpawnRate = 120; // Frames between spawns
         let cameraFollowMode = false;
         let cameraShake = 0;
-        let startTime = 0;
-        let elapsedTime = 0;
-        let highScore = 0;
-        let lastShake = { x: 0, y: 0 };
-
-        // Time Control
-        let timeScale = 1.0;
-        let fireCooldown = 0;
-        let spawnCooldown = 0;
-        let difficultyCooldown = 0;
-
-        // --- AUDIO CONTROLLER ---
-        const AudioController = {
-            ctx: null,
-            isInit: false,
-            isMuted: true,
-            masterGain: null,
-
-            // Nodes
-            motorOsc: null,
-            motorGain: null,
-            servoOsc: null,
-            servoGain: null,
-            gunOsc: null,
-            gunNoise: null,
-            gunGain: null,
-
-            init: function () {
-                if (this.isInit) return;
-                const AudioContext = window.AudioContext || window.webkitAudioContext;
-                this.ctx = new AudioContext();
-
-                this.masterGain = this.ctx.createGain();
-                this.masterGain.connect(this.ctx.destination);
-
-                // --- Motor Whine (High pitch turbine sound) ---
-                this.motorOsc = this.ctx.createOscillator();
-                this.motorOsc.type = 'sawtooth';
-                this.motorOsc.frequency.value = 200;
-                this.motorOsc.start();
-
-                this.motorGain = this.ctx.createGain();
-                this.motorGain.gain.value = 0;
-
-                // Highpass to make it thin/whiny
-                const motorFilter = this.ctx.createBiquadFilter();
-                motorFilter.type = 'bandpass';
-                motorFilter.frequency.value = 1000;
-                motorFilter.Q.value = 1;
-
-                this.motorOsc.connect(motorFilter);
-                motorFilter.connect(this.motorGain);
-                this.motorGain.connect(this.masterGain);
-
-                // --- Servo Sound (Mechanical groaning) ---
-                this.servoOsc = this.ctx.createOscillator();
-                this.servoOsc.type = 'sawtooth'; // Sawtooth for grit
-                this.servoOsc.frequency.value = 100;
-                this.servoOsc.start();
-
-                this.servoGain = this.ctx.createGain();
-                this.servoGain.gain.value = 0;
-
-                const servoFilter = this.ctx.createBiquadFilter();
-                servoFilter.type = 'lowpass';
-                servoFilter.frequency.value = 200;
-
-                this.servoOsc.connect(servoFilter);
-                servoFilter.connect(this.servoGain);
-                this.servoGain.connect(this.masterGain);
-
-                // --- Gun Sound (The RIP) ---
-                // 1. Tonal component (The 75Hz hum/buzz of the shots)
-                this.gunOsc = this.ctx.createOscillator();
-                this.gunOsc.type = 'sawtooth';
-                this.gunOsc.frequency.value = 75; // ~4500 RPM
-                this.gunOsc.start();
-
-                // 2. Noise component (The blast)
-                const bufferSize = this.ctx.sampleRate * 2.0;
-                const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
-                const data = buffer.getChannelData(0);
-                for (let i = 0; i < bufferSize; i++) {
-                    data[i] = (Math.random() * 2 - 1) * 0.8;
-                }
-                this.gunNoise = this.ctx.createBufferSource();
-                this.gunNoise.buffer = buffer;
-                this.gunNoise.loop = true;
-                this.gunNoise.start();
-
-                this.gunGain = this.ctx.createGain();
-                this.gunGain.gain.value = 0;
-
-                // Mix both into gunGain
-                this.gunOsc.connect(this.gunGain);
-                this.gunNoise.connect(this.gunGain);
-
-                // Compressor to glue it together and prevent clipping
-                const compressor = this.ctx.createDynamicsCompressor();
-                this.gunGain.connect(compressor);
-                compressor.connect(this.masterGain);
-
-                // Apply initial muted state
-                if (this.isMuted) {
-                    this.masterGain.gain.value = 0;
-                }
-
-                this.isInit = true;
-                console.log("Audio Initialized");
-            },
-
-            toggleMute: function () {
-                this.isMuted = !this.isMuted;
-                if (this.masterGain) {
-                    this.masterGain.gain.setTargetAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime, 0.1);
-                }
-                return this.isMuted;
-            },
-
-            stopAll: function () {
-                if (this.masterGain) {
-                    this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
-                }
-            },
-
-            playExplosion: function (distance, timeScale) {
-                if (!this.isInit || this.isMuted) return;
-
-                // Speed of sound delay (approx 343 m/s)
-                // In our sim, let's assume 1 unit = 1 meter for audio purposes
-                const speedOfSound = 343 * timeScale; // Sound travels slower in slow mo? Or just delayed longer?
-                // Actually, physics time is slower, so delay should be longer in wall-clock time.
-                // delay = distance / speed. If speed is effectively same but time is slower, delay is longer.
-                // Let's keep speed of sound constant in simulation units, but delay is in real seconds.
-                // If 1 sim second = 10 real seconds, then delay is 10x.
-                const delay = (distance / 343) / timeScale;
-
-                setTimeout(() => {
-                    if (this.isMuted) return; // Check again in case muted during delay
-
-                    const t = this.ctx.currentTime;
-
-                    // Create noise burst
-                    // Duration is longer in slow mo
-                    const dur = (0.5 + Math.random() * 0.5) / timeScale;
-                    const osc = this.ctx.createOscillator();
-                    osc.type = 'sawtooth';
-
-                    // Pitch is lower
-                    const startFreq = 50 * timeScale;
-                    const endFreq = 10 * timeScale;
-
-                    osc.frequency.setValueAtTime(startFreq, t);
-                    osc.frequency.exponentialRampToValueAtTime(endFreq, t + dur);
-
-                    const noiseGain = this.ctx.createGain();
-
-                    // Distance attenuation (Inverse square law approximation)
-                    // Clamp distance to avoid infinite volume
-                    const vol = Math.min(1.0, 50.0 / (distance + 10));
-
-                    noiseGain.gain.setValueAtTime(vol, t);
-                    noiseGain.gain.exponentialRampToValueAtTime(0.01, t + dur);
-
-                    // Lowpass filter for distant explosions (muffling)
-                    const filter = this.ctx.createBiquadFilter();
-                    filter.type = 'lowpass';
-                    // Further away = lower cutoff
-                    // Also scale cutoff by timeScale for muffled slow mo sound
-                    const cutoff = Math.max(200, 20000 - (distance * 50)) * timeScale;
-                    filter.frequency.setValueAtTime(cutoff, t);
-
-                    osc.connect(filter);
-                    filter.connect(noiseGain);
-                    noiseGain.connect(this.masterGain);
-
-                    osc.start(t);
-                    osc.stop(t + dur);
-
-                }, delay * 1000); // setTimeout uses ms
-            },
-
-            update: function (barrelSpeed, servoSpeed, isFiring, timeScale) {
-                if (!this.isInit) return;
-                const t = this.ctx.currentTime;
-
-                // Motor
-                // Pitch: 200Hz -> 800Hz (Scaled by timeScale)
-                const motorFreq = (200 + (barrelSpeed * 600)) * timeScale;
-                this.motorOsc.frequency.setTargetAtTime(motorFreq, t, 0.1);
-                this.motorGain.gain.setTargetAtTime(barrelSpeed * 0.1, t, 0.1);
-
-                // Servo
-                const normalizedServo = Math.min(1.0, servoSpeed * 20); // Amplify small movements
-                const servoFreq = (100 + (normalizedServo * 100)) * timeScale;
-                this.servoOsc.frequency.setTargetAtTime(servoFreq, t, 0.1);
-                this.servoGain.gain.setTargetAtTime(normalizedServo * 0.15, t, 0.1);
-
-                // Gun
-                const gunFreq = 75 * timeScale;
-                this.gunOsc.frequency.setTargetAtTime(gunFreq, t, 0.1);
-                // Playback rate for noise buffer (affects pitch of the blast)
-                this.gunNoise.playbackRate.setTargetAtTime(timeScale, t, 0.1);
-
-                if (isFiring) {
-                    this.gunGain.gain.setTargetAtTime(0.4, t, 0.01);
-                } else {
-                    this.gunGain.gain.setTargetAtTime(0, t, 0.05);
-                }
-            }
-        };
-
-        // Audio State
-        let currentBarrelSpeed = 0;
-        let isFiring = false;
 
         // --- RADAR SETUP ---
         const radarCanvas = document.getElementById('radar-canvas');
         const radarCtx = radarCanvas.getContext('2d');
 
         function init() {
-            // Load high score from localStorage
-            const savedHighScore = localStorage.getItem('ciwsHighScore');
-            if (savedHighScore) {
-                highScore = parseInt(savedHighScore);
-                document.getElementById('high-score').innerText = highScore;
-            }
-
-            // Initialize start time
-            startTime = Date.now();
-
             // Scene Setup
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x4682b4); // Steel blue sky
@@ -515,10 +252,10 @@
             controls.maxPolarAngle = Math.PI / 2 - 0.1; // Prevent going under water
 
             // Lighting
-            const ambientLight = new THREE.AmbientLight(0x404040, 3);
+            const ambientLight = new THREE.AmbientLight(0x404040, 2);
             scene.add(ambientLight);
 
-            const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+            const dirLight = new THREE.DirectionalLight(0xffffff, 2);
             dirLight.position.set(50, 100, 50);
             dirLight.castShadow = true;
             scene.add(dirLight);
@@ -548,16 +285,6 @@
 
             // Start Loop
             clock = new THREE.Clock();
-
-            // Initialize Audio on first interaction
-            const startAudio = () => {
-                AudioController.init();
-                document.removeEventListener('mousedown', startAudio);
-                document.removeEventListener('keydown', startAudio);
-            };
-            document.addEventListener('mousedown', startAudio);
-            document.addEventListener('keydown', startAudio);
-
             animate();
         }
 
@@ -585,25 +312,23 @@
             body.castShadow = true;
             turretYaw.add(body);
 
-            // 3. Pitch Group (The Gun Arms)
-            turretPitch = new THREE.Group();
-            turretPitch.position.set(0, 2, 0.5); // Pivot point
-            turretYaw.add(turretPitch);
-
-            // White Radome (The R2D2 looking top) - Now moves with gun
+            // White Radome (The R2D2 looking top)
             const domeGeo = new THREE.CylinderGeometry(1.2, 1.2, 2.5, 16);
             const whiteMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
             const dome = new THREE.Mesh(domeGeo, whiteMat);
-            dome.position.y = 1.5; // Adjusted to be relative to pitch group
-            dome.position.z = -0.5; // Adjusted to account for pitch pivot offset
-            turretPitch.add(dome);
+            dome.position.y = 3.5; // Sit on top of body
+            turretYaw.add(dome);
 
             // Radome Cap
             const capGeo = new THREE.SphereGeometry(1.2, 16, 8, 0, Math.PI * 2, 0, Math.PI / 2);
             const cap = new THREE.Mesh(capGeo, whiteMat);
-            cap.position.y = 2.75; // Adjusted to be relative to pitch group
-            cap.position.z = -0.5; // Adjusted to account for pitch pivot offset
-            turretPitch.add(cap);
+            cap.position.y = 4.75;
+            turretYaw.add(cap);
+
+            // 3. Pitch Group (The Gun Arms)
+            turretPitch = new THREE.Group();
+            turretPitch.position.set(0, 2, 0.5); // Pivot point
+            turretYaw.add(turretPitch);
 
             // Gun Block
             const gunBlockGeo = new THREE.BoxGeometry(1, 1, 3);
@@ -776,13 +501,11 @@
                 health: 2,
                 isMortar: isMortar
             });
+
+            document.getElementById('warning').style.display = 'block';
         }
 
         function createExplosion(position, size) {
-            // Audio: Calculate distance to camera/player (at 0,0,0 roughly)
-            const dist = position.distanceTo(camera.position);
-            AudioController.playExplosion(dist, timeScale);
-
             const particleCount = 15;
             for (let i = 0; i < particleCount; i++) {
                 const geo = new THREE.BoxGeometry(size, size, size);
@@ -839,7 +562,7 @@
         function updateRadar() {
             radarCtx.clearRect(0, 0, 150, 150);
             const center = 75;
-            const scale = 0.1; // Scale world coords to radar (quadrupled range - lower scale = longer range)
+            const scale = 0.4; // Scale world coords to radar
 
             radarCtx.fillStyle = '#0f0';
             radarCtx.fillRect(center - 2, center - 2, 4, 4); // Player
@@ -859,36 +582,20 @@
             });
         }
 
-        function formatTime(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        }
-
         function updateLogic() {
             if (isGameOver) return;
 
-            // Update elapsed time (scaled)
-            elapsedTime += deltaTime * timeScale;
-            document.getElementById('time-elapsed').innerText = formatTime(elapsedTime);
-
             // 1. Manage Missiles
-            spawnCooldown -= timeScale;
-            if (spawnCooldown <= 0) {
-                spawnMissile();
-                spawnCooldown = missileSpawnRate;
-            }
+            if (frameCount % missileSpawnRate === 0) spawnMissile();
 
             // Difficulty ramp
-            difficultyCooldown -= timeScale;
-            if (difficultyCooldown <= 0) {
+            if (frameCount % 1000 === 0) {
                 wave++;
                 missileSpawnRate = Math.max(20, 120 - (wave * 5));
                 document.getElementById('wave-count').innerText = wave;
-                difficultyCooldown = 1000; // Reset for next wave
             }
 
-
+            if (missiles.length === 0) document.getElementById('warning').style.display = 'none';
 
             // Find target (Closest)
             let closestDist = Infinity;
@@ -899,11 +606,11 @@
 
                 // Apply gravity to mortar rounds
                 if (m.isMortar) {
-                    m.velocity.y -= GRAVITY * timeScale;
+                    m.velocity.y -= GRAVITY;
                 }
 
                 // Move Missile
-                m.mesh.position.add(m.velocity.clone().multiplyScalar(timeScale));
+                m.mesh.position.add(m.velocity);
 
                 // Update orientation based on type
                 if (m.isMortar) {
@@ -927,15 +634,8 @@
                     if (health <= 0) {
                         isGameOver = true;
                         document.getElementById('game-over').style.display = 'block';
+                        document.getElementById('status-text').innerText = "OFFLINE";
                         document.getElementById('status-text').style.color = "red";
-
-                        // Stop Audio
-                        AudioController.stopAll();
-
-                        // Show final stats
-                        document.getElementById('final-score').innerText = score;
-                        document.getElementById('final-time').innerText = formatTime(elapsedTime);
-                        document.getElementById('final-high-score').innerText = highScore;
                     }
                     continue;
                 }
@@ -947,9 +647,6 @@
             }
 
             // 2. Turret Tracking
-            let servoSpeed = 0;
-            isFiring = false;
-
             if (target) {
                 // Calculate Yaw (Left/Right)
                 const targetPos = target.mesh.position.clone();
@@ -958,78 +655,44 @@
                 const muzzlePos = new THREE.Vector3(0, 0, 3.5);
                 muzzlePos.applyMatrix4(barrels.matrixWorld);
 
-                // Calculate ballistic solution using Quadratic Equation
-                // IMPORTANT: Mortars are ballistic (affected by gravity), missiles are NOT
-                // We handle these differently:
+                // Calculate ballistic solution
+                // We need to account for: target position, target velocity, bullet speed, and gravity
+                const toTarget = targetPos.clone().sub(muzzlePos);
 
-                const D = targetPos.clone().sub(muzzlePos);
-                const V = target.velocity.clone();
-                const S = BULLET_SPEED;
+                // Estimate time to intercept (iterative approximation)
+                let timeToIntercept = toTarget.length() / BULLET_SPEED;
 
-                let t = 0;
-                let aimPoint;
+                // Predict where target will be
+                const predictedPos = targetPos.clone().add(target.velocity.clone().multiplyScalar(timeToIntercept));
 
+                // If target is a mortar (affected by gravity), account for its gravity drop during flight
                 if (target.isMortar) {
-                    // MORTAR: Both bullet and target affected by gravity - it cancels out
-                    // Solve: |D + V*t| = S*t
-                    // (|V|^2 - S^2)t^2 + 2(D.V)t + |D|^2 = 0
-
-                    const a = V.lengthSq() - (S * S);
-                    const b = 2 * D.dot(V);
-                    const c = D.lengthSq();
-
-                    if (Math.abs(a) < 0.0001) {
-                        t = -c / b;
-                    } else {
-                        const delta = b * b - 4 * a * c;
-                        if (delta >= 0) {
-                            const t1 = (-b - Math.sqrt(delta)) / (2 * a);
-                            const t2 = (-b + Math.sqrt(delta)) / (2 * a);
-                            if (t1 > 0 && t2 > 0) t = Math.min(t1, t2);
-                            else if (t1 > 0) t = t1;
-                            else if (t2 > 0) t = t2;
-                        }
-                    }
-                    if (t <= 0) t = 0;
-
-                    // Aim at linear predicted point (gravity cancels)
-                    aimPoint = targetPos.clone().add(V.multiplyScalar(t));
-
-                } else {
-                    // MISSILE: Only bullet affected by gravity - must compensate for bullet drop
-                    // Solve similar quadratic but then add gravity compensation
-
-                    const a = V.lengthSq() - (S * S);
-                    const b = 2 * D.dot(V);
-                    const c = D.lengthSq();
-
-                    if (Math.abs(a) < 0.0001) {
-                        t = -c / b;
-                    } else {
-                        const delta = b * b - 4 * a * c;
-                        if (delta >= 0) {
-                            const t1 = (-b - Math.sqrt(delta)) / (2 * a);
-                            const t2 = (-b + Math.sqrt(delta)) / (2 * a);
-                            if (t1 > 0 && t2 > 0) t = Math.min(t1, t2);
-                            else if (t1 > 0) t = t1;
-                            else if (t2 > 0) t = t2;
-                        }
-                    }
-                    if (t <= 0) t = 0;
-
-                    // Predict where missile will be
-                    const predictedPos = targetPos.clone().add(V.multiplyScalar(t));
-
-                    // Compensate for bullet drop: drop = 0.5 * g * t^2
-                    const gravityDrop = 0.5 * GRAVITY * t * t;
-                    aimPoint = predictedPos.clone();
-                    aimPoint.y += gravityDrop;  // Aim above to compensate for drop
+                    // Target will also fall: drop = 0.25 * g * t² (reduced because velocity already includes gravity)
+                    predictedPos.y -= 0.25 * GRAVITY * timeToIntercept * timeToIntercept;
                 }
+
+                const toPredicted = predictedPos.clone().sub(muzzlePos);
+
+                // Recalculate time based on predicted position
+                const horizontalDist = Math.sqrt(toPredicted.x * toPredicted.x + toPredicted.z * toPredicted.z);
+                timeToIntercept = Math.sqrt(horizontalDist * horizontalDist + toPredicted.y * toPredicted.y) / BULLET_SPEED;
+
+                // Recalculate predicted position with updated time
+                const finalPredictedPos = targetPos.clone().add(target.velocity.clone().multiplyScalar(timeToIntercept));
+                if (target.isMortar) {
+                    finalPredictedPos.y -= 0.25 * GRAVITY * timeToIntercept * timeToIntercept;
+                }
+
+                // Calculate gravity drop for our bullets over flight time: drop = 0.5 * g * t²
+                const gravityDrop = 0.5 * GRAVITY * timeToIntercept * timeToIntercept;
+
+                // Aim point compensates for our bullet's drop
+                const aimPoint = finalPredictedPos.clone();
+                aimPoint.y += gravityDrop;
 
                 const localTarget = aimPoint.clone().sub(muzzlePos);
                 const targetYaw = Math.atan2(localTarget.x, localTarget.z);
 
-                // Smoothly rotate Yaw
                 // Smoothly rotate Yaw
                 const currentYaw = turretYaw.rotation.y;
                 let diff = targetYaw - currentYaw;
@@ -1037,42 +700,29 @@
                 while (diff > Math.PI) diff -= Math.PI * 2;
                 while (diff < -Math.PI) diff += Math.PI * 2;
 
-                turretYaw.rotation.y += diff * ROTATION_SPEED * timeScale;
+                turretYaw.rotation.y += diff * ROTATION_SPEED;
 
                 // Calculate Pitch (Up/Down) with ballistic compensation
                 const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
                 const targetPitch = -Math.atan2(localTarget.y, xzDist);
 
-                // Calculate servo speed for audio
-                servoSpeed = Math.abs(diff) + Math.abs(targetPitch - turretPitch.rotation.x);
-
                 // Smoothly rotate Pitch
-                turretPitch.rotation.x += (targetPitch - turretPitch.rotation.x) * ROTATION_SPEED * timeScale;
+                turretPitch.rotation.x += (targetPitch - turretPitch.rotation.x) * ROTATION_SPEED;
 
                 // Spin Barrels
-                currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * timeScale);
-                barrels.rotation.z += currentBarrelSpeed * timeScale;
+                barrels.rotation.z += 1.0;
 
                 // Fire logic: if we are roughly looking at the target
                 const yawDiff = Math.abs(diff);
-                fireCooldown -= timeScale;
-                if (yawDiff < 0.2 && fireCooldown <= 0) {
+                if (yawDiff < 0.2 && frameCount % FIRE_RATE === 0) {
                     shoot();
-                    isFiring = true;
-                    fireCooldown = FIRE_RATE;
                 }
-            } else {
-                // Spin down
-                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.02 * timeScale);
-                barrels.rotation.z += currentBarrelSpeed * timeScale;
             }
-
-            AudioController.update(currentBarrelSpeed, servoSpeed, isFiring, timeScale);
 
             // 3. Projectiles & Collision
             for (let i = projectiles.length - 1; i >= 0; i--) {
                 const p = projectiles[i];
-                p.life -= timeScale;
+                p.life--;
                 if (p.life <= 0) {
                     scene.remove(p.mesh);
                     projectiles.splice(i, 1);
@@ -1082,10 +732,10 @@
                 const prevPos = p.mesh.position.clone();
 
                 // Apply gravity to velocity
-                p.velocity.y -= GRAVITY * timeScale;
+                p.velocity.y -= GRAVITY;
 
                 // Update position
-                p.mesh.position.add(p.velocity.clone().multiplyScalar(timeScale));
+                p.mesh.position.add(p.velocity);
 
                 // Check collision with missiles
                 // Raycast approximation for high speed
@@ -1119,13 +769,6 @@
                                 missiles.splice(j, 1);
                                 score++;
                                 document.getElementById('kill-count').innerText = score;
-
-                                // Update high score if beaten
-                                if (score > highScore) {
-                                    highScore = score;
-                                    localStorage.setItem('ciwsHighScore', highScore);
-                                    document.getElementById('high-score').innerText = highScore;
-                                }
                             }
                             break;
                         }
@@ -1137,10 +780,10 @@
             // 4. Particles
             for (let i = particles.length - 1; i >= 0; i--) {
                 const part = particles[i];
-                part.mesh.position.add(part.velocity.clone().multiplyScalar(timeScale));
+                part.mesh.position.add(part.velocity);
                 part.mesh.material.opacity = part.life;
                 part.mesh.material.transparent = true;
-                part.life -= 0.05 * timeScale;
+                part.life -= 0.05;
                 if (part.life <= 0) {
                     scene.remove(part.mesh);
                     particles.splice(i, 1);
@@ -1164,59 +807,11 @@
             }
         }
 
-        function toggleMute() {
-            const isMuted = AudioController.toggleMute();
-            const toggleBtn = document.getElementById('audio-toggle');
-            const statusText = document.getElementById('mute-status');
-
-            if (isMuted) {
-                toggleBtn.classList.add('muted');
-                statusText.innerText = 'OFF';
-            } else {
-                toggleBtn.classList.remove('muted');
-                statusText.innerText = 'ON';
-            }
-        }
-
-        function toggleSlowMo() {
-            const toggleBtn = document.getElementById('slowmo-toggle');
-            const statusText = document.getElementById('slowmo-status');
-
-            if (timeScale === 1.0) {
-                timeScale = 0.1;
-                toggleBtn.classList.add('active');
-                statusText.innerText = 'ON';
-            } else {
-                timeScale = 1.0;
-                toggleBtn.classList.remove('active');
-                statusText.innerText = 'OFF';
-            }
-        }
-
         // Expose to global scope for onclick handler
         window.toggleCameraFollow = toggleCameraFollow;
-        window.toggleMute = toggleMute;
-        window.toggleSlowMo = toggleSlowMo;
 
         function updateCameraFollow() {
             if (!cameraFollowMode || !turretPitch || !turretYaw) return;
-
-            // Apply Rotational Shake to the GUN
-            // This rotates the gun mesh, and since the camera is attached to it, the camera rotates too.
-            // Result: Gun is stable in view, World shakes.
-            if (cameraShake > 0) {
-                const shakeIntensity = 0.0125; // Radians
-                const rx = (Math.random() - 0.5) * cameraShake * shakeIntensity;
-                const ry = (Math.random() - 0.5) * cameraShake * shakeIntensity;
-
-                turretPitch.rotation.x += rx;
-                turretPitch.rotation.y += ry;
-
-                lastShake.x = rx;
-                lastShake.y = ry;
-
-                cameraShake *= (1 - (0.15 * timeScale)); // Decay scaled by time
-            }
 
             // Gunsight camera: positioned next to the gun barrels, pointing parallel
 
@@ -1236,6 +831,16 @@
             // Position camera
             camera.position.copy(gunPos).add(offset);
 
+            // Apply camera shake
+            if (cameraShake > 0) {
+                camera.position.add(new THREE.Vector3(
+                    (Math.random() - 0.5) * cameraShake,
+                    (Math.random() - 0.5) * cameraShake,
+                    (Math.random() - 0.5) * cameraShake
+                ));
+                cameraShake *= 0.8; // Fast decay
+            }
+
             // Point camera in direction of gun
             camera.quaternion.copy(gunQuaternion);
             camera.rotateY(Math.PI);
@@ -1243,13 +848,6 @@
 
         function animate() {
             requestAnimationFrame(animate);
-
-            // Revert shake from previous frame so logic/aiming is clean
-            if (turretPitch) {
-                turretPitch.rotation.x -= lastShake.x;
-                turretPitch.rotation.y -= lastShake.y;
-                lastShake = { x: 0, y: 0 };
-            }
 
             deltaTime = clock.getDelta();
             frameCount++;
