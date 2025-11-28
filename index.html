@@ -258,7 +258,7 @@
         let isGameOver = false;
         let frameCount = 0;
         let missileSpawnRate = 120; // Frames between spawns
-        let cameraFollowMode = false;
+        let cameraMode = 0; // 0: OFF, 1: PHALANX, 2: MISSILE
         let cameraShake = 0;
         let startTime = 0;
         let elapsedTime = 0;
@@ -833,7 +833,7 @@
                 life: 60
             });
 
-            if (cameraFollowMode) cameraShake = 0.3;
+            if (cameraMode === 1) cameraShake = 0.3;
         }
 
         function updateRadar() {
@@ -1149,18 +1149,22 @@
         }
 
         function toggleCameraFollow() {
-            cameraFollowMode = !cameraFollowMode;
+            cameraMode = (cameraMode + 1) % 3;
             const toggleBtn = document.getElementById('camera-toggle');
             const statusText = document.getElementById('follow-status');
 
-            if (cameraFollowMode) {
+            if (cameraMode === 1) {
                 toggleBtn.classList.add('active');
-                statusText.innerText = 'ON';
-                controls.enabled = false; // Disable manual control when following
+                statusText.innerText = 'PHALANX';
+                controls.enabled = false;
+            } else if (cameraMode === 2) {
+                toggleBtn.classList.add('active');
+                statusText.innerText = 'MISSILE';
+                controls.enabled = false;
             } else {
                 toggleBtn.classList.remove('active');
                 statusText.innerText = 'OFF';
-                controls.enabled = true; // Re-enable manual control
+                controls.enabled = true;
             }
         }
 
@@ -1199,46 +1203,78 @@
         window.toggleSlowMo = toggleSlowMo;
 
         function updateCameraFollow() {
-            if (!cameraFollowMode || !turretPitch || !turretYaw) return;
+            if (cameraMode === 0) return;
 
-            // Apply Rotational Shake to the GUN
-            // This rotates the gun mesh, and since the camera is attached to it, the camera rotates too.
-            // Result: Gun is stable in view, World shakes.
-            if (cameraShake > 0) {
-                const shakeIntensity = 0.0125; // Radians
-                const rx = (Math.random() - 0.5) * cameraShake * shakeIntensity;
-                const ry = (Math.random() - 0.5) * cameraShake * shakeIntensity;
+            // --- MODE 1: PHALANX FOLLOW ---
+            if (cameraMode === 1) {
+                if (!turretPitch || !turretYaw) return;
 
-                turretPitch.rotation.x += rx;
-                turretPitch.rotation.y += ry;
+                // Apply Rotational Shake to the GUN
+                if (cameraShake > 0) {
+                    const shakeIntensity = 0.0125; // Radians
+                    const rx = (Math.random() - 0.5) * cameraShake * shakeIntensity;
+                    const ry = (Math.random() - 0.5) * cameraShake * shakeIntensity;
 
-                lastShake.x = rx;
-                lastShake.y = ry;
+                    turretPitch.rotation.x += rx;
+                    turretPitch.rotation.y += ry;
 
-                cameraShake *= (1 - (0.15 * timeScale)); // Decay scaled by time
+                    lastShake.x = rx;
+                    lastShake.y = ry;
+
+                    cameraShake *= (1 - (0.15 * timeScale)); // Decay scaled by time
+                }
+
+                // Gunsight camera: positioned next to the gun barrels, pointing parallel
+                const gunPos = new THREE.Vector3();
+                turretPitch.getWorldPosition(gunPos);
+
+                const gunQuaternion = new THREE.Quaternion();
+                turretPitch.getWorldQuaternion(gunQuaternion);
+
+                // Action camera: "Over the shoulder" view
+                const offset = new THREE.Vector3(4.0, 2.5, -6.0);
+                offset.applyQuaternion(gunQuaternion);
+
+                camera.position.copy(gunPos).add(offset);
+                camera.quaternion.copy(gunQuaternion);
+                camera.rotateY(Math.PI);
             }
 
-            // Gunsight camera: positioned next to the gun barrels, pointing parallel
+            // --- MODE 2: MISSILE FOLLOW ---
+            else if (cameraMode === 2) {
+                // If no target, fallback to a "Searching" view (high up, looking at Phalanx)
+                // Or just stick to the last known position? 
+                // Let's do a high-up view of the base if no target.
+                if (!target) {
+                    // Smoothly move to a default overview position?
+                    // For now, let's just snap to a "Waiting" view
+                    const defaultPos = new THREE.Vector3(20, 20, 20);
+                    camera.position.lerp(defaultPos, 0.1);
+                    camera.lookAt(0, 5, 0);
+                    return;
+                }
 
-            // Get the gun's world position (at the barrel pivot point)
-            const gunPos = new THREE.Vector3();
-            turretPitch.getWorldPosition(gunPos);
+                // Target exists - track it
+                const tPos = target.mesh.position.clone();
+                const phalanxPos = new THREE.Vector3(0, 2, 0);
 
-            // Get the gun's world quaternion for exact rotation matching
-            const gunQuaternion = new THREE.Quaternion();
-            turretPitch.getWorldQuaternion(gunQuaternion);
+                // Calculate direction FROM target TO Phalanx
+                const toPhalanx = new THREE.Vector3().subVectors(phalanxPos, tPos).normalize();
 
-            // Action camera: "Over the shoulder" view
-            // Offset to the right (X+) and up (Y+) and back (Z-) to clear the gun mesh
-            const offset = new THREE.Vector3(4.0, 2.5, -6.0);
-            offset.applyQuaternion(gunQuaternion);
+                // Position camera "over the shoulder"
+                // We want to be behind the missile (further away from Phalanx) and slightly up
+                // "Behind" means -toPhalanx direction
+                const camOffset = toPhalanx.clone().multiplyScalar(-8); // 8 units behind
+                camOffset.y += 3; // 3 units up
 
-            // Position camera
-            camera.position.copy(gunPos).add(offset);
+                const camPos = tPos.clone().add(camOffset);
 
-            // Point camera in direction of gun
-            camera.quaternion.copy(gunQuaternion);
-            camera.rotateY(Math.PI);
+                // Smoothly update camera position
+                camera.position.lerp(camPos, 0.2); // Smooth follow
+
+                // Look at Phalanx
+                camera.lookAt(phalanxPos);
+            }
         }
 
         function animate() {
@@ -1258,7 +1294,7 @@
             updateRadar();
             updateCameraFollow();
 
-            if (!cameraFollowMode) {
+            if (cameraMode === 0) {
                 controls.update();
             }
 
