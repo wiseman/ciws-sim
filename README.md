@@ -4,8 +4,6 @@
   <img src="screenshot.png" alt="CIWS Sim Screenshot" width="100%" />
 </div>
 
-<br />
-
 <div align="center">
   <a href="https://ciws.obliscence.com">
     <img src="https://img.shields.io/badge/Play_Live-ciws.obliscence.com-blue?style=for-the-badge&logo=google-chrome" alt="Play Live" />
