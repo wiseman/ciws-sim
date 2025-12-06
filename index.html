@@ -243,6 +243,13 @@
         const FIRE_RATE = 2; // Frames between shots (lower is faster)
         const ROTATION_SPEED = 0.15; // Turret traverse speed
 
+        // --- NEW CONSTANTS ---
+        const SIM_STEPS_PER_SECOND = 60;      // fixed reference rate
+        const MAX_INTERCEPT_STEPS = 240;    // max allowed intercept time in sim-steps (~4 seconds)
+        const YAW_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
+        const PITCH_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
+        const MAX_TRAVERSE_RATE = 0.08;   // max yaw/pitch change per step (radians/step)
+
         // --- STATE ---
         let scene, camera, renderer, controls;
         let clock, deltaTime;
@@ -865,22 +872,70 @@
             return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
         }
 
-        function updateLogic() {
+        function solveInterceptSteps(D, V, bulletSpeed) {
+            // D: THREE.Vector3 from muzzle to target (position difference)
+            // V: THREE.Vector3 target velocity (per step)
+            // bulletSpeed: scalar, bullet speed (per step)
+            //
+            // Returns:
+            //   t (number of simulation steps) if a valid positive solution ≤ MAX_INTERCEPT_STEPS exists,
+            //   null otherwise.
+
+            const S = bulletSpeed;
+
+            const a = V.lengthSq() - S * S;
+            const b = 2 * D.dot(V);
+            const c = D.lengthSq();
+
+            let t = null;
+
+            if (Math.abs(a) < 1e-6) {
+                // Degenerate to linear: b * t + c = 0
+                if (Math.abs(b) > 1e-6) {
+                    const tLin = -c / b;
+                    if (tLin > 0 && tLin <= MAX_INTERCEPT_STEPS) {
+                        t = tLin;
+                    }
+                }
+            } else {
+                const delta = b * b - 4 * a * c;
+                if (delta >= 0) {
+                    const sqrtDelta = Math.sqrt(delta);
+                    const t1 = (-b - sqrtDelta) / (2 * a);
+                    const t2 = (-b + sqrtDelta) / (2 * a);
+
+                    const candidates = [];
+                    if (t1 > 0) candidates.push(t1);
+                    if (t2 > 0) candidates.push(t2);
+
+                    if (candidates.length > 0) {
+                        const tCandidate = Math.min(...candidates);
+                        if (tCandidate <= MAX_INTERCEPT_STEPS) {
+                            t = tCandidate;
+                        }
+                    }
+                }
+            }
+
+            return t;
+        }
+
+        function updateLogic(simSteps) {
             if (isGameOver) return;
 
-            // Update elapsed time (scaled)
+            // Update elapsed time (scaled to real seconds, same as before)
             elapsedTime += deltaTime * timeScale;
             document.getElementById('time-elapsed').innerText = formatTime(elapsedTime);
 
             // 1. Manage Missiles
-            spawnCooldown -= timeScale;
+            spawnCooldown -= simSteps;
             if (spawnCooldown <= 0) {
                 spawnMissile();
                 spawnCooldown = missileSpawnRate;
             }
 
             // Difficulty ramp
-            difficultyCooldown -= timeScale;
+            difficultyCooldown -= simSteps;
             if (difficultyCooldown <= 0) {
                 wave++;
                 missileSpawnRate = Math.max(20, 120 - (wave * 5));
@@ -899,11 +954,11 @@
 
                 // Apply gravity to mortar rounds
                 if (m.isMortar) {
-                    m.velocity.y -= GRAVITY * timeScale;
+                    m.velocity.y -= GRAVITY * simSteps;
                 }
 
                 // Move Missile
-                m.mesh.position.add(m.velocity.clone().multiplyScalar(timeScale));
+                m.mesh.position.addScaledVector(m.velocity, simSteps);
 
                 // Update orientation based on type
                 if (m.isMortar) {
@@ -958,113 +1013,118 @@
                 const muzzlePos = new THREE.Vector3(0, 0, 3.5);
                 muzzlePos.applyMatrix4(barrels.matrixWorld);
 
-                // Calculate ballistic solution using Quadratic Equation
-                // IMPORTANT: Mortars are ballistic (affected by gravity), missiles are NOT
-                // We handle these differently:
-
                 const D = targetPos.clone().sub(muzzlePos);
-                const V = target.velocity.clone();
-                const S = BULLET_SPEED;
+                const V = target.velocity.clone();      // per-step velocity
+                const S = BULLET_SPEED;                 // per-step bullet speed
 
-                let t = 0;
-                let aimPoint;
+                let aimPoint = null;
+                let interceptSteps = null;
 
                 if (target.isMortar) {
-                    // MORTAR: Both bullet and target affected by gravity - it cancels out
-                    // Solve: |D + V*t| = S*t
-                    // (|V|^2 - S^2)t^2 + 2(D.V)t + |D|^2 = 0
-
-                    const a = V.lengthSq() - (S * S);
-                    const b = 2 * D.dot(V);
-                    const c = D.lengthSq();
-
-                    if (Math.abs(a) < 0.0001) {
-                        t = -c / b;
+                    interceptSteps = solveInterceptSteps(D, V, S);
+                    if (interceptSteps !== null) {
+                        aimPoint = targetPos.clone().addScaledVector(V, interceptSteps);
                     } else {
-                        const delta = b * b - 4 * a * c;
-                        if (delta >= 0) {
-                            const t1 = (-b - Math.sqrt(delta)) / (2 * a);
-                            const t2 = (-b + Math.sqrt(delta)) / (2 * a);
-                            if (t1 > 0 && t2 > 0) t = Math.min(t1, t2);
-                            else if (t1 > 0) t = t1;
-                            else if (t2 > 0) t = t2;
-                        }
+                        // Fallback: aim at current position if no valid solution
+                        aimPoint = targetPos;
                     }
-                    if (t <= 0) t = 0;
-
-                    // Aim at linear predicted point (gravity cancels)
-                    aimPoint = targetPos.clone().add(V.multiplyScalar(t));
-
                 } else {
-                    // MISSILE: Only bullet affected by gravity - must compensate for bullet drop
-                    // Solve similar quadratic but then add gravity compensation
+                    interceptSteps = solveInterceptSteps(D, V, S);
 
-                    const a = V.lengthSq() - (S * S);
-                    const b = 2 * D.dot(V);
-                    const c = D.lengthSq();
+                    if (interceptSteps !== null) {
+                        // Predicted missile position ignoring gravity
+                        const predictedPos = targetPos.clone().addScaledVector(V, interceptSteps);
 
-                    if (Math.abs(a) < 0.0001) {
-                        t = -c / b;
+                        // Bullet drop over 'interceptSteps' when subject to GRAVITY per step and
+                        // starting with the current muzzle velocity.
+                        //
+                        // Vertical displacement due to constant acceleration:
+                        //   drop = 0.5 * GRAVITY * t^2
+                        //
+                        // Here t = interceptSteps (in sim-steps).
+                        const bulletDrop = 0.5 * GRAVITY * interceptSteps * interceptSteps;
+
+                        // Aim above predicted missile position by 'bulletDrop'
+                        aimPoint = predictedPos.clone();
+                        aimPoint.y += bulletDrop;
                     } else {
-                        const delta = b * b - 4 * a * c;
-                        if (delta >= 0) {
-                            const t1 = (-b - Math.sqrt(delta)) / (2 * a);
-                            const t2 = (-b + Math.sqrt(delta)) / (2 * a);
-                            if (t1 > 0 && t2 > 0) t = Math.min(t1, t2);
-                            else if (t1 > 0) t = t1;
-                            else if (t2 > 0) t = t2;
-                        }
+                        // Fallback: aim at current position if no valid solution
+                        aimPoint = targetPos;
                     }
-                    if (t <= 0) t = 0;
-
-                    // Predict where missile will be
-                    const predictedPos = targetPos.clone().add(V.multiplyScalar(t));
-
-                    // Compensate for bullet drop: drop = 0.5 * g * t^2
-                    const gravityDrop = 0.5 * GRAVITY * t * t;
-                    aimPoint = predictedPos.clone();
-                    aimPoint.y += gravityDrop;  // Aim above to compensate for drop
                 }
 
+                // Compute local vector from muzzle to aimPoint
                 const localTarget = aimPoint.clone().sub(muzzlePos);
+
                 const targetYaw = Math.atan2(localTarget.x, localTarget.z);
-
-                // Smoothly rotate Yaw
-                // Smoothly rotate Yaw
-                const currentYaw = turretYaw.rotation.y;
-                let diff = targetYaw - currentYaw;
-                // Normalize angle
-                while (diff > Math.PI) diff -= Math.PI * 2;
-                while (diff < -Math.PI) diff += Math.PI * 2;
-
-                turretYaw.rotation.y += diff * ROTATION_SPEED * timeScale;
-
-                // Calculate Pitch (Up/Down) with ballistic compensation
                 const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
                 const targetPitch = -Math.atan2(localTarget.y, xzDist);
 
-                // Calculate servo speed for audio
-                servoSpeed = Math.abs(diff) + Math.abs(targetPitch - turretPitch.rotation.x);
+                // Yaw traverse with clamped rate
+                const currentYaw = turretYaw.rotation.y;
+                let yawDiff = targetYaw - currentYaw;
 
-                // Smoothly rotate Pitch
-                turretPitch.rotation.x += (targetPitch - turretPitch.rotation.x) * ROTATION_SPEED * timeScale;
+                // Normalize to [-π, π]
+                while (yawDiff > Math.PI) yawDiff -= 2 * Math.PI;
+                while (yawDiff < -Math.PI) yawDiff += 2 * Math.PI;
+
+                const yawStep = THREE.MathUtils.clamp(
+                    yawDiff,
+                    -MAX_TRAVERSE_RATE * simSteps,
+                    +MAX_TRAVERSE_RATE * simSteps
+                );
+
+                turretYaw.rotation.y = currentYaw + yawStep;
+
+                // Pitch traverse with clamped rate
+                const currentPitch = turretPitch.rotation.x;
+                const pitchDiff = targetPitch - currentPitch;
+
+                const pitchStep = THREE.MathUtils.clamp(
+                    pitchDiff,
+                    -MAX_TRAVERSE_RATE * simSteps,
+                    +MAX_TRAVERSE_RATE * simSteps
+                );
+
+                turretPitch.rotation.x = currentPitch + pitchStep;
+
+                // Compute angular error magnitudes for gating and servo audio
+                const yawError = Math.abs(yawDiff);
+                const pitchError = Math.abs(pitchDiff);
+                const servoSpeedVal = Math.abs(yawStep) + Math.abs(pitchStep); // Use local var to avoid conflict if any
 
                 // Spin Barrels
-                currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * timeScale);
-                barrels.rotation.z += currentBarrelSpeed * timeScale;
+                currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * simSteps);
+                barrels.rotation.z += currentBarrelSpeed * simSteps;
 
-                // Fire logic: if we are roughly looking at the target
-                const yawDiff = Math.abs(diff);
-                fireCooldown -= timeScale;
-                if (yawDiff < 0.2 && fireCooldown <= 0) {
+                // Fire gating based on yaw & pitch and intercept validity
+                fireCooldown -= simSteps;
+                isFiring = false;
+
+                // Only fire when:
+                //  - we have a valid interceptSteps
+                //  - angular errors are small
+                //  - cooldown expired
+                if (interceptSteps !== null &&
+                    yawError < YAW_FIRE_THRESHOLD &&
+                    pitchError < PITCH_FIRE_THRESHOLD &&
+                    fireCooldown <= 0) {
+
                     shoot();
                     isFiring = true;
-                    fireCooldown = FIRE_RATE;
+                    fireCooldown = FIRE_RATE;    // FIRE_RATE is in sim-steps
                 }
+
+                // Update servoSpeed for audio
+                servoSpeed = servoSpeedVal;
+
             } else {
-                // Spin down
-                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.02 * timeScale);
-                barrels.rotation.z += currentBarrelSpeed * timeScale;
+                // Spin down when idle
+                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.02 * simSteps);
+                barrels.rotation.z += currentBarrelSpeed * simSteps;
+                isFiring = false;
+
+                // Audio update handled below, servoSpeed is 0
             }
 
             AudioController.update(currentBarrelSpeed, servoSpeed, isFiring, timeScale);
@@ -1072,7 +1132,7 @@
             // 3. Projectiles & Collision
             for (let i = projectiles.length - 1; i >= 0; i--) {
                 const p = projectiles[i];
-                p.life -= timeScale;
+                p.life -= simSteps;
                 if (p.life <= 0) {
                     scene.remove(p.mesh);
                     projectiles.splice(i, 1);
@@ -1082,10 +1142,10 @@
                 const prevPos = p.mesh.position.clone();
 
                 // Apply gravity to velocity
-                p.velocity.y -= GRAVITY * timeScale;
+                p.velocity.y -= GRAVITY * simSteps;
 
                 // Update position
-                p.mesh.position.add(p.velocity.clone().multiplyScalar(timeScale));
+                p.mesh.position.addScaledVector(p.velocity, simSteps);
 
                 // Check collision with missiles
                 // Raycast approximation for high speed
@@ -1137,10 +1197,10 @@
             // 4. Particles
             for (let i = particles.length - 1; i >= 0; i--) {
                 const part = particles[i];
-                part.mesh.position.add(part.velocity.clone().multiplyScalar(timeScale));
+                part.mesh.position.addScaledVector(part.velocity, simSteps);
                 part.mesh.material.opacity = part.life;
                 part.mesh.material.transparent = true;
-                part.life -= 0.05 * timeScale;
+                part.life -= 0.05 * simSteps;
                 if (part.life <= 0) {
                     scene.remove(part.mesh);
                     particles.splice(i, 1);
@@ -1288,9 +1348,12 @@
             }
 
             deltaTime = clock.getDelta();
+            const realDt = deltaTime; // seconds (real)
+            const simSteps = realDt * SIM_STEPS_PER_SECOND * timeScale; // simulation steps for this frame
+
             frameCount++;
 
-            updateLogic();
+            updateLogic(simSteps);
             updateRadar();
             updateCameraFollow();
 
