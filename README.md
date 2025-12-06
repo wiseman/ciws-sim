@@ -12,4 +12,6 @@
   </a>
 </div>
 
+<br />
+
 A vibecoded web-based simulation of the Phalanx CIWS (Close-In Weapon System) defense system.
