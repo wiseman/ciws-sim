@@ -183,6 +183,7 @@
             <div>TARGETS DESTROYED: <span id="kill-count">0</span></div>
             <div>HIGH SCORE: <span id="high-score">0</span></div>
             <div>TIME ELAPSED: <span id="time-elapsed">00:00</span></div>
+            <div>FRIENDLIES: <span id="friendly-count">0/0</span></div>
             <div>INTEGRITY: <span id="health-bar">100%</span></div>
         </div>
 
@@ -212,9 +213,10 @@
 
         <div id="game-over">
             <h1 style="color:red">CRITICAL FAILURE</h1>
-            <p>SYSTEM DESTROYED</p>
+            <p id="game-over-reason">SYSTEM DESTROYED</p>
             <p>TARGETS DESTROYED: <span id="final-score">0</span></p>
             <p>TIME SURVIVED: <span id="final-time">00:00</span></p>
+            <p>FRIENDLIES REMAINING: <span id="final-friendlies">0/0</span></p>
             <p>HIGH SCORE: <span id="final-high-score">0</span></p>
             <button onclick="location.reload()"
                 style="padding: 10px 20px; background: #333; color: white; border: 1px solid white; cursor: pointer;">REBOOT
@@ -240,7 +242,7 @@
         const MISSILE_SPEED_BASE = 0.8;
         const BULLET_SPEED = 8.0;
         const GRAVITY = 0.02; // Gravity acceleration (units/frame²)
-        const FIRE_RATE = 2; // Frames between shots (lower is faster)
+        const FIRE_RATE = 1; // Frames between shots (lower is faster)
         const ROTATION_SPEED = 0.15; // Turret traverse speed
 
         // --- NEW CONSTANTS ---
@@ -249,6 +251,8 @@
         const YAW_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const PITCH_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const MAX_TRAVERSE_RATE = 0.08;   // max yaw/pitch change per step (radians/step)
+const FRIENDLY_COUNT = 5;
+const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -271,6 +275,7 @@
         let elapsedTime = 0;
         let highScore = 0;
         let lastShake = { x: 0, y: 0 };
+let friendlies = [];
 
         // Time Control
         let timeScale = 1.0;
@@ -549,6 +554,7 @@
             createPhalanxCIWS();
             createClouds();
             createMountains();
+            createFriendlies();
 
             // Resize Handler
             window.addEventListener('resize', onWindowResize, false);
@@ -708,19 +714,87 @@
             }
         }
 
+        function getAliveFriendliesCount() {
+            return friendlies.reduce((count, f) => count + (f.alive ? 1 : 0), 0);
+        }
+
+        function updateFriendlyUI() {
+            const alive = getAliveFriendliesCount();
+            const total = friendlies.length;
+
+            document.getElementById('friendly-count').innerText = `${alive}/${total}`;
+
+            const finalFriendliesEl = document.getElementById('final-friendlies');
+            if (finalFriendliesEl) {
+                finalFriendliesEl.innerText = `${alive}/${total}`;
+            }
+
+            return alive;
+        }
+
+        function createFriendlies() {
+            const friendlyGeo = new THREE.CylinderGeometry(0.8, 0.8, 1.5, 8);
+            const halfArea = FRIENDLY_AREA;
+
+            for (let i = 0; i < FRIENDLY_COUNT; i++) {
+                const x = (Math.random() * 2 - 1) * halfArea;
+                const z = (Math.random() * 2 - 1) * halfArea;
+
+                const friendlyMat = new THREE.MeshPhongMaterial({
+                    color: 0x0099ff,
+                    emissive: 0x001133
+                });
+
+                const mesh = new THREE.Mesh(friendlyGeo, friendlyMat);
+                mesh.position.set(x, 0.75, z);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+                scene.add(mesh);
+
+                friendlies.push({
+                    id: i,
+                    mesh,
+                    position: mesh.position.clone(),
+                    alive: true
+                });
+            }
+
+            updateFriendlyUI();
+        }
+
+        function pickTargetForIncoming() {
+            const aliveFriendlies = friendlies.filter(f => f.alive);
+            const targetCiws = Math.random() < 0.5 || aliveFriendlies.length === 0;
+
+            if (targetCiws) {
+                return { type: 'ciws', position: new THREE.Vector3(0, 2, 0) };
+            }
+
+            const choice = aliveFriendlies[Math.floor(Math.random() * aliveFriendlies.length)];
+            return {
+                type: 'friendly',
+                position: choice.position.clone(),
+                friendlyId: choice.id
+            };
+        }
+
         function spawnMissile() {
+            const targetInfo = pickTargetForIncoming();
+            const targetPos = targetInfo.position.clone();
+
             // Spawn randomly in the sky
             const angle = Math.random() * Math.PI * 2;
-            const distance = 300;
 
             // Determine if this is a mortar round (50% chance)
             const isMortar = Math.random() < 0.5;
+            // Increase spawn distance by 50% for both mortars and missiles
+            const distance = isMortar ? 900 : 600;
 
             let height, x, z;
 
             if (isMortar) {
-                // Mortars spawn high for steep angle
-                height = 40 + Math.random() * 20;
+                // Mortars spawn near ground level for high-arc trajectory
+                height = 2 + Math.random() * 5;
                 x = Math.cos(angle) * distance;
                 z = Math.sin(angle) * distance;
             } else {
@@ -741,31 +815,42 @@
 
             let velocity;
             if (isMortar) {
-                // Calculate high-angle ballistic arc trajectory towards CIWS
-                const targetPos = new THREE.Vector3(0, 2, 0);
+                // Calculate 45-degree high-angle ballistic arc trajectory that hits the target
                 const toTarget = targetPos.clone().sub(missile.position);
                 const horizontalDist = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
-
-                // Longer time of flight for high arc
-                const timeOfFlight = 90 + Math.random() * 40; // frames
-
-                // Calculate velocity components
-                const horizontalVel = new THREE.Vector3(toTarget.x, 0, toTarget.z).normalize().multiplyScalar(horizontalDist / timeOfFlight);
-
-                // Vertical velocity needs to account for gravity
-                // y = y0 + vy*t - 0.5*g*t^2
-                // Solve for vy: vy = (y - y0 + 0.5*g*t^2) / t
-                // Add extra upward velocity for steeper arc
-                const verticalVel = (targetPos.y - height + 0.5 * GRAVITY * timeOfFlight * timeOfFlight) / timeOfFlight;
-
-                velocity = horizontalVel.clone();
-                velocity.y = verticalVel;
+                const heightDiff = missile.position.y - targetPos.y; // positive if mortar is above target
+                
+                // For projectile motion with launch angle θ = 45°:
+                // v² = g * x² / (x + y0 - yTarget)  where x is horizontal dist
+                // This solves the ballistic equations to hit the exact target
+                const denominator = horizontalDist + heightDiff;
+                
+                // Ensure we have a valid trajectory (denominator must be positive)
+                let launchSpeed;
+                if (denominator > 10) {
+                    launchSpeed = Math.sqrt(GRAVITY * horizontalDist * horizontalDist / denominator);
+                } else {
+                    // Fallback for edge cases - use a reasonable arc speed
+                    launchSpeed = Math.sqrt(horizontalDist * GRAVITY * 2);
+                }
+                
+                // At 45 degrees, horizontal and vertical components are equal
+                const cos45 = Math.cos(Math.PI / 4); // ≈ 0.707
+                const sin45 = Math.sin(Math.PI / 4); // ≈ 0.707
+                const horizontalSpeed = launchSpeed * cos45;
+                const verticalSpeed = launchSpeed * sin45;
+                
+                // Direction towards target (horizontal only)
+                const horizontalDir = new THREE.Vector3(toTarget.x, 0, toTarget.z).normalize();
+                
+                velocity = horizontalDir.multiplyScalar(horizontalSpeed);
+                velocity.y = verticalSpeed;
 
                 missile.lookAt(missile.position.clone().add(velocity));
             } else {
                 // Regular missile - straight line to target
-                missile.lookAt(0, 2, 0);
-                velocity = new THREE.Vector3().subVectors(new THREE.Vector3(0, 2, 0), missile.position).normalize().multiplyScalar(MISSILE_SPEED_BASE + (wave * 0.05));
+                missile.lookAt(targetPos);
+                velocity = new THREE.Vector3().subVectors(targetPos, missile.position).normalize().multiplyScalar(MISSILE_SPEED_BASE + (wave * 0.05));
             }
 
             // Add simple engine glow (dimmer for mortars)
@@ -781,7 +866,9 @@
                 mesh: missile,
                 velocity: velocity,
                 health: 2,
-                isMortar: isMortar
+                isMortar: isMortar,
+                targetInfo,
+                eta: null
             });
         }
 
@@ -850,6 +937,17 @@
 
             radarCtx.fillStyle = '#0f0';
             radarCtx.fillRect(center - 2, center - 2, 4, 4); // Player
+
+            radarCtx.fillStyle = '#0ff';
+            friendlies.forEach(f => {
+                if (!f.alive) return;
+                const x = center + (f.position.x * scale);
+                const y = center + (f.position.z * scale);
+                const d = Math.sqrt(Math.pow(x - center, 2) + Math.pow(y - center, 2));
+                if (d < 75) {
+                    radarCtx.fillRect(x - 2, y - 2, 4, 4);
+                }
+            });
 
             radarCtx.fillStyle = '#f00';
             missiles.forEach(m => {
@@ -920,6 +1018,40 @@
             return t;
         }
 
+        function estimateTimeToImpact(missile) {
+            const speed = missile.velocity.length();
+            if (speed < 1e-4) return Infinity;
+            const dist = missile.mesh.position.distanceTo(missile.targetInfo.position);
+            return dist / speed;
+        }
+
+        function triggerGameOver(reason) {
+            if (isGameOver) return;
+
+            isGameOver = true;
+
+            const statusText = document.getElementById('status-text');
+            if (statusText) {
+                statusText.style.color = "red";
+                statusText.innerText = reason === 'friendlies' ? 'FRIENDLIES LOST' : 'SYSTEM OFFLINE';
+            }
+
+            const reasonText = reason === 'friendlies' ? 'ALL FRIENDLIES DESTROYED' : 'SYSTEM DESTROYED';
+            const gameOverReason = document.getElementById('game-over-reason');
+            if (gameOverReason) {
+                gameOverReason.innerText = reasonText;
+            }
+
+            updateFriendlyUI();
+
+            AudioController.stopAll();
+
+            document.getElementById('game-over').style.display = 'block';
+            document.getElementById('final-score').innerText = score;
+            document.getElementById('final-time').innerText = formatTime(elapsedTime);
+            document.getElementById('final-high-score').innerText = highScore;
+        }
+
         function updateLogic(simSteps) {
             if (isGameOver) return;
 
@@ -945,20 +1077,20 @@
 
 
 
-            // Find target (Closest)
-            let closestDist = Infinity;
-            target = null;
+            // Find target (choose earliest impact; break ties toward friendlies)
+            let bestTarget = null;
+            const etaEpsilon = 1e-3;
 
             for (let i = missiles.length - 1; i >= 0; i--) {
                 const m = missiles[i];
 
-                // Apply gravity to mortar rounds
+                // Move Missile first (using current velocity)
+                m.mesh.position.addScaledVector(m.velocity, simSteps);
+
+                // Then apply gravity to mortar rounds for next frame
                 if (m.isMortar) {
                     m.velocity.y -= GRAVITY * simSteps;
                 }
-
-                // Move Missile
-                m.mesh.position.addScaledVector(m.velocity, simSteps);
 
                 // Update orientation based on type
                 if (m.isMortar) {
@@ -966,40 +1098,59 @@
                     const lookTarget = m.mesh.position.clone().add(m.velocity.clone().normalize());
                     m.mesh.lookAt(lookTarget);
                 } else {
-                    // Regular missiles always point at CIWS
-                    m.mesh.lookAt(0, 2, 0);
+                    // Regular missiles point toward their assigned target
+                    m.mesh.lookAt(m.targetInfo.position);
                 }
 
-                const dist = m.mesh.position.distanceTo(new THREE.Vector3(0, 0, 0));
+                const distToTarget = m.mesh.position.distanceTo(m.targetInfo.position);
+                
+                // For mortars, also check horizontal distance and if below target height
+                // This catches mortars that pass through on steep descent
+                const horizontalDist = Math.sqrt(
+                    Math.pow(m.mesh.position.x - m.targetInfo.position.x, 2) +
+                    Math.pow(m.mesh.position.z - m.targetInfo.position.z, 2)
+                );
+                const passedThroughTarget = m.isMortar && 
+                    horizontalDist < 8 && 
+                    m.mesh.position.y < m.targetInfo.position.y + 2;
 
                 // Impact Check
-                if (dist < 5) {
+                if (distToTarget < 5 || passedThroughTarget) {
                     createExplosion(m.mesh.position, 1);
                     scene.remove(m.mesh);
                     missiles.splice(i, 1);
-                    health -= 25;
-                    document.getElementById('health-bar').innerText = health + '%';
-                    if (health <= 0) {
-                        isGameOver = true;
-                        document.getElementById('game-over').style.display = 'block';
-                        document.getElementById('status-text').style.color = "red";
+                    if (m.targetInfo.type === 'ciws') {
+                        health = Math.max(0, health - 25);
+                        document.getElementById('health-bar').innerText = `${health}%`;
+                        if (health <= 0) {
+                            triggerGameOver('ciws');
+                        }
+                    } else if (m.targetInfo.type === 'friendly') {
+                        const f = friendlies.find(fr => fr.id === m.targetInfo.friendlyId);
+                        if (f && f.alive) {
+                            f.alive = false;
+                            scene.remove(f.mesh);
 
-                        // Stop Audio
-                        AudioController.stopAll();
-
-                        // Show final stats
-                        document.getElementById('final-score').innerText = score;
-                        document.getElementById('final-time').innerText = formatTime(elapsedTime);
-                        document.getElementById('final-high-score').innerText = highScore;
+                            const remainingFriendlies = updateFriendlyUI();
+                            if (remainingFriendlies === 0) {
+                                triggerGameOver('friendlies');
+                            }
+                        }
                     }
                     continue;
                 }
 
-                if (dist < closestDist) {
-                    closestDist = dist;
-                    target = m;
+                const eta = estimateTimeToImpact(m);
+                const priority = m.targetInfo.type === 'friendly' ? 1 : 0; // prefer friendly on tie
+
+                if (!bestTarget ||
+                    eta < bestTarget.eta - etaEpsilon ||
+                    (Math.abs(eta - bestTarget.eta) <= etaEpsilon && priority > bestTarget.priority)) {
+                    bestTarget = { missile: m, eta, priority };
                 }
             }
+
+            target = bestTarget ? bestTarget.missile : null;
 
             // 2. Turret Tracking
             let servoSpeed = 0;
