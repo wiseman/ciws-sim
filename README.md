@@ -13,3 +13,13 @@
 <br />
 
 A vibecoded web-based simulation of the Phalanx CIWS (Close-In Weapon System) defense system.
+
+## Deployment
+
+To deploy to caprover:
+
+```sh
+tar cf deploy.tar captain-definition index.html
+```
+
+Then upload the tar file to the caprover instance.
