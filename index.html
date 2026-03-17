@@ -52,6 +52,30 @@
             gap: 8px;
         }
 
+        #audio-debug {
+            display: none;
+            top: 20px;
+            left: 290px;
+            min-width: 310px;
+            border-color: #0ff;
+            color: #aff;
+            background: rgba(0, 15, 20, 0.82);
+        }
+
+        #audio-debug-title {
+            margin: 0 0 8px 0;
+            color: #0ff;
+            font-size: 12px;
+            letter-spacing: 0.08em;
+        }
+
+        #audio-debug-body {
+            margin: 0;
+            white-space: pre-wrap;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+
         .toggle-btn {
             background: rgba(0, 20, 0, 0.6);
             border: 1px solid #0f0;
@@ -204,6 +228,11 @@
             </div>
         </div>
 
+        <div id="audio-debug" class="panel">
+            <div id="audio-debug-title">AUDIO DEBUG [A]</div>
+            <pre id="audio-debug-body"></pre>
+        </div>
+
         <div id="center-reticle"></div>
 
         <div id="radar">
@@ -298,9 +327,20 @@
             motorGain: null,
             servoOsc: null,
             servoGain: null,
+            servoFilter: null,
             gunOsc: null,
             gunNoise: null,
             gunGain: null,
+            lastServoLevel: 0,
+            debugState: {
+                initialized: false,
+                muted: true,
+                masterGain: 0,
+                motor: { playing: false, freq: 0, gain: 0 },
+                servo: { playing: false, freq: 0, gain: 0, filter: 0, chatterRate: 0 },
+                gun: { playing: false, freq: 0, gain: 0 },
+                explosions: { pending: 0, active: 0, lastDistance: 0, lastDuration: 0 }
+            },
 
             init: function () {
                 if (this.isInit) return;
@@ -331,19 +371,19 @@
 
                 // --- Servo Sound (Mechanical groaning) ---
                 this.servoOsc = this.ctx.createOscillator();
-                this.servoOsc.type = 'sawtooth'; // Sawtooth for grit
+                this.servoOsc.type = 'sawtooth';
                 this.servoOsc.frequency.value = 100;
                 this.servoOsc.start();
 
                 this.servoGain = this.ctx.createGain();
                 this.servoGain.gain.value = 0;
 
-                const servoFilter = this.ctx.createBiquadFilter();
-                servoFilter.type = 'lowpass';
-                servoFilter.frequency.value = 200;
+                this.servoFilter = this.ctx.createBiquadFilter();
+                this.servoFilter.type = 'lowpass';
+                this.servoFilter.frequency.value = 200;
 
-                this.servoOsc.connect(servoFilter);
-                servoFilter.connect(this.servoGain);
+                this.servoOsc.connect(this.servoFilter);
+                this.servoFilter.connect(this.servoGain);
                 this.servoGain.connect(this.masterGain);
 
                 // --- Gun Sound (The RIP) ---
@@ -382,6 +422,10 @@
                     this.masterGain.gain.value = 0;
                 }
 
+                this.debugState.initialized = true;
+                this.debugState.muted = this.isMuted;
+                this.debugState.masterGain = this.isMuted ? 0 : 1;
+
                 this.isInit = true;
                 console.log("Audio Initialized");
             },
@@ -391,6 +435,8 @@
                 if (this.masterGain) {
                     this.masterGain.gain.setTargetAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime, 0.1);
                 }
+                this.debugState.muted = this.isMuted;
+                this.debugState.masterGain = this.isMuted ? 0 : 1;
                 return this.isMuted;
             },
 
@@ -398,10 +444,21 @@
                 if (this.masterGain) {
                     this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
                 }
+                this.debugState.masterGain = 0;
+                this.debugState.motor.playing = false;
+                this.debugState.motor.gain = 0;
+                this.debugState.servo.playing = false;
+                this.debugState.servo.gain = 0;
+                this.debugState.gun.playing = false;
+                this.debugState.gun.gain = 0;
+                this.debugState.explosions.pending = 0;
+                this.debugState.explosions.active = 0;
             },
 
             playExplosion: function (distance, timeScale) {
                 if (!this.isInit || this.isMuted) return;
+
+                this.debugState.explosions.pending += 1;
 
                 // Speed of sound delay (approx 343 m/s)
                 // In our sim, let's assume 1 unit = 1 meter for audio purposes
@@ -413,6 +470,7 @@
                 const delay = (distance / 343) / timeScale;
 
                 setTimeout(() => {
+                    this.debugState.explosions.pending = Math.max(0, this.debugState.explosions.pending - 1);
                     if (this.isMuted) return; // Check again in case muted during delay
 
                     const t = this.ctx.currentTime;
@@ -420,6 +478,9 @@
                     // Create noise burst
                     // Duration is longer in slow mo
                     const dur = (0.5 + Math.random() * 0.5) / timeScale;
+                    this.debugState.explosions.active += 1;
+                    this.debugState.explosions.lastDistance = distance;
+                    this.debugState.explosions.lastDuration = dur;
                     const osc = this.ctx.createOscillator();
                     osc.type = 'sawtooth';
 
@@ -454,35 +515,60 @@
                     osc.start(t);
                     osc.stop(t + dur);
 
+                    setTimeout(() => {
+                        this.debugState.explosions.active = Math.max(0, this.debugState.explosions.active - 1);
+                    }, dur * 1000);
+
                 }, delay * 1000); // setTimeout uses ms
             },
 
             update: function (barrelSpeed, servoSpeed, isFiring, timeScale) {
                 if (!this.isInit) return;
                 const t = this.ctx.currentTime;
+                this.debugState.initialized = this.isInit;
+                this.debugState.muted = this.isMuted;
+                this.debugState.masterGain = this.isMuted ? 0 : 1;
 
                 // Motor
                 // Pitch: 200Hz -> 800Hz (Scaled by timeScale)
                 const motorFreq = (200 + (barrelSpeed * 600)) * timeScale;
+                const motorGain = barrelSpeed * 0.1;
                 this.motorOsc.frequency.setTargetAtTime(motorFreq, t, 0.1);
-                this.motorGain.gain.setTargetAtTime(barrelSpeed * 0.1, t, 0.1);
+                this.motorGain.gain.setTargetAtTime(motorGain, t, 0.1);
+                this.debugState.motor.freq = motorFreq;
+                this.debugState.motor.gain = motorGain;
+                this.debugState.motor.playing = !this.isMuted && motorGain > 0.003;
 
                 // Servo
-                const normalizedServo = Math.min(1.0, servoSpeed * 20); // Amplify small movements
+                const normalizedServo = Math.min(1.0, servoSpeed * 20);
                 const servoFreq = (100 + (normalizedServo * 100)) * timeScale;
+                const servoCutoff = 200 * timeScale;
+                const servoGain = Math.min(1.0, normalizedServo * 0.75);
                 this.servoOsc.frequency.setTargetAtTime(servoFreq, t, 0.1);
-                this.servoGain.gain.setTargetAtTime(normalizedServo * 0.15, t, 0.1);
+                this.servoFilter.frequency.setTargetAtTime(Math.max(80, servoCutoff), t, 0.1);
+                this.servoGain.gain.setTargetAtTime(servoGain, t, 0.05);
+                this.lastServoLevel = normalizedServo;
+                this.debugState.servo.freq = servoFreq;
+                this.debugState.servo.gain = servoGain;
+                this.debugState.servo.filter = servoCutoff;
+                this.debugState.servo.chatterRate = 0;
+                this.debugState.servo.playing = !this.isMuted && servoGain > 0.003;
 
                 // Gun
                 const gunFreq = 75 * timeScale;
                 this.gunOsc.frequency.setTargetAtTime(gunFreq, t, 0.1);
                 // Playback rate for noise buffer (affects pitch of the blast)
                 this.gunNoise.playbackRate.setTargetAtTime(timeScale, t, 0.1);
+                this.debugState.gun.freq = gunFreq;
 
                 if (isFiring) {
                     this.gunGain.gain.setTargetAtTime(0.4, t, 0.01);
+                    this.debugState.gun.gain = 0.4;
+                    this.debugState.gun.playing = !this.isMuted;
                 } else {
                     this.gunGain.gain.setTargetAtTime(0, t, 0.05);
+                    this.debugState.gun.gain = 0;
+                    this.debugState.gun.playing = false;
                 }
             }
         };
@@ -490,6 +576,68 @@
         // Audio State
         let currentBarrelSpeed = 0;
         let isFiring = false;
+        let isAudioDebugVisible = false;
+
+        function formatAudioDebugValue(value, digits = 2) {
+            return Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
+        }
+
+        function updateAudioDebugOverlay() {
+            const panel = document.getElementById('audio-debug');
+            const body = document.getElementById('audio-debug-body');
+            if (!panel || !body) return;
+
+            panel.style.display = isAudioDebugVisible ? 'block' : 'none';
+            if (!isAudioDebugVisible) return;
+
+            const state = AudioController.debugState;
+            const playing = [];
+            if (state.motor.playing) playing.push('motor');
+            if (state.servo.playing) playing.push('servo');
+            if (state.gun.playing) playing.push('gun');
+            if (state.explosions.active > 0) playing.push(`explosion x${state.explosions.active}`);
+
+            body.textContent =
+`Initialized: ${state.initialized ? 'yes' : 'no'}
+Muted: ${state.muted ? 'yes' : 'no'}
+Master gain: ${formatAudioDebugValue(state.masterGain)}
+Playing now: ${playing.length ? playing.join(', ') : 'none'}
+
+Motor
+  on: ${state.motor.playing ? 'yes' : 'no'}
+  freq: ${formatAudioDebugValue(state.motor.freq, 1)} Hz
+  gain: ${formatAudioDebugValue(state.motor.gain, 3)}
+
+Servo
+  on: ${state.servo.playing ? 'yes' : 'no'}
+  freq: ${formatAudioDebugValue(state.servo.freq, 1)} Hz
+  gain: ${formatAudioDebugValue(state.servo.gain, 3)}
+  filter: ${formatAudioDebugValue(state.servo.filter, 1)} Hz
+  chatter: ${formatAudioDebugValue(state.servo.chatterRate, 1)} Hz
+
+Gun
+  on: ${state.gun.playing ? 'yes' : 'no'}
+  freq: ${formatAudioDebugValue(state.gun.freq, 1)} Hz
+  gain: ${formatAudioDebugValue(state.gun.gain, 3)}
+
+Explosions
+  active: ${state.explosions.active}
+  pending: ${state.explosions.pending}
+  last distance: ${formatAudioDebugValue(state.explosions.lastDistance, 1)}
+  last duration: ${formatAudioDebugValue(state.explosions.lastDuration, 2)} s`;
+        }
+
+        function toggleAudioDebug() {
+            isAudioDebugVisible = !isAudioDebugVisible;
+            updateAudioDebugOverlay();
+        }
+
+        function handleGlobalHotkeys(event) {
+            if (event.repeat) return;
+            if ((event.key || '').toLowerCase() === 'a') {
+                toggleAudioDebug();
+            }
+        }
 
         // --- RADAR SETUP ---
         const radarCanvas = document.getElementById('radar-canvas');
@@ -561,6 +709,7 @@
 
             // Resize Handler
             window.addEventListener('resize', onWindowResize, false);
+            document.addEventListener('keydown', handleGlobalHotkeys);
 
             // Start Loop
             clock = new THREE.Clock();
@@ -574,6 +723,7 @@
             document.addEventListener('mousedown', startAudio);
             document.addEventListener('keydown', startAudio);
 
+            updateAudioDebugOverlay();
             animate();
         }
 
@@ -1388,10 +1538,6 @@
                 const pitchError = pitchTraverse.error;
                 const servoSpeedVal = Math.abs(turretYawRate) + Math.abs(turretPitchRate);
 
-                // Spin Barrels
-                currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * simSteps);
-                barrels.rotation.z += currentBarrelSpeed * simSteps;
-
                 // Fire gating based on yaw & pitch and intercept validity
                 fireCooldown -= simSteps;
                 isFiring = false;
@@ -1412,6 +1558,13 @@
 
                 // Update servoSpeed for audio
                 servoSpeed = servoSpeedVal;
+
+                if (isFiring) {
+                    currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * simSteps);
+                } else {
+                    currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.035 * simSteps);
+                }
+                barrels.rotation.z += currentBarrelSpeed * simSteps;
 
             } else {
                 const yawTraverse = stepTraverseAxis(
@@ -1434,7 +1587,7 @@
                 turretPitchRate = pitchTraverse.rate;
 
                 // Spin down when idle
-                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.02 * simSteps);
+                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.035 * simSteps);
                 barrels.rotation.z += currentBarrelSpeed * simSteps;
                 isFiring = false;
                 servoSpeed = Math.abs(turretYawRate) + Math.abs(turretPitchRate);
@@ -1678,6 +1831,7 @@
 
             updateLogic(simSteps);
             updateRadar();
+            updateAudioDebugOverlay();
             updateCameraFollow();
 
             if (cameraMode === 0) {
