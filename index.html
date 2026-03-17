@@ -251,8 +251,9 @@
         const YAW_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const PITCH_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const MAX_TRAVERSE_RATE = 0.08;   // max yaw/pitch change per step (radians/step)
-const FRIENDLY_COUNT = 5;
-const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
+        const MAX_TRAVERSE_ACCEL = 0.005; // max yaw/pitch acceleration per step²
+        const FRIENDLY_COUNT = 5;
+        const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -275,7 +276,9 @@ const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
         let elapsedTime = 0;
         let highScore = 0;
         let lastShake = { x: 0, y: 0 };
-let friendlies = [];
+        let friendlies = [];
+        let turretYawRate = 0;
+        let turretPitchRate = 0;
 
         // Time Control
         let timeScale = 1.0;
@@ -1130,6 +1133,51 @@ let friendlies = [];
             return dist / speed;
         }
 
+        function stepTraverseAxis(current, target, rate, simSteps, wrap = false) {
+            let diff = target - current;
+
+            if (wrap) {
+                while (diff > Math.PI) diff -= 2 * Math.PI;
+                while (diff < -Math.PI) diff += 2 * Math.PI;
+            }
+
+            const accelStep = MAX_TRAVERSE_ACCEL * simSteps;
+            const absDiff = Math.abs(diff);
+
+            if (absDiff < 1e-5 && Math.abs(rate) < accelStep) {
+                return {
+                    angle: current,
+                    rate: 0,
+                    error: 0
+                };
+            }
+
+            const desiredRateMag = Math.min(
+                MAX_TRAVERSE_RATE,
+                Math.sqrt(2 * MAX_TRAVERSE_ACCEL * absDiff)
+            );
+            const desiredRate = Math.sign(diff) * desiredRateMag;
+            const rateDelta = THREE.MathUtils.clamp(desiredRate - rate, -accelStep, accelStep);
+            let nextRate = rate + rateDelta;
+            let step = nextRate * simSteps;
+
+            if (Math.abs(step) > absDiff) {
+                step = diff;
+                nextRate = 0;
+            }
+
+            let angle = current + step;
+            if (wrap) {
+                angle = THREE.MathUtils.euclideanModulo(angle + Math.PI, Math.PI * 2) - Math.PI;
+            }
+
+            return {
+                angle,
+                rate: nextRate,
+                error: Math.abs(diff - step)
+            };
+        }
+
         function triggerGameOver(reason) {
             if (isGameOver) return;
 
@@ -1316,38 +1364,29 @@ let friendlies = [];
                 const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
                 const targetPitch = -Math.atan2(localTarget.y, xzDist);
 
-                // Yaw traverse with clamped rate
-                const currentYaw = turretYaw.rotation.y;
-                let yawDiff = targetYaw - currentYaw;
-
-                // Normalize to [-π, π]
-                while (yawDiff > Math.PI) yawDiff -= 2 * Math.PI;
-                while (yawDiff < -Math.PI) yawDiff += 2 * Math.PI;
-
-                const yawStep = THREE.MathUtils.clamp(
-                    yawDiff,
-                    -MAX_TRAVERSE_RATE * simSteps,
-                    +MAX_TRAVERSE_RATE * simSteps
+                const yawTraverse = stepTraverseAxis(
+                    turretYaw.rotation.y,
+                    targetYaw,
+                    turretYawRate,
+                    simSteps,
+                    true
                 );
+                turretYaw.rotation.y = yawTraverse.angle;
+                turretYawRate = yawTraverse.rate;
 
-                turretYaw.rotation.y = currentYaw + yawStep;
-
-                // Pitch traverse with clamped rate
-                const currentPitch = turretPitch.rotation.x;
-                const pitchDiff = targetPitch - currentPitch;
-
-                const pitchStep = THREE.MathUtils.clamp(
-                    pitchDiff,
-                    -MAX_TRAVERSE_RATE * simSteps,
-                    +MAX_TRAVERSE_RATE * simSteps
+                const pitchTraverse = stepTraverseAxis(
+                    turretPitch.rotation.x,
+                    targetPitch,
+                    turretPitchRate,
+                    simSteps
                 );
-
-                turretPitch.rotation.x = currentPitch + pitchStep;
+                turretPitch.rotation.x = pitchTraverse.angle;
+                turretPitchRate = pitchTraverse.rate;
 
                 // Compute angular error magnitudes for gating and servo audio
-                const yawError = Math.abs(yawDiff);
-                const pitchError = Math.abs(pitchDiff);
-                const servoSpeedVal = Math.abs(yawStep) + Math.abs(pitchStep); // Use local var to avoid conflict if any
+                const yawError = yawTraverse.error;
+                const pitchError = pitchTraverse.error;
+                const servoSpeedVal = Math.abs(turretYawRate) + Math.abs(turretPitchRate);
 
                 // Spin Barrels
                 currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * simSteps);
@@ -1375,12 +1414,32 @@ let friendlies = [];
                 servoSpeed = servoSpeedVal;
 
             } else {
+                const yawTraverse = stepTraverseAxis(
+                    turretYaw.rotation.y,
+                    turretYaw.rotation.y,
+                    turretYawRate,
+                    simSteps,
+                    true
+                );
+                turretYaw.rotation.y = yawTraverse.angle;
+                turretYawRate = yawTraverse.rate;
+
+                const pitchTraverse = stepTraverseAxis(
+                    turretPitch.rotation.x,
+                    turretPitch.rotation.x,
+                    turretPitchRate,
+                    simSteps
+                );
+                turretPitch.rotation.x = pitchTraverse.angle;
+                turretPitchRate = pitchTraverse.rate;
+
                 // Spin down when idle
                 currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.02 * simSteps);
                 barrels.rotation.z += currentBarrelSpeed * simSteps;
                 isFiring = false;
+                servoSpeed = Math.abs(turretYawRate) + Math.abs(turretPitchRate);
 
-                // Audio update handled below, servoSpeed is 0
+                // Audio update handled below
             }
 
             AudioController.update(currentBarrelSpeed, servoSpeed, isFiring, timeScale);
