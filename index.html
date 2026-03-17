@@ -961,7 +961,8 @@ let friendlies = [];
                 particleCount = 15,
                 color = 0xffaa00,
                 velocityScale = 1,
-                particleLife = 1.0
+                particleLife = 1.0,
+                flashSize = 0
             } = options;
 
             if (playSound) {
@@ -984,6 +985,19 @@ let friendlies = [];
 
                 scene.add(mesh);
                 particles.push({ mesh: mesh, velocity: vel, life: particleLife });
+            }
+
+            if (flashSize > 0) {
+                const flashGeo = new THREE.SphereGeometry(flashSize, 10, 10);
+                const flashMat = new THREE.MeshBasicMaterial({ color });
+                const flash = new THREE.Mesh(flashGeo, flashMat);
+                flash.position.copy(position);
+                scene.add(flash);
+                particles.push({
+                    mesh: flash,
+                    velocity: new THREE.Vector3(),
+                    life: Math.max(0.18, particleLife * 0.65)
+                });
             }
         }
 
@@ -1376,12 +1390,13 @@ let friendlies = [];
                 const p = projectiles[i];
                 p.life -= simSteps;
                 if (p.life <= 0) {
-                    createExplosion(p.mesh.position, 0.12, {
+                    createExplosion(p.mesh.position, 0.35, {
                         playSound: false,
-                        particleCount: 6,
-                        color: 0xffdd88,
-                        velocityScale: 0.35,
-                        particleLife: 0.3
+                        particleCount: 10,
+                        color: 0xfff2b3,
+                        velocityScale: 0.75,
+                        particleLife: 0.45,
+                        flashSize: 0.6
                     });
                     scene.remove(p.mesh);
                     projectiles.splice(i, 1);
