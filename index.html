@@ -281,6 +281,13 @@
         const PITCH_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const MAX_TRAVERSE_RATE = 0.08;   // max yaw/pitch change per step (radians/step)
         const MAX_TRAVERSE_ACCEL = 0.005; // max yaw/pitch acceleration per step²
+        const RADAR_TRACK_ERROR_BASE = 0.3;
+        const RADAR_TRACK_ERROR_RANGE_FACTOR = 0.00375;
+        const RADAR_TRACK_ERROR_VERTICAL_SCALE = 0.45;
+        const RADAR_TRACK_VELOCITY_ERROR_FACTOR = 0.04;
+        const RADAR_TRACK_RESEED_MIN = 6;
+        const RADAR_TRACK_RESEED_MAX = 18;
+        const RADAR_TRACK_RESPONSE = 0.08;
         const FRIENDLY_COUNT = 5;
         const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
 
@@ -1103,6 +1110,15 @@ Explosions
                 velocity: velocity,
                 health: 2,
                 isMortar: isMortar,
+                trackedPosition: missile.position.clone(),
+                trackedVelocity: velocity.clone(),
+                radarTrack: {
+                    posError: new THREE.Vector3(),
+                    posTarget: new THREE.Vector3(),
+                    velError: new THREE.Vector3(),
+                    velTarget: new THREE.Vector3(),
+                    retuneIn: 0
+                },
                 targetInfo,
                 eta: null
             });
@@ -1209,8 +1225,9 @@ Explosions
 
             radarCtx.fillStyle = '#f00';
             missiles.forEach(m => {
-                const x = center + (m.mesh.position.x * scale);
-                const y = center + (m.mesh.position.z * scale);
+                const radarPos = m.trackedPosition || m.mesh.position;
+                const x = center + (radarPos.x * scale);
+                const y = center + (radarPos.z * scale);
 
                 // Only draw if inside circle
                 const d = Math.sqrt(Math.pow(x - center, 2) + Math.pow(y - center, 2));
@@ -1281,6 +1298,41 @@ Explosions
             if (speed < 1e-4) return Infinity;
             const dist = missile.mesh.position.distanceTo(missile.targetInfo.position);
             return dist / speed;
+        }
+
+        function randomRadarTrackVector(magnitude) {
+            const vec = new THREE.Vector3(
+                (Math.random() * 2 - 1) * magnitude,
+                (Math.random() * 2 - 1) * magnitude * RADAR_TRACK_ERROR_VERTICAL_SCALE,
+                (Math.random() * 2 - 1) * magnitude
+            );
+            return vec.clampLength(0, magnitude);
+        }
+
+        function updateRadarTrack(missile, simSteps) {
+            const track = missile.radarTrack;
+            if (!track) {
+                missile.trackedPosition = missile.mesh.position.clone();
+                missile.trackedVelocity = missile.velocity.clone();
+                return;
+            }
+
+            track.retuneIn -= simSteps;
+            if (track.retuneIn <= 0) {
+                const range = missile.mesh.position.length();
+                const posErrorMagnitude = RADAR_TRACK_ERROR_BASE + (range * RADAR_TRACK_ERROR_RANGE_FACTOR);
+                const velErrorMagnitude = missile.velocity.length() * RADAR_TRACK_VELOCITY_ERROR_FACTOR;
+                track.posTarget.copy(randomRadarTrackVector(posErrorMagnitude));
+                track.velTarget.copy(randomRadarTrackVector(velErrorMagnitude));
+                track.retuneIn = RADAR_TRACK_RESEED_MIN + Math.random() * (RADAR_TRACK_RESEED_MAX - RADAR_TRACK_RESEED_MIN);
+            }
+
+            const blend = THREE.MathUtils.clamp(RADAR_TRACK_RESPONSE * simSteps, 0, 1);
+            track.posError.lerp(track.posTarget, blend);
+            track.velError.lerp(track.velTarget, blend);
+
+            missile.trackedPosition = missile.mesh.position.clone().add(track.posError);
+            missile.trackedVelocity = missile.velocity.clone().add(track.velError);
         }
 
         function stepTraverseAxis(current, target, rate, simSteps, wrap = false) {
@@ -1405,6 +1457,8 @@ Explosions
                     m.mesh.lookAt(m.targetInfo.position);
                 }
 
+                updateRadarTrack(m, simSteps);
+
                 const distToTarget = m.mesh.position.distanceTo(m.targetInfo.position);
                 
                 // For mortars, also check horizontal distance and if below target height
@@ -1461,14 +1515,14 @@ Explosions
 
             if (target) {
                 // Calculate Yaw (Left/Right)
-                const targetPos = target.mesh.position.clone();
+                const targetPos = (target.trackedPosition || target.mesh.position).clone();
 
                 // Get actual muzzle position (where bullets spawn from)
                 const muzzlePos = new THREE.Vector3(0, 0, 3.5);
                 muzzlePos.applyMatrix4(barrels.matrixWorld);
 
                 const D = targetPos.clone().sub(muzzlePos);
-                const V = target.velocity.clone();      // per-step velocity
+                const V = (target.trackedVelocity || target.velocity).clone();      // per-step velocity
                 const S = BULLET_SPEED;                 // per-step bullet speed
 
                 let aimPoint = null;
