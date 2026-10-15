@@ -3,6 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
+    <link rel="icon" href="data:,">
     <title>Phalanx CIWS Defense Simulator</title>
     <style>
         body {
@@ -106,6 +107,76 @@
             background: rgba(60, 0, 0, 0.8);
             border-color: #f00;
             color: #f00;
+        }
+
+        #ml-panel {
+            top: 210px;
+            right: 20px;
+            width: 260px;
+            pointer-events: auto;
+            font-size: 12px;
+        }
+
+        #ml-panel-title {
+            margin-bottom: 10px;
+            color: #0ff;
+            letter-spacing: 0.08em;
+        }
+
+        .ml-row {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            margin: 5px 0;
+        }
+
+        .ml-actions {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .ml-actions button {
+            background: rgba(0, 20, 0, 0.75);
+            border: 1px solid #0f0;
+            color: #0f0;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 11px;
+            min-height: 34px;
+        }
+
+        .ml-actions button:hover:not(:disabled),
+        .ml-actions button.active {
+            background: rgba(0, 60, 0, 0.9);
+            border-color: #0ff;
+            color: #0ff;
+        }
+
+        .ml-actions button:disabled {
+            cursor: wait;
+            opacity: 0.5;
+        }
+
+        #ml-train-btn {
+            grid-column: span 2;
+        }
+
+        .ml-arch {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0 6px;
+            color: #aff;
+            font-size: 11px;
+        }
+
+        #ml-network-canvas {
+            width: 100%;
+            height: 178px;
+            display: block;
+            background: rgba(0, 8, 0, 0.55);
+            border: 1px solid rgba(0, 255, 0, 0.45);
         }
 
         #radar {
@@ -233,6 +304,26 @@
             <pre id="audio-debug-body"></pre>
         </div>
 
+        <div id="ml-panel" class="panel">
+            <div id="ml-panel-title">ML IMITATION</div>
+            <div class="ml-row"><span>MODE</span><span id="ml-mode">CLASSIC</span></div>
+            <div class="ml-row"><span>SAMPLES</span><span id="ml-samples">0</span></div>
+            <div class="ml-row"><span>LOSS</span><span id="ml-loss">--</span></div>
+            <div class="ml-row"><span>AIM ERR</span><span id="ml-aim-error">--</span></div>
+            <div class="ml-row"><span>FIRE CONF</span><span id="ml-confidence">--</span></div>
+            <div class="ml-row"><span>STATE</span><span id="ml-state">UNTRAINED</span></div>
+            <div class="ml-arch">
+                <span>ARCH</span>
+                <span>11 -> 24 -> 16 -> 3</span>
+            </div>
+            <canvas id="ml-network-canvas" width="260" height="178"></canvas>
+            <div class="ml-actions">
+                <button id="ml-classic-btn" class="active" onclick="setControllerMode('classic')">CLASSIC</button>
+                <button id="ml-neural-btn" onclick="setControllerMode('neural')">NEURAL</button>
+                <button id="ml-train-btn" onclick="trainNeuralImitation()">START TRAINING</button>
+            </div>
+        </div>
+
         <div id="center-reticle"></div>
 
         <div id="radar">
@@ -247,7 +338,7 @@
             <p>TIME SURVIVED: <span id="final-time">00:00</span></p>
             <p>FRIENDLIES REMAINING: <span id="final-friendlies">0/0</span></p>
             <p>HIGH SCORE: <span id="final-high-score">0</span></p>
-            <button onclick="location.reload()"
+            <button onclick="rebootSystem()"
                 style="padding: 10px 20px; background: #333; color: white; border: 1px solid white; cursor: pointer;">REBOOT
                 SYSTEM</button>
         </div>
@@ -290,6 +381,19 @@
         const RADAR_TRACK_RESPONSE = 0.08;
         const FRIENDLY_COUNT = 5;
         const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
+        const NN_RANGE_SCALE = 700;
+        const NN_HEIGHT_SCALE = 160;
+        const NN_VELOCITY_SCALE = 8;
+        const NN_LIVE_REPLAY_LIMIT = 6000;
+        const NN_LIVE_VALIDATION_LIMIT = 1500;
+        const NN_LIVE_TRAIN_STEPS = 10;
+        const NN_LEARNING_RATE = 0.012;
+        const NN_YAW_LOSS_WEIGHT = 2.5;
+        const NN_PITCH_LOSS_WEIGHT = 1.5;
+        const NN_FIRE_LOSS_WEIGHT = 0.25;
+        const NN_LOSS_WEIGHT_TOTAL = NN_YAW_LOSS_WEIGHT + NN_PITCH_LOSS_WEIGHT + NN_FIRE_LOSS_WEIGHT;
+        const NN_DELTA_YAW_SCALE = 0.75;
+        const NN_DELTA_PITCH_SCALE = 0.75;
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -315,6 +419,9 @@
         let friendlies = [];
         let turretYawRate = 0;
         let turretPitchRate = 0;
+        let controllerMode = 'classic';
+        let lastNeuralConfidence = null;
+        let lastNeuralAimError = null;
 
         // Time Control
         let timeScale = 1.0;
@@ -634,6 +741,574 @@ Explosions
   last duration: ${formatAudioDebugValue(state.explosions.lastDuration, 2)} s`;
         }
 
+        function clampUnit(value) {
+            return THREE.MathUtils.clamp(value, -1, 1);
+        }
+
+        function formatLoss(value) {
+            return Number.isFinite(value) ? value.toFixed(4) : '--';
+        }
+
+        function updateMLPanel() {
+            const modeEl = document.getElementById('ml-mode');
+            const samplesEl = document.getElementById('ml-samples');
+            const lossEl = document.getElementById('ml-loss');
+            const aimErrorEl = document.getElementById('ml-aim-error');
+            const confidenceEl = document.getElementById('ml-confidence');
+            const stateEl = document.getElementById('ml-state');
+            const classicBtn = document.getElementById('ml-classic-btn');
+            const neuralBtn = document.getElementById('ml-neural-btn');
+            const trainBtn = document.getElementById('ml-train-btn');
+
+            if (!modeEl || !samplesEl || !lossEl || !aimErrorEl || !confidenceEl || !stateEl) return;
+
+            modeEl.innerText = controllerMode.toUpperCase();
+            samplesEl.innerText = NeuralController.trainedSamples.toString();
+            lossEl.innerText = formatLoss(NeuralController.lastLoss);
+            aimErrorEl.innerText = lastNeuralAimError === null ? '--' : `${lastNeuralAimError.toFixed(2)} deg`;
+            confidenceEl.innerText = lastNeuralConfidence === null ? '--' : `${Math.round(lastNeuralConfidence * 100)}%`;
+            stateEl.innerText = NeuralController.isTraining
+                ? 'TRAINING'
+                : NeuralController.isTrained
+                    ? 'TRAINED'
+                    : 'UNTRAINED';
+
+            if (classicBtn && neuralBtn) {
+                classicBtn.classList.toggle('active', controllerMode === 'classic');
+                neuralBtn.classList.toggle('active', controllerMode === 'neural');
+            }
+
+            if (trainBtn) {
+                trainBtn.disabled = false;
+                trainBtn.innerText = NeuralController.isTraining
+                    ? 'STOP TRAINING'
+                    : NeuralController.isTrained
+                        ? 'RESUME TRAINING'
+                        : 'START TRAINING';
+            }
+
+            drawNetworkViz();
+        }
+
+        function activationColor(value) {
+            const v = THREE.MathUtils.clamp(value || 0, -1, 1);
+            const mag = Math.abs(v);
+            const base = 25 + Math.round(80 * (1 - mag));
+
+            if (v >= 0) {
+                const green = 120 + Math.round(135 * mag);
+                const red = 30 + Math.round(200 * mag);
+                return `rgb(${red}, ${green}, ${base})`;
+            }
+
+            const blue = 130 + Math.round(125 * mag);
+            const cyan = 60 + Math.round(120 * mag);
+            return `rgb(${base}, ${cyan}, ${blue})`;
+        }
+
+        function drawNetworkViz() {
+            const canvas = document.getElementById('ml-network-canvas');
+            if (!canvas) return;
+
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            const width = Math.max(1, Math.round(rect.width * dpr));
+            const height = Math.max(1, Math.round(rect.height * dpr));
+
+            if (canvas.width !== width || canvas.height !== height) {
+                canvas.width = width;
+                canvas.height = height;
+            }
+
+            const ctx = canvas.getContext('2d');
+            ctx.save();
+            ctx.scale(dpr, dpr);
+            const w = rect.width;
+            const h = rect.height;
+
+            ctx.clearRect(0, 0, w, h);
+            ctx.fillStyle = 'rgba(0, 8, 0, 0.75)';
+            ctx.fillRect(0, 0, w, h);
+
+            const layerX = [28, w * 0.36, w * 0.64, w - 34];
+            const layers = [
+                NeuralController.lastInputs,
+                NeuralController.lastHidden1,
+                NeuralController.lastHidden2,
+                NeuralController.lastOutputs
+            ];
+            const labels = ['INPUT', 'H1', 'H2', 'OUTPUT'];
+
+            const positions = layers.map((layer, layerIndex) => {
+                const count = layer.length;
+                const top = 28;
+                const bottom = h - 18;
+                const usable = bottom - top;
+                return layer.map((_, i) => ({
+                    x: layerX[layerIndex],
+                    y: count === 1 ? top + usable / 2 : top + (usable * i) / (count - 1)
+                }));
+            });
+
+            ctx.lineWidth = 1;
+            drawWeightLines(ctx, positions[0], positions[1], NeuralController.hiddenWeights1);
+            drawWeightLines(ctx, positions[1], positions[2], NeuralController.hiddenWeights2);
+            drawWeightLines(ctx, positions[2], positions[3], NeuralController.outputWeights);
+
+            ctx.font = '10px Courier New, monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            labels.forEach((label, i) => {
+                ctx.fillStyle = i === 2 ? '#0ff' : '#0f0';
+                ctx.fillText(`${label} ${layers[i].length}`, layerX[i], 12);
+            });
+
+            const outputLabels = ['DY', 'DP', 'FIR'];
+
+            layers.forEach((layer, layerIndex) => {
+                positions[layerIndex].forEach((pos, i) => {
+                    const value = layer[i] || 0;
+                    const radius = layerIndex === layers.length - 1 ? 5.2 : 4.5;
+                    ctx.beginPath();
+                    ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+                    ctx.fillStyle = activationColor(value);
+                    ctx.fill();
+                    ctx.strokeStyle = Math.abs(value) > 0.65 ? '#fff' : 'rgba(0, 255, 0, 0.7)';
+                    ctx.stroke();
+
+                    if (layerIndex === layers.length - 1) {
+                        ctx.fillStyle = '#aff';
+                        ctx.textAlign = 'left';
+                        ctx.fillText(outputLabels[i], pos.x + 9, pos.y);
+                        ctx.textAlign = 'center';
+                    }
+                });
+            });
+
+            ctx.textAlign = 'left';
+            ctx.fillStyle = NeuralController.isTraining ? '#ff0' : (controllerMode === 'neural' ? '#0ff' : '#0f0');
+            ctx.fillText(NeuralController.activationSource, 7, h - 7);
+
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#8f8';
+            ctx.fillText('BLUE - / YELLOW +', w - 7, h - 7);
+
+            ctx.restore();
+        }
+
+        function drawWeightLines(ctx, fromPositions, toPositions, weights) {
+            for (let to = 0; to < toPositions.length; to++) {
+                for (let from = 0; from < fromPositions.length; from++) {
+                    const weight = weights[to]?.[from] || 0;
+                    const alpha = THREE.MathUtils.clamp(Math.abs(weight) * 1.2, 0.04, 0.35);
+                    ctx.strokeStyle = weight >= 0
+                        ? `rgba(150, 255, 80, ${alpha})`
+                        : `rgba(80, 180, 255, ${alpha})`;
+                    ctx.beginPath();
+                    ctx.moveTo(fromPositions[from].x, fromPositions[from].y);
+                    ctx.lineTo(toPositions[to].x, toPositions[to].y);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        function randomSigned(range) {
+            return (Math.random() * 2 - 1) * range;
+        }
+
+        function wrapAngle(angle) {
+            return THREE.MathUtils.euclideanModulo(angle + Math.PI, Math.PI * 2) - Math.PI;
+        }
+
+        function makeControllerInputs(D, V, isMortar, targetInfo = null) {
+            const distance = D.length();
+            const speed = V.length();
+            const eta = speed > 1e-4 ? distance / speed : MAX_INTERCEPT_STEPS;
+
+            return [
+                clampUnit(D.x / NN_RANGE_SCALE),
+                clampUnit(D.y / NN_HEIGHT_SCALE),
+                clampUnit(D.z / NN_RANGE_SCALE),
+                clampUnit(V.x / NN_VELOCITY_SCALE),
+                clampUnit(V.y / NN_VELOCITY_SCALE),
+                clampUnit(V.z / NN_VELOCITY_SCALE),
+                clampUnit((distance / NN_RANGE_SCALE) * 2 - 1),
+                clampUnit((speed / NN_VELOCITY_SCALE) * 2 - 1),
+                clampUnit((eta / MAX_INTERCEPT_STEPS) * 2 - 1),
+                isMortar ? 1 : -1,
+                targetInfo && targetInfo.type === 'friendly' ? 1 : -1
+            ];
+        }
+
+        function makeControllerTargets(solution, targetPos, muzzlePos) {
+            const sight = computeSightAngles(targetPos, muzzlePos);
+            const yawDelta = wrapAngle(solution.targetYaw - sight.targetYaw);
+            const pitchDelta = solution.targetPitch - sight.targetPitch;
+
+            return [
+                clampUnit(yawDelta / NN_DELTA_YAW_SCALE),
+                clampUnit(pitchDelta / NN_DELTA_PITCH_SCALE),
+                solution.interceptSteps !== null ? 1 : -1
+            ];
+        }
+
+        const NeuralController = {
+            inputCount: 11,
+            hiddenCount1: 24,
+            hiddenCount2: 16,
+            outputCount: 3,
+            hiddenWeights1: [],
+            hiddenWeights2: [],
+            outputWeights: [],
+            trainedSamples: 0,
+            lastLoss: NaN,
+            isTraining: false,
+            isTrained: false,
+            storageKey: 'ciwsNeuralControllerV7',
+            lastInputs: [],
+            lastHidden1: [],
+            lastHidden2: [],
+            lastOutputs: [],
+            liveReplay: [],
+            liveValidation: [],
+            observedSamples: 0,
+            activationSource: 'IDLE',
+
+            reset() {
+                this.hiddenWeights1 = [];
+                this.hiddenWeights2 = [];
+                this.outputWeights = [];
+
+                const hidden1Scale = Math.sqrt(2 / (this.inputCount + this.hiddenCount1));
+                const hidden2Scale = Math.sqrt(2 / (this.hiddenCount1 + this.hiddenCount2));
+                const outputScale = Math.sqrt(2 / (this.hiddenCount2 + this.outputCount));
+
+                for (let h = 0; h < this.hiddenCount1; h++) {
+                    const row = [];
+                    for (let i = 0; i <= this.inputCount; i++) {
+                        row.push(randomSigned(hidden1Scale));
+                    }
+                    this.hiddenWeights1.push(row);
+                }
+
+                for (let h = 0; h < this.hiddenCount2; h++) {
+                    const row = [];
+                    for (let i = 0; i <= this.hiddenCount1; i++) {
+                        row.push(randomSigned(hidden2Scale));
+                    }
+                    this.hiddenWeights2.push(row);
+                }
+
+                for (let o = 0; o < this.outputCount; o++) {
+                    const row = [];
+                    for (let h = 0; h <= this.hiddenCount2; h++) {
+                        row.push(randomSigned(outputScale));
+                    }
+                    this.outputWeights.push(row);
+                }
+
+                this.trainedSamples = 0;
+                this.lastLoss = NaN;
+                this.isTrained = false;
+                this.lastInputs = new Array(this.inputCount).fill(0);
+                this.lastHidden1 = new Array(this.hiddenCount1).fill(0);
+                this.lastHidden2 = new Array(this.hiddenCount2).fill(0);
+                this.lastOutputs = new Array(this.outputCount).fill(0);
+                this.liveReplay = [];
+                this.liveValidation = [];
+                this.observedSamples = 0;
+                this.activationSource = 'IDLE';
+            },
+
+            canLoadState(state) {
+                return state &&
+                    state.inputCount === this.inputCount &&
+                    state.hiddenCount1 === this.hiddenCount1 &&
+                    state.hiddenCount2 === this.hiddenCount2 &&
+                    state.outputCount === this.outputCount &&
+                    Array.isArray(state.hiddenWeights1) &&
+                    Array.isArray(state.hiddenWeights2) &&
+                    Array.isArray(state.outputWeights);
+            },
+
+            save() {
+                if (!this.isTrained) return;
+
+                const state = {
+                    inputCount: this.inputCount,
+                    hiddenCount1: this.hiddenCount1,
+                    hiddenCount2: this.hiddenCount2,
+                    outputCount: this.outputCount,
+                    hiddenWeights1: this.hiddenWeights1,
+                    hiddenWeights2: this.hiddenWeights2,
+                    outputWeights: this.outputWeights,
+                    trainedSamples: this.trainedSamples,
+                    lastLoss: this.lastLoss,
+                    savedAt: Date.now()
+                };
+
+                localStorage.setItem(this.storageKey, JSON.stringify(state));
+            },
+
+            load() {
+                const raw = localStorage.getItem(this.storageKey);
+                if (!raw) return false;
+
+                try {
+                    const state = JSON.parse(raw);
+                    if (!this.canLoadState(state)) return false;
+
+                    this.hiddenWeights1 = state.hiddenWeights1;
+                    this.hiddenWeights2 = state.hiddenWeights2;
+                    this.outputWeights = state.outputWeights;
+                    this.trainedSamples = Number.isFinite(state.trainedSamples) ? state.trainedSamples : 0;
+                    this.lastLoss = Number.isFinite(state.lastLoss) ? state.lastLoss : NaN;
+                    this.isTrained = this.trainedSamples > 0;
+                    this.isTraining = false;
+                    this.lastInputs = new Array(this.inputCount).fill(0);
+                    this.lastHidden1 = new Array(this.hiddenCount1).fill(0);
+                    this.lastHidden2 = new Array(this.hiddenCount2).fill(0);
+                    this.lastOutputs = new Array(this.outputCount).fill(0);
+                    this.liveReplay = [];
+                    this.liveValidation = [];
+                    this.observedSamples = 0;
+                    this.activationSource = 'LOADED';
+                    return this.isTrained;
+                } catch (err) {
+                    console.warn('Could not load neural controller state', err);
+                    return false;
+                }
+            },
+
+            forwardDetailed(inputs) {
+                const hidden1 = new Array(this.hiddenCount1);
+
+                for (let h = 0; h < this.hiddenCount1; h++) {
+                    let sum = this.hiddenWeights1[h][this.inputCount]; // bias
+                    for (let i = 0; i < this.inputCount; i++) {
+                        sum += this.hiddenWeights1[h][i] * inputs[i];
+                    }
+                    hidden1[h] = Math.tanh(sum);
+                }
+
+                const hidden2 = new Array(this.hiddenCount2);
+                for (let h = 0; h < this.hiddenCount2; h++) {
+                    let sum = this.hiddenWeights2[h][this.hiddenCount1]; // bias
+                    for (let i = 0; i < this.hiddenCount1; i++) {
+                        sum += this.hiddenWeights2[h][i] * hidden1[i];
+                    }
+                    hidden2[h] = Math.tanh(sum);
+                }
+
+                const outputs = new Array(this.outputCount);
+                for (let o = 0; o < this.outputCount; o++) {
+                    let sum = this.outputWeights[o][this.hiddenCount2]; // bias
+                    for (let h = 0; h < this.hiddenCount2; h++) {
+                        sum += this.outputWeights[o][h] * hidden2[h];
+                    }
+                    outputs[o] = Math.tanh(sum);
+                }
+
+                this.lastInputs = inputs.slice();
+                this.lastHidden1 = hidden1.slice();
+                this.lastHidden2 = hidden2.slice();
+                this.lastOutputs = outputs.slice();
+                this.activationSource = this.isTraining
+                    ? 'TRAIN'
+                    : controllerMode === 'neural'
+                        ? 'RUN'
+                        : 'READY';
+
+                return { hidden1, hidden2, outputs };
+            },
+
+            predict(inputs) {
+                return this.forwardDetailed(inputs).outputs;
+            },
+
+            lossFor(outputs, targets) {
+                const yawError = outputs[0] - targets[0];
+                const pitchError = outputs[1] - targets[1];
+                const fireError = outputs[2] - targets[2];
+
+                return (
+                    NN_YAW_LOSS_WEIGHT * yawError * yawError +
+                    NN_PITCH_LOSS_WEIGHT * pitchError * pitchError +
+                    NN_FIRE_LOSS_WEIGHT * fireError * fireError
+                ) / NN_LOSS_WEIGHT_TOTAL;
+            },
+
+            evaluateReplayLoss() {
+                const samples = this.liveValidation.length ? this.liveValidation : this.liveReplay;
+                if (!samples.length) return NaN;
+
+                const count = Math.min(48, samples.length);
+                let loss = 0;
+
+                for (let i = 0; i < count; i++) {
+                    const sample = samples[Math.floor(Math.random() * samples.length)];
+                    loss += this.lossFor(this.predict(sample.inputs), sample.targets);
+                }
+
+                return loss / count;
+            },
+
+            trainOne(inputs, targets, learningRate) {
+                const { hidden1, hidden2, outputs } = this.forwardDetailed(inputs);
+                const outputDeltas = new Array(this.outputCount);
+                const outputGradients = new Array(this.outputCount);
+
+                const yawError = outputs[0] - targets[0];
+                const pitchError = outputs[1] - targets[1];
+                const fireError = outputs[2] - targets[2];
+
+                const loss = this.lossFor(outputs, targets);
+
+                outputGradients[0] = (2 * NN_YAW_LOSS_WEIGHT * yawError) / NN_LOSS_WEIGHT_TOTAL;
+                outputGradients[1] = (2 * NN_PITCH_LOSS_WEIGHT * pitchError) / NN_LOSS_WEIGHT_TOTAL;
+                outputGradients[2] = (2 * NN_FIRE_LOSS_WEIGHT * fireError) / NN_LOSS_WEIGHT_TOTAL;
+
+                for (let o = 0; o < this.outputCount; o++) {
+                    outputDeltas[o] = outputGradients[o] * (1 - outputs[o] * outputs[o]);
+                }
+
+                const hidden2Deltas = new Array(this.hiddenCount2).fill(0);
+                for (let h = 0; h < this.hiddenCount2; h++) {
+                    let downstream = 0;
+                    for (let o = 0; o < this.outputCount; o++) {
+                        downstream += outputDeltas[o] * this.outputWeights[o][h];
+                    }
+                    hidden2Deltas[h] = downstream * (1 - hidden2[h] * hidden2[h]);
+                }
+
+                const hidden1Deltas = new Array(this.hiddenCount1).fill(0);
+                for (let h = 0; h < this.hiddenCount1; h++) {
+                    let downstream = 0;
+                    for (let next = 0; next < this.hiddenCount2; next++) {
+                        downstream += hidden2Deltas[next] * this.hiddenWeights2[next][h];
+                    }
+                    hidden1Deltas[h] = downstream * (1 - hidden1[h] * hidden1[h]);
+                }
+
+                for (let o = 0; o < this.outputCount; o++) {
+                    for (let h = 0; h < this.hiddenCount2; h++) {
+                        this.outputWeights[o][h] -= learningRate * outputDeltas[o] * hidden2[h];
+                    }
+                    this.outputWeights[o][this.hiddenCount2] -= learningRate * outputDeltas[o];
+                }
+
+                for (let h = 0; h < this.hiddenCount2; h++) {
+                    for (let i = 0; i < this.hiddenCount1; i++) {
+                        this.hiddenWeights2[h][i] -= learningRate * hidden2Deltas[h] * hidden1[i];
+                    }
+                    this.hiddenWeights2[h][this.hiddenCount1] -= learningRate * hidden2Deltas[h];
+                }
+
+                for (let h = 0; h < this.hiddenCount1; h++) {
+                    for (let i = 0; i < this.inputCount; i++) {
+                        this.hiddenWeights1[h][i] -= learningRate * hidden1Deltas[h] * inputs[i];
+                    }
+                    this.hiddenWeights1[h][this.inputCount] -= learningRate * hidden1Deltas[h];
+                }
+
+                return loss;
+            },
+
+            rememberLiveSample(inputs, targets) {
+                const sample = {
+                    inputs: inputs.slice(),
+                    targets: targets.slice()
+                };
+
+                this.observedSamples++;
+
+                if (this.observedSamples % 5 === 0) {
+                    this.liveValidation.push(sample);
+                    if (this.liveValidation.length > NN_LIVE_VALIDATION_LIMIT) {
+                        this.liveValidation.shift();
+                    }
+                    return;
+                }
+
+                this.liveReplay.push(sample);
+
+                if (this.liveReplay.length > NN_LIVE_REPLAY_LIMIT) {
+                    this.liveReplay.shift();
+                }
+            },
+
+            trainFromLiveReplay(updateCount) {
+                if (this.liveReplay.length === 0) return;
+
+                let loss = 0;
+                for (let i = 0; i < updateCount; i++) {
+                    const sample = this.liveReplay[Math.floor(Math.random() * this.liveReplay.length)];
+                    loss += this.trainOne(sample.inputs, sample.targets, NN_LEARNING_RATE);
+                }
+
+                this.trainedSamples += updateCount;
+                this.lastLoss = this.evaluateReplayLoss();
+                this.isTrained = true;
+            },
+
+            decide(targetPos, targetVelocity, isMortar, targetInfo, muzzlePos) {
+                const D = targetPos.clone().sub(muzzlePos);
+                const inputs = makeControllerInputs(D, targetVelocity, isMortar, targetInfo);
+                const outputs = this.predict(inputs);
+                const sight = computeSightAngles(targetPos, muzzlePos);
+                const yawDelta = THREE.MathUtils.clamp(outputs[0], -1, 1) * NN_DELTA_YAW_SCALE;
+                const pitchDelta = THREE.MathUtils.clamp(outputs[1], -1, 1) * NN_DELTA_PITCH_SCALE;
+                const fireConfidence = THREE.MathUtils.clamp((outputs[2] + 1) / 2, 0, 1);
+
+                return {
+                    targetYaw: wrapAngle(sight.targetYaw + yawDelta),
+                    targetPitch: sight.targetPitch + pitchDelta,
+                    canFire: fireConfidence > 0.56,
+                    fireConfidence
+                };
+            }
+        };
+
+        NeuralController.reset();
+
+        function setControllerMode(mode) {
+            controllerMode = mode === 'neural' ? 'neural' : 'classic';
+
+            const statusText = document.getElementById('status-text');
+            if (statusText && !isGameOver) {
+                statusText.style.color = controllerMode === 'neural' ? '#0ff' : '#0f0';
+                statusText.innerText = controllerMode === 'neural' ? 'NEURAL-IMITATION' : 'AUTO-ENGAGE';
+            }
+
+            updateMLPanel();
+        }
+
+        function trainNeuralImitation() {
+            if (NeuralController.isTraining) {
+                NeuralController.isTraining = false;
+                if (NeuralController.isTrained) {
+                    NeuralController.save();
+                    setControllerMode('neural');
+                }
+                updateMLPanel();
+                return;
+            }
+
+            NeuralController.isTraining = true;
+            setControllerMode('classic');
+            updateMLPanel();
+        }
+
+        function rebootSystem() {
+            if (NeuralController.isTraining) {
+                NeuralController.isTraining = false;
+            }
+
+            NeuralController.save();
+            location.reload();
+        }
+
         function toggleAudioDebug() {
             isAudioDebugVisible = !isAudioDebugVisible;
             updateAudioDebugOverlay();
@@ -656,6 +1331,10 @@ Explosions
             if (savedHighScore) {
                 highScore = parseInt(savedHighScore);
                 document.getElementById('high-score').innerText = highScore;
+            }
+
+            if (NeuralController.load()) {
+                setControllerMode('neural');
             }
 
             // Initialize start time
@@ -1300,6 +1979,70 @@ Explosions
             return dist / speed;
         }
 
+        function getMuzzlePosition() {
+            const muzzlePos = new THREE.Vector3(0, 0, 3.5);
+            muzzlePos.applyMatrix4(barrels.matrixWorld);
+            return muzzlePos;
+        }
+
+        function computeSightAngles(targetPos, muzzlePos) {
+            const localTarget = targetPos.clone().sub(muzzlePos);
+            const targetYaw = Math.atan2(localTarget.x, localTarget.z);
+            const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
+            const targetPitch = -Math.atan2(localTarget.y, xzDist);
+
+            return { targetYaw, targetPitch };
+        }
+
+        function computeAimSolution(targetPos, targetVelocity, isMortar, muzzlePos) {
+            const D = targetPos.clone().sub(muzzlePos);
+            const V = targetVelocity.clone();
+            const S = BULLET_SPEED;
+
+            let aimPoint = null;
+            let interceptSteps = solveInterceptSteps(D, V, S);
+
+            if (isMortar) {
+                if (interceptSteps !== null) {
+                    aimPoint = targetPos.clone().addScaledVector(V, interceptSteps);
+                } else {
+                    aimPoint = targetPos;
+                }
+            } else if (interceptSteps !== null) {
+                const predictedPos = targetPos.clone().addScaledVector(V, interceptSteps);
+                const bulletDrop = 0.5 * GRAVITY * interceptSteps * interceptSteps;
+                aimPoint = predictedPos.clone();
+                aimPoint.y += bulletDrop;
+            } else {
+                aimPoint = targetPos;
+            }
+
+            const aimAngles = computeSightAngles(aimPoint, muzzlePos);
+
+            return {
+                aimPoint,
+                targetYaw: aimAngles.targetYaw,
+                targetPitch: aimAngles.targetPitch,
+                interceptSteps,
+                canFire: interceptSteps !== null,
+                fireConfidence: interceptSteps !== null ? 1 : 0
+            };
+        }
+
+        function getControllerDecision(target, targetPos, targetVelocity, muzzlePos) {
+            if (controllerMode === 'neural') {
+                return NeuralController.decide(
+                    targetPos,
+                    targetVelocity,
+                    target.isMortar,
+                    target.targetInfo,
+                    muzzlePos
+                );
+            }
+
+            return computeAimSolution(targetPos, targetVelocity, target.isMortar, muzzlePos);
+        }
+
         function randomRadarTrackVector(magnitude) {
             const vec = new THREE.Vector3(
                 (Math.random() * 2 - 1) * magnitude,
@@ -1514,63 +2257,31 @@ Explosions
             isFiring = false;
 
             if (target) {
-                // Calculate Yaw (Left/Right)
                 const targetPos = (target.trackedPosition || target.mesh.position).clone();
+                const targetVelocity = (target.trackedVelocity || target.velocity).clone();
+                const muzzlePos = getMuzzlePosition();
+                const teacherDecision = computeAimSolution(targetPos, targetVelocity, target.isMortar, muzzlePos);
 
-                // Get actual muzzle position (where bullets spawn from)
-                const muzzlePos = new THREE.Vector3(0, 0, 3.5);
-                muzzlePos.applyMatrix4(barrels.matrixWorld);
-
-                const D = targetPos.clone().sub(muzzlePos);
-                const V = (target.trackedVelocity || target.velocity).clone();      // per-step velocity
-                const S = BULLET_SPEED;                 // per-step bullet speed
-
-                let aimPoint = null;
-                let interceptSteps = null;
-
-                if (target.isMortar) {
-                    interceptSteps = solveInterceptSteps(D, V, S);
-                    if (interceptSteps !== null) {
-                        aimPoint = targetPos.clone().addScaledVector(V, interceptSteps);
-                    } else {
-                        // Fallback: aim at current position if no valid solution
-                        aimPoint = targetPos;
-                    }
-                } else {
-                    interceptSteps = solveInterceptSteps(D, V, S);
-
-                    if (interceptSteps !== null) {
-                        // Predicted missile position ignoring gravity
-                        const predictedPos = targetPos.clone().addScaledVector(V, interceptSteps);
-
-                        // Bullet drop over 'interceptSteps' when subject to GRAVITY per step and
-                        // starting with the current muzzle velocity.
-                        //
-                        // Vertical displacement due to constant acceleration:
-                        //   drop = 0.5 * GRAVITY * t^2
-                        //
-                        // Here t = interceptSteps (in sim-steps).
-                        const bulletDrop = 0.5 * GRAVITY * interceptSteps * interceptSteps;
-
-                        // Aim above predicted missile position by 'bulletDrop'
-                        aimPoint = predictedPos.clone();
-                        aimPoint.y += bulletDrop;
-                    } else {
-                        // Fallback: aim at current position if no valid solution
-                        aimPoint = targetPos;
-                    }
+                if (NeuralController.isTraining) {
+                    NeuralController.rememberLiveSample(
+                        makeControllerInputs(targetPos.clone().sub(muzzlePos), targetVelocity, target.isMortar, target.targetInfo),
+                        makeControllerTargets(teacherDecision, targetPos, muzzlePos)
+                    );
+                    NeuralController.trainFromLiveReplay(NN_LIVE_TRAIN_STEPS);
                 }
 
-                // Compute local vector from muzzle to aimPoint
-                const localTarget = aimPoint.clone().sub(muzzlePos);
+                const decision = getControllerDecision(target, targetPos, targetVelocity, muzzlePos);
+                lastNeuralConfidence = controllerMode === 'neural' ? decision.fireConfidence : null;
 
-                const targetYaw = Math.atan2(localTarget.x, localTarget.z);
-                const xzDist = Math.sqrt(localTarget.x * localTarget.x + localTarget.z * localTarget.z);
-                const targetPitch = -Math.atan2(localTarget.y, xzDist);
+                const yawAimError = wrapAngle(decision.targetYaw - teacherDecision.targetYaw);
+                const pitchAimError = decision.targetPitch - teacherDecision.targetPitch;
+                lastNeuralAimError = (controllerMode === 'neural' || NeuralController.isTraining)
+                    ? Math.sqrt(yawAimError * yawAimError + pitchAimError * pitchAimError) * THREE.MathUtils.RAD2DEG
+                    : null;
 
                 const yawTraverse = stepTraverseAxis(
                     turretYaw.rotation.y,
-                    targetYaw,
+                    decision.targetYaw,
                     turretYawRate,
                     simSteps,
                     true
@@ -1580,7 +2291,7 @@ Explosions
 
                 const pitchTraverse = stepTraverseAxis(
                     turretPitch.rotation.x,
-                    targetPitch,
+                    decision.targetPitch,
                     turretPitchRate,
                     simSteps
                 );
@@ -1597,10 +2308,10 @@ Explosions
                 isFiring = false;
 
                 // Only fire when:
-                //  - we have a valid interceptSteps
+                //  - the active controller says the intercept is fireable
                 //  - angular errors are small
                 //  - cooldown expired
-                if (interceptSteps !== null &&
+                if (decision.canFire &&
                     yawError < YAW_FIRE_THRESHOLD &&
                     pitchError < PITCH_FIRE_THRESHOLD &&
                     fireCooldown <= 0) {
@@ -1621,6 +2332,9 @@ Explosions
                 barrels.rotation.z += currentBarrelSpeed * simSteps;
 
             } else {
+                lastNeuralConfidence = null;
+                lastNeuralAimError = null;
+
                 const yawTraverse = stepTraverseAxis(
                     turretYaw.rotation.y,
                     turretYaw.rotation.y,
@@ -1791,6 +2505,9 @@ Explosions
         window.toggleCameraFollow = toggleCameraFollow;
         window.toggleMute = toggleMute;
         window.toggleSlowMo = toggleSlowMo;
+        window.setControllerMode = setControllerMode;
+        window.trainNeuralImitation = trainNeuralImitation;
+        window.rebootSystem = rebootSystem;
 
         function updateCameraFollow() {
             if (cameraMode === 0) return;
@@ -1886,6 +2603,7 @@ Explosions
             updateLogic(simSteps);
             updateRadar();
             updateAudioDebugOverlay();
+            updateMLPanel();
             updateCameraFollow();
 
             if (cameraMode === 0) {
