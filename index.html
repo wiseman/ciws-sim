@@ -506,6 +506,10 @@
                 <span>SLOW MOTION</span>
                 <span id="slowmo-status">OFF</span>
             </div>
+            <div id="spatial-toggle" class="toggle-btn" onclick="cycleSpatialMode()" title="How exaggerated stereo and positional audio is">
+                <span>SPATIAL</span>
+                <span id="spatial-status">EXTREME</span>
+            </div>
         </div>
 
         <div id="audio-debug" class="panel">
@@ -627,9 +631,12 @@
         const FRIENDLY_COUNT = 5;
         const FRIENDLY_AREA = 100; // Half-size for 200x200 grid coverage
         const ROUND_LIFE_STEPS = 60; // rounds self-destruct after this many sim steps
+        // Life ticks down before each move and a round bursts when it hits zero, so it only
+        // moves on 59 of its 60 steps
+        const ROUND_TRAVEL_STEPS = ROUND_LIFE_STEPS - 1;
         // Neural fire control. The net sees each target in its line-of-sight frame, so the
         // same engagement looks identical from any bearing.
-        const NN_REACH = BULLET_SPEED * ROUND_LIFE_STEPS; // how far a round can travel
+        const NN_REACH = BULLET_SPEED * ROUND_TRAVEL_STEPS; // how far a round can travel
         const NN_YAW_SCALE = 0.15;   // rad of sideways lead (yaw lead × cos elevation) per output unit
         const NN_PITCH_SCALE = 0.3;  // rad of pitch lead per output unit
         const NN_FIRE_LOSS_WEIGHT = 0.2;
@@ -678,6 +685,25 @@
         // camera as the listener, delayed by the speed of sound and muffled with distance.
         const SPEED_OF_SOUND = 343; // units/s (1 unit ≈ 1 m)
 
+        // How hard the spatializer pushes direction and distance cues. NATURAL is roughly
+        // lifelike; WIDE and EXTREME deliberately exaggerate everything.
+        //   panGain: pan = sideways component × panGain, so > 1 goes hard before 90° off-axis
+        //   itd: extra delay (s) at the far ear; shadowHz: far-ear treble cut at full pan
+        //   rearHz / rearDuck: muffling and level drop for sources behind the camera
+        //   rolloff: distance falloff; doppler: pitch-shift multiplier
+        //   whizzRadius: rounds passing closer than this snap past (0 = off)
+        //   sideScale: how much centred stereo width one-shots keep
+        //   reverbFalloff: how fast echoes fade with distance; reverbPan: how far a source's
+        //   echo leans toward its own side
+        const SPATIAL_PROFILES = {
+            natural: { label: 'NATURAL', panGain: 0.9, itd: 0.0007, shadowHz: 7000, rearHz: 9000, rearDuck: 0.15, rolloff: 1, doppler: 1, whizzRadius: 0, windSweep: 0.2, sideScale: 1, reverbFalloff: 0, reverbPan: 0 },
+            wide: { label: 'WIDE', panGain: 1.35, itd: 0.0011, shadowHz: 3500, rearHz: 4500, rearDuck: 0.25, rolloff: 1.25, doppler: 1.7, whizzRadius: 7, windSweep: 0.55, sideScale: 0.7, reverbFalloff: 0.4, reverbPan: 0.5 },
+            extreme: { label: 'EXTREME', panGain: 1.8, itd: 0.0016, shadowHz: 1800, rearHz: 2000, rearDuck: 0.35, rolloff: 1.5, doppler: 2.6, whizzRadius: 11, windSweep: 0.9, sideScale: 0.45, reverbFalloff: 0.6, reverbPan: 0.85 }
+        };
+        const SPATIAL_MODES = Object.keys(SPATIAL_PROFILES);
+        const GUN_SPATIAL_LIMITS = { maxPan: 0.2, cueScale: 0.25 };
+        const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, 4, 0);
+
         // Small offline DSP toolkit for building buffers
         const DSP = {
             // RBJ biquad, returns a stateful per-sample processor
@@ -705,6 +731,9 @@
                 const a = Math.exp(-2 * Math.PI * freq / sr);
                 let y = 0;
                 return x => (y = x * (1 - a) + y * a);
+            },
+            white() {
+                return () => Math.random() * 2 - 1;
             },
             brown() {
                 let y = 0;
@@ -735,6 +764,20 @@
                 let max = 0;
                 for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
                 if (max > 0) for (let i = 0; i < data.length; i++) data[i] *= peak / max;
+            },
+            // tanh soft-clip curve for a WaveShaperNode, cached by its settings
+            _curves: new Map(),
+            softClipCurve(drive, size = 1024, normalized = false) {
+                const key = `${drive}|${size}|${normalized}`;
+                if (!DSP._curves.has(key)) {
+                    const curve = new Float32Array(size);
+                    const norm = normalized ? Math.tanh(drive) : 1;
+                    for (let i = 0; i < size; i++) {
+                        curve[i] = Math.tanh(((i / (size - 1)) * 2 - 1) * drive) / norm;
+                    }
+                    DSP._curves.set(key, curve);
+                }
+                return DSP._curves.get(key);
             }
         };
 
@@ -750,27 +793,35 @@
             lastFlakTime: 0,
             activeOneShots: 0,
             slowPitch: 1,
+            spatialMode: 'extreme',
+            lastWhizzTime: 0,
+            frameId: 0,
+            soundArrivals: [], // audio-clock times when delayed explosion sounds reach the listener
             debugState: {
-                initialized: false,
-                muted: true,
-                masterGain: 0,
-                gun: { firing: false, rate: 0, shots: 0 },
+                gun: { firing: false, shots: 0 },
                 drive: { spin: 0, freq: 0 },
                 traverse: { level: 0, freq: 0 },
-                threats: { drones: 0, mortars: 0 },
-                explosions: { pending: 0, active: 0, lastKind: '-', lastDistance: 0 },
+                threats: { drones: 0, mortars: 0, nearMisses: 0 },
+                explosions: { lastKind: '-', lastDistance: 0 },
                 ambient: { sea: 0, wind: 0 }
             },
 
             init: function () {
                 if (this.isInit) return;
                 const AudioContext = window.AudioContext || window.webkitAudioContext;
-                this.ctx = new AudioContext();
-                const ctx = this.ctx;
+                this.buildGraph(new AudioContext());
+                this.masterGain.gain.value = this.isMuted ? 0 : 1;
+                this.isInit = true;
+                console.log("Audio Initialized");
+            },
+
+            // Builds the whole audio graph on a context. The game uses a live AudioContext;
+            // tools/audio_lab.py renders the same graph into an OfflineAudioContext.
+            buildGraph: function (ctx) {
+                this.ctx = ctx;
 
                 // Master: mute gain -> limiter -> out. Everything else mixes into mixBus.
-                this.masterGain = ctx.createGain();
-                this.masterGain.gain.value = this.isMuted ? 0 : 1;
+                this.masterGain = this.gain(1);
                 const limiter = ctx.createDynamicsCompressor();
                 limiter.threshold.value = -8;
                 limiter.knee.value = 6;
@@ -781,54 +832,151 @@
                 limiter.connect(ctx.destination);
                 this.output = limiter; // tap point for recording
 
-                this.mixBus = ctx.createGain();
+                this.mixBus = this.gain(1);
                 this.mixBus.connect(this.masterGain);
 
-                // Outdoor "space": a few early reflections off the ship plus a short sparse tail
+                // Outdoor "space": a few early reflections off the ship plus a short sparse tail.
+                // Sends arrive through a stereo panner; each input channel convolves with its own
+                // IR channel, so a centred send fills both sides and a panned one echoes from its side.
                 this.reverb = ctx.createConvolver();
                 this.reverb.buffer = this.buildReverbIR();
-                this.reverbReturn = ctx.createGain();
-                this.reverbReturn.gain.value = 0.55;
-                this.reverb.connect(this.reverbReturn);
-                this.reverbReturn.connect(this.mixBus);
+                const reverbReturn = this.gain(0.55);
+                this.reverb.connect(reverbReturn);
+                reverbReturn.connect(this.mixBus);
+
+                // Shared side bus: one mono "side" signal from every sound, sent +S left / -S right
+                this.sideBus = this.gain(1);
+                const invert = this.gain(-1);
+                const sideMerger = ctx.createChannelMerger(2);
+                this.sideBus.connect(sideMerger, 0, 0);
+                this.sideBus.connect(invert);
+                invert.connect(sideMerger, 0, 1);
+                sideMerger.connect(this.mixBus);
 
                 this.buildBuffers();
+                this.noiseLoop = this.makeLoopBuffer(3, 1, DSP.white); // shared by the gearbox grind and mortar rush
                 this.buildGun();
                 this.buildMount();
                 this.buildAmbient();
-
-                this.debugState.initialized = true;
-                this.debugState.muted = this.isMuted;
-                this.debugState.masterGain = this.isMuted ? 0 : 1;
-                this.isInit = true;
-                console.log("Audio Initialized");
             },
 
-            makePanner: function (refDistance, hrtf = true) {
-                const p = this.ctx.createPanner();
-                p.panningModel = hrtf ? 'HRTF' : 'equalpower';
-                p.distanceModel = 'inverse';
-                p.refDistance = refDistance;
-                p.maxDistance = 10000;
-                p.rolloffFactor = 1;
-                return p;
+            gain: function (value) {
+                const g = this.ctx.createGain();
+                g.gain.value = value;
+                return g;
             },
 
-            setPannerPosition: function (panner, v, smoothing = 0) {
-                if (panner.positionX) {
-                    const t = this.ctx.currentTime;
-                    if (smoothing > 0) {
-                        panner.positionX.setTargetAtTime(v.x, t, smoothing);
-                        panner.positionY.setTargetAtTime(v.y, t, smoothing);
-                        panner.positionZ.setTargetAtTime(v.z, t, smoothing);
-                    } else {
-                        panner.positionX.value = v.x;
-                        panner.positionY.value = v.y;
-                        panner.positionZ.value = v.z;
-                    }
+            filter: function (type, frequency, q) {
+                const f = this.ctx.createBiquadFilter();
+                f.type = type;
+                f.frequency.value = frequency;
+                if (q !== undefined) f.Q.value = q;
+                return f;
+            },
+
+            // Starts oscillators into dest; rows are [frequency, type, gain]
+            oscBank: function (rows, dest) {
+                return rows.map(([frequency, type, level]) => {
+                    const o = this.ctx.createOscillator();
+                    o.type = type;
+                    o.frequency.value = frequency;
+                    const g = this.gain(level);
+                    o.connect(g);
+                    g.connect(dest);
+                    o.start();
+                    return o;
+                });
+            },
+
+            // Moves a parameter smoothly, but only when its value really changes, so steady
+            // sources don't queue a fresh automation event on the audio thread every frame
+            setParam: function (param, value, timeConstant) {
+                if (param._target !== undefined && Math.abs(param._target - value) <= Math.abs(value) * 1e-3 + 1e-5) return;
+                param._target = value;
+                if (timeConstant > 0) param.setTargetAtTime(value, this.ctx.currentTime, timeConstant);
+                else param.value = value;
+            },
+
+            // A small binaural-style spatializer: level, timing and head-shadow differences between
+            // the ears, a muffled "behind you" cue and distance falloff, scaled by the spatial mode.
+            // Takes mono in and gives stereo out; call updateSpatializer to move it.
+            // limits.maxPan caps how far it can pan; limits.cueScale scales the timing, head-shadow
+            // and behind cues. Used for sources the camera rides right next to.
+            makeSpatializer: function (refDistance, limits = {}) {
+                const ctx = this.ctx;
+                const input = this.gain(1); // carries level × distance gain
+                input.channelCount = 1;
+                input.channelCountMode = 'explicit';
+                const rear = this.filter('lowpass', 20000);
+                input.connect(rear);
+                const output = ctx.createChannelMerger(2);
+                const ears = [0, 1].map(channel => {
+                    const delay = ctx.createDelay(0.01);
+                    const shadow = this.filter('lowpass', 20000);
+                    const gain = this.gain(1);
+                    rear.connect(delay);
+                    delay.connect(shadow);
+                    shadow.connect(gain);
+                    gain.connect(output, 0, channel);
+                    return { delay, shadow, gain };
+                });
+                return {
+                    input, output, rear, ears, refDistance,
+                    level: 1,
+                    maxPan: limits.maxPan ?? 1,
+                    cueScale: limits.cueScale ?? 1,
+                    nodes: [input, rear, output, ...ears.flatMap(e => [e.delay, e.shadow, e.gain])]
+                };
+            },
+
+            _rel: new THREE.Vector3(),
+            _invCam: new THREE.Quaternion(),
+            _muzzle: new THREE.Vector3(),
+            _toListener: new THREE.Vector3(),
+            _segStart: new THREE.Vector3(),
+            _segClosest: new THREE.Vector3(),
+            _seg: new THREE.Vector3(),
+
+            // Camera orientation used by every spatializer this frame
+            refreshListener: function () {
+                this._invCam.copy(camera.quaternion).invert();
+            },
+
+            updateSpatializer: function (sp, position, smoothing = 0.03) {
+                const P = SPATIAL_PROFILES[this.spatialMode];
+                const rel = this._rel.subVectors(position, camera.position);
+                const distance = rel.length();
+                if (distance > 1e-4) {
+                    rel.applyQuaternion(this._invCam).divideScalar(distance);
                 } else {
-                    panner.setPosition(v.x, v.y, v.z);
+                    rel.set(0, 0, -1);
                 }
+                // rel is now in camera space: +x right, +y up, -z straight ahead
+                const pan = THREE.MathUtils.clamp(rel.x * P.panGain, -sp.maxPan, sp.maxPan);
+                const amount = Math.abs(pan) * sp.cueScale;
+                const behind = Math.max(0, rel.z) * sp.cueScale;
+                const angle = (pan + 1) * Math.PI / 4;
+                const far = pan > 0 ? 0 : 1;
+                const distanceGain = sp.refDistance / (sp.refDistance + P.rolloff * Math.max(0, distance - sp.refDistance));
+                sp.pan = pan;
+                sp.distanceGain = distanceGain;
+
+                this.setParam(sp.input.gain, sp.level * distanceGain * (1 - P.rearDuck * behind), smoothing);
+                this.setParam(sp.rear.frequency, 20000 * Math.pow(P.rearHz / 20000, behind), smoothing);
+                for (let i = 0; i < 2; i++) {
+                    const ear = sp.ears[i];
+                    this.setParam(ear.gain.gain, (i === 0 ? Math.cos(angle) : Math.sin(angle)) * 1.2, smoothing);
+                    this.setParam(ear.delay.delayTime, i === far ? amount * P.itd : 0, smoothing);
+                    this.setParam(ear.shadow.frequency, i === far ? 20000 * Math.pow(P.shadowHz / 20000, amount) : 20000, smoothing);
+                }
+                return distance;
+            },
+
+            setSpatialMode: function (mode) {
+                this.spatialMode = SPATIAL_PROFILES[mode] ? mode : 'extreme';
+                safeStorageSet('ciwsSpatialMode', this.spatialMode);
+                const label = document.getElementById('spatial-status');
+                if (label) label.textContent = SPATIAL_PROFILES[this.spatialMode].label;
             },
 
             // Air absorption: distant sounds lose their highs
@@ -836,25 +984,30 @@
                 return Math.max(350, 18000 * Math.exp(-distance / 260));
             },
 
-            loopingNoise: function (seconds, channels, gen) {
+            // A seamlessly looping noise buffer: the first 50 ms is crossfaded with the end,
+            // and loopSource stops 50 ms early so the join is invisible
+            makeLoopBuffer: function (seconds, channels, gen) {
                 const sr = this.ctx.sampleRate;
                 const buf = this.ctx.createBuffer(channels, Math.floor(seconds * sr), sr);
+                const fade = Math.floor(sr * 0.05);
                 for (let c = 0; c < channels; c++) {
                     const d = buf.getChannelData(c);
                     const g = gen();
                     for (let i = 0; i < d.length; i++) d[i] = g();
-                    // Crossfade the ends so the loop is seamless
-                    const fade = Math.floor(sr * 0.05);
                     for (let i = 0; i < fade; i++) {
                         const k = i / fade;
                         d[i] = d[i] * k + d[d.length - fade + i] * (1 - k);
                     }
                     DSP.normalize(d, 0.9);
                 }
+                return buf;
+            },
+
+            loopSource: function (buffer) {
                 const src = this.ctx.createBufferSource();
-                src.buffer = buf;
+                src.buffer = buffer;
                 src.loop = true;
-                src.loopEnd = (buf.length - Math.floor(sr * 0.05)) / sr; // first 50 ms already blends into here
+                src.loopEnd = buffer.duration - 0.05;
                 return src;
             },
 
@@ -864,9 +1017,12 @@
                 const ir = this.ctx.createBuffer(2, len, sr);
                 for (let c = 0; c < 2; c++) {
                     const d = ir.getChannelData(c);
-                    // Early reflections: deck, superstructure, sea surface
-                    [[0.009, 0.5], [0.023, 0.35], [0.041, 0.25], [0.067, 0.15]].forEach(([t, g]) => {
-                        d[Math.floor((t + c * 0.0013) * sr)] += g * (Math.random() < 0.5 ? -1 : 1);
+                    // Early reflections off the deck, superstructure and sea, timed differently per ear
+                    const taps = c === 0
+                        ? [[0.009, 0.5], [0.027, 0.35], [0.046, 0.25], [0.071, 0.15]]
+                        : [[0.013, 0.5], [0.021, 0.35], [0.039, 0.25], [0.083, 0.15]];
+                    taps.forEach(([t, g]) => {
+                        d[Math.floor(t * sr)] += g * (Math.random() < 0.5 ? -1 : 1);
                     });
                     // Diffuse tail that darkens as it decays
                     let lp = 0;
@@ -880,12 +1036,33 @@
                 return ir;
             },
 
-            makeBufferFrom: function (seconds, fill, peak = 0.95) {
+            // Two-channel buffer holding mid (ch 0) and side (ch 1), not left/right. The mid is the
+            // sound itself; the side is a second, independent render of the same recipe with the
+            // lows removed, matched in level. Mid gets positioned by the spatializer and side adds
+            // width around it, so big sources sound wide without losing direction or muddying bass.
+            makeStereoBufferFrom: function (seconds, fill, peak = 0.95) {
                 const sr = this.ctx.sampleRate;
-                const buf = this.ctx.createBuffer(1, Math.floor(seconds * sr), sr);
-                const d = buf.getChannelData(0);
-                fill(d, sr);
-                DSP.normalize(d, peak);
+                const len = Math.floor(seconds * sr);
+                const mid = new Float32Array(len), side = new Float32Array(len);
+                fill(mid, sr);
+                fill(side, sr);
+                const hp = DSP.biquad('highpass', 220, 0.7, sr);
+                let midEnergy = 0, sideEnergy = 0;
+                for (let i = 0; i < len; i++) {
+                    side[i] = hp(side[i]);
+                    midEnergy += mid[i] * mid[i];
+                    sideEnergy += side[i] * side[i];
+                }
+                let max = 0;
+                for (let i = 0; i < len; i++) max = Math.max(max, Math.abs(mid[i]));
+                const midScale = max > 0 ? peak / max : 0;
+                const sideScale = sideEnergy > 0 ? midScale * Math.sqrt(midEnergy / sideEnergy) : 0;
+                const buf = this.ctx.createBuffer(2, len, sr);
+                const m = buf.getChannelData(0), sd = buf.getChannelData(1);
+                for (let i = 0; i < len; i++) {
+                    m[i] = mid[i] * midScale;
+                    sd[i] = side[i] * sideScale;
+                }
                 return buf;
             },
 
@@ -894,7 +1071,7 @@
                 const variants = (n, f) => Array.from({ length: n }, (_, i) => f(i));
 
                 // One 20 mm round: muzzle crack, blast, low thump, mechanism ring
-                B.shot = variants(6, () => this.makeBufferFrom(0.1, (d, sr) => {
+                B.shot = variants(6, () => this.makeStereoBufferFrom(0.1, (d, sr) => {
                     const blast = DSP.biquad('bandpass', 1500 * (0.85 + Math.random() * 0.3), 0.6, sr);
                     const sizzle = DSP.biquad('highpass', 3500, 0.7, sr);
                     const body = DSP.biquad('bandpass', 420, 0.8, sr);
@@ -918,7 +1095,7 @@
                 }));
 
                 // Large explosion: crack, sub boom, fireball roar, rolling rumble, crackle
-                B.big = variants(3, () => this.makeBufferFrom(4.5, (d, sr) => {
+                B.big = variants(3, () => this.makeStereoBufferFrom(4.5, (d, sr) => {
                     const crackHP = DSP.biquad('highpass', 900, 0.7, sr);
                     const boomLP = DSP.biquad('lowpass', 140, 0.9, sr);
                     const roarBP = DSP.biquad('bandpass', 500, 0.6, sr);
@@ -948,7 +1125,7 @@
                 }));
 
                 // Round striking the airframe: sharp crack plus a short metallic ring
-                B.hit = variants(4, () => this.makeBufferFrom(0.3, (d, sr) => {
+                B.hit = variants(4, () => this.makeStereoBufferFrom(0.3, (d, sr) => {
                     const hp = DSP.biquad('highpass', 1500, 0.7, sr);
                     const thud = DSP.biquad('lowpass', 400, 0.7, sr);
                     const partials = [1650, 2780, 4120, 6050].map(f => [f * (0.9 + Math.random() * 0.2), 0.3 + Math.random() * 0.6]);
@@ -962,7 +1139,7 @@
                 }));
 
                 // Self-destructing round: a flat "pop" with a short tail
-                B.pop = variants(4, () => this.makeBufferFrom(0.9, (d, sr) => {
+                B.pop = variants(4, () => this.makeStereoBufferFrom(0.9, (d, sr) => {
                     const hp = DSP.biquad('highpass', 700, 0.7, sr);
                     const lp = DSP.biquad('lowpass', 220, 0.8, sr);
                     const tail = DSP.biquad('bandpass', 350, 0.6, sr);
@@ -978,7 +1155,7 @@
                 }));
 
                 // Water column: plunge thump, a roaring hiss, then droplets raining back down
-                B.splash = variants(3, () => this.makeBufferFrom(2.4, (d, sr) => {
+                B.splash = variants(3, () => this.makeStereoBufferFrom(2.4, (d, sr) => {
                     const plunge = DSP.biquad('lowpass', 180, 0.8, sr);
                     const hiss = DSP.biquad('bandpass', 2200, 0.5, sr);
                     const drops = DSP.biquad('bandpass', 4500, 2, sr);
@@ -993,8 +1170,26 @@
                     }
                 }));
 
+                // Round passing close by: a supersonic snap, then a falling whoosh
+                B.whizz = variants(4, () => this.makeStereoBufferFrom(0.4, (d, sr) => {
+                    let low = 0, band = 0;
+                    const startHz = 3800 + Math.random() * 800, endHz = 700 + Math.random() * 300;
+                    for (let i = 0; i < d.length; i++) {
+                        const t = i / sr;
+                        const snap = t < 0.0008 ? 1 - 2 * (t / 0.0008) : 0;
+                        const fc = endHz + (startHz - endHz) * Math.exp(-t / 0.06);
+                        const f = 2 * Math.sin(Math.PI * fc / sr);
+                        const x = Math.random() * 2 - 1;
+                        low += f * band;
+                        const high = x - low - 0.35 * band;
+                        band += f * high;
+                        const env = Math.min(1, t / 0.006) * Math.exp(-t / 0.09);
+                        d[i] = snap * 1.4 + band * env * 0.9;
+                    }
+                }));
+
                 // Small wave slap against the hull
-                B.slap = variants(3, () => this.makeBufferFrom(0.8, (d, sr) => {
+                B.slap = variants(3, () => this.makeStereoBufferFrom(0.8, (d, sr) => {
                     const bp = DSP.biquad('bandpass', 700, 0.6, sr);
                     const lp = DSP.biquad('lowpass', 250, 0.7, sr);
                     for (let i = 0; i < d.length; i++) {
@@ -1008,143 +1203,106 @@
 
             buildGun: function () {
                 const ctx = this.ctx;
-                // Shots -> soft clip (the fused roar) -> panner at the muzzle
-                this.gunBus = ctx.createGain();
-                this.gunBus.gain.value = 0.32;
+                // Shots -> soft clip (the fused roar) -> spatializer at the muzzle
+                this.gunBus = this.gain(0.32);
                 const shaper = ctx.createWaveShaper();
-                const curve = new Float32Array(1024);
-                for (let i = 0; i < curve.length; i++) {
-                    const x = (i / (curve.length - 1)) * 2 - 1;
-                    curve[i] = Math.tanh(x * 2.2) / Math.tanh(2.2);
-                }
-                shaper.curve = curve;
+                shaper.curve = DSP.softClipCurve(2.2, 1024, true);
                 shaper.oversample = '2x';
-                this.gunPanner = this.makePanner(14);
-                this.gunBus.connect(shaper);
-                shaper.connect(this.gunPanner);
-                this.gunPanner.connect(this.mixBus);
-                const send = ctx.createGain();
-                send.gain.value = 0.35;
+                // The gun (and the mount below) only lean toward their side: in the PHALANX follow
+                // camera the gun sits right beside the listener and full panning puts it in one ear
+                this.gunSpatial = this.makeSpatializer(14, GUN_SPATIAL_LIMITS);
+                const split = ctx.createChannelSplitter(2);
+                this.gunBus.connect(split);
+                split.connect(shaper, 0);
+                shaper.connect(this.gunSpatial.input);
+                this.gunSpatial.output.connect(this.mixBus);
+                const side = this.gain(0.3);
+                split.connect(side, 1);
+                side.connect(this.sideBus);
+                const send = this.gain(0.35);
                 shaper.connect(send);
                 send.connect(this.reverb);
+
+                // Slapback off the deck and superstructure, arriving at slightly different times
+                const slap = ctx.createChannelMerger(2);
+                [[0, 0.013, 0.22], [1, 0.021, 0.2]].forEach(([channel, delay, level]) => {
+                    const d = ctx.createDelay(0.1);
+                    d.delayTime.value = delay;
+                    const lp = this.filter('lowpass', 3500);
+                    const g = this.gain(level);
+                    shaper.connect(d);
+                    d.connect(lp);
+                    lp.connect(g);
+                    g.connect(slap, 0, channel);
+                });
+                slap.connect(this.mixBus);
             },
 
             buildMount: function () {
                 const ctx = this.ctx;
-                this.mountPanner = this.makePanner(10);
-                this.mountPanner.connect(this.mixBus);
+                this.mountSpatial = this.makeSpatializer(10, GUN_SPATIAL_LIMITS);
+                this.mountSpatial.output.connect(this.mixBus);
+                const mount = this.mountSpatial.input;
 
                 // Gun drive: the barrel cluster's spin-up whine, harmonics tracking rotation
-                this.driveGain = ctx.createGain();
-                this.driveGain.gain.value = 0;
-                const driveFilter = ctx.createBiquadFilter();
-                driveFilter.type = 'bandpass';
-                driveFilter.frequency.value = 1400;
-                driveFilter.Q.value = 0.6;
-                this.driveOscs = [[1, 'sawtooth', 0.5], [2.01, 'triangle', 0.35], [3.98, 'sine', 0.2]].map(([mult, type, g]) => {
-                    const o = ctx.createOscillator();
-                    o.type = type;
-                    o.frequency.value = 200 * mult;
-                    const og = ctx.createGain();
-                    og.gain.value = g;
-                    o.connect(og);
-                    og.connect(driveFilter);
-                    o.start();
-                    return { osc: o, mult };
-                });
+                this.driveGain = this.gain(0);
+                const driveFilter = this.filter('bandpass', 1400, 0.6);
+                this.driveMults = [1, 2.01, 3.98];
+                this.driveOscs = this.oscBank([[200, 'sawtooth', 0.5], [402, 'triangle', 0.35], [796, 'sine', 0.2]], driveFilter);
                 driveFilter.connect(this.driveGain);
-                this.driveGain.connect(this.mountPanner);
+                this.driveGain.connect(mount);
 
                 // Traverse: servo motor whine that slides with slew rate, plus gearbox grind
-                this.servoGain = ctx.createGain();
-                this.servoGain.gain.value = 0;
-                this.servoOsc = ctx.createOscillator();
-                this.servoOsc.type = 'sawtooth';
-                this.servoOsc.frequency.value = 300;
-                this.servoFilter = ctx.createBiquadFilter();
-                this.servoFilter.type = 'bandpass';
-                this.servoFilter.Q.value = 3;
-                this.servoFilter.frequency.value = 450;
-                this.servoOsc.connect(this.servoFilter);
+                this.servoGain = this.gain(0);
+                this.servoFilter = this.filter('bandpass', 450, 3);
+                [this.servoOsc] = this.oscBank([[300, 'sawtooth', 1]], this.servoFilter);
                 this.servoFilter.connect(this.servoGain);
-                this.servoOsc.start();
+                this.servoGain.connect(mount);
 
-                const grind = this.loopingNoise(3, 1, () => () => Math.random() * 2 - 1);
-                const grindFilter = ctx.createBiquadFilter();
-                grindFilter.type = 'bandpass';
-                grindFilter.frequency.value = 190;
-                grindFilter.Q.value = 1.2;
-                this.grindGain = ctx.createGain();
-                this.grindGain.gain.value = 0;
+                const grind = this.loopSource(this.noiseLoop);
+                const grindFilter = this.filter('bandpass', 190, 1.2);
+                this.grindGain = this.gain(0);
                 grind.connect(grindFilter);
                 grindFilter.connect(this.grindGain);
+                this.grindGain.connect(mount);
                 grind.start();
-                this.servoGain.connect(this.mountPanner);
-                this.grindGain.connect(this.mountPanner);
 
                 // Idle electrical hum from the mount (400 Hz ship power, cooling fan)
-                const hum = ctx.createGain();
-                hum.gain.value = 0.004;
-                [[400, 'sine', 1], [800, 'sine', 0.35], [118, 'triangle', 0.6]].forEach(([f, type, g]) => {
-                    const o = ctx.createOscillator();
-                    o.type = type;
-                    o.frequency.value = f;
-                    const og = ctx.createGain();
-                    og.gain.value = g;
-                    o.connect(og);
-                    og.connect(hum);
-                    o.start();
-                });
-                hum.connect(this.mountPanner);
+                const hum = this.gain(0.004);
+                this.oscBank([[400, 'sine', 1], [800, 'sine', 0.35], [118, 'triangle', 0.6]], hum);
+                hum.connect(mount);
             },
 
             buildAmbient: function () {
                 const ctx = this.ctx;
-                this.ambientBus = ctx.createGain();
-                this.ambientBus.gain.value = 0.9;
+                this.ambientBus = this.gain(0.9);
                 this.ambientBus.connect(this.mixBus);
 
                 // Sea wash against the hull: stereo brown noise in slow swells
-                const sea = this.loopingNoise(9, 2, () => DSP.brown());
-                const seaLP = ctx.createBiquadFilter();
-                seaLP.type = 'lowpass';
-                seaLP.frequency.value = 1100;
-                const seaHP = ctx.createBiquadFilter();
-                seaHP.type = 'highpass';
-                seaHP.frequency.value = 90;
-                this.seaGain = ctx.createGain();
-                this.seaGain.gain.value = 0.04;
+                const sea = this.loopSource(this.makeLoopBuffer(9, 2, DSP.brown));
+                const seaHP = this.filter('highpass', 90);
+                const seaLP = this.filter('lowpass', 1100);
+                this.seaGain = this.gain(0.04);
                 sea.connect(seaHP);
                 seaHP.connect(seaLP);
                 seaLP.connect(this.seaGain);
                 this.seaGain.connect(this.ambientBus);
                 sea.start();
 
-                // Wind: stereo pink noise with gusts moving level and brightness
-                const wind = this.loopingNoise(7, 2, () => DSP.pink());
-                this.windFilter = ctx.createBiquadFilter();
-                this.windFilter.type = 'bandpass';
-                this.windFilter.frequency.value = 500;
-                this.windFilter.Q.value = 0.5;
-                this.windGain = ctx.createGain();
-                this.windGain.gain.value = 0.04;
+                // Wind: stereo pink noise with gusts moving level, brightness and position
+                const wind = this.loopSource(this.makeLoopBuffer(7, 2, DSP.pink));
+                this.windFilter = this.filter('bandpass', 500, 0.5);
+                this.windGain = this.gain(0.04);
+                this.windPan = ctx.createStereoPanner();
                 wind.connect(this.windFilter);
                 this.windFilter.connect(this.windGain);
-                this.windGain.connect(this.ambientBus);
+                this.windGain.connect(this.windPan);
+                this.windPan.connect(this.ambientBus);
                 wind.start();
 
                 // Ship machinery: a low engine/generator drone felt more than heard
-                const engine = ctx.createGain();
-                engine.gain.value = 0.012;
-                [[31, 1], [62, 0.5], [93.5, 0.25]].forEach(([f, g]) => {
-                    const o = ctx.createOscillator();
-                    o.frequency.value = f;
-                    const og = ctx.createGain();
-                    og.gain.value = g;
-                    o.connect(og);
-                    og.connect(engine);
-                    o.start();
-                });
+                const engine = this.gain(0.012);
+                this.oscBank([[31, 'sine', 1], [62, 'sine', 0.5], [93.5, 'sine', 0.25]], engine);
                 engine.connect(this.ambientBus);
 
                 this.nextSwell = 0;
@@ -1158,8 +1316,6 @@
                 if (this.masterGain) {
                     this.masterGain.gain.setTargetAtTime(this.isMuted ? 0 : 1, this.ctx.currentTime, 0.1);
                 }
-                this.debugState.muted = this.isMuted;
-                this.debugState.masterGain = this.isMuted ? 0 : 1;
                 return this.isMuted;
             },
 
@@ -1167,76 +1323,80 @@
                 if (this.masterGain) {
                     this.masterGain.gain.setTargetAtTime(0, this.ctx.currentTime, 0.5);
                 }
-                this.debugState.masterGain = 0;
                 this.debugState.gun.firing = false;
-                this.debugState.explosions.pending = 0;
+                this.soundArrivals.length = 0;
             },
 
-            // Plays a one-shot buffer at a world position, after the sound's travel time
-            playAt: function (buffer, position, { gain = 1, refDistance = 20, rate = 1, wet = 0.2, delay = 0, hrtf = true } = {}) {
+            // Plays a one-shot buffer at a world position, `delay` seconds from now.
+            // spread: how much stereo width the side channel adds around the positioned mid.
+            playAt: function (buffer, position, { gain = 1, refDistance = 20, rate = 1, wet = 0.2, delay = 0, spread = 0.5 } = {}) {
                 const ctx = this.ctx;
+                const P = SPATIAL_PROFILES[this.spatialMode];
                 const distance = position.distanceTo(camera.position);
                 const src = ctx.createBufferSource();
                 src.buffer = buffer;
                 src.playbackRate.value = rate * this.slowPitch;
-                const air = ctx.createBiquadFilter();
-                air.type = 'lowpass';
-                air.frequency.value = this.airCutoff(distance);
-                const g = ctx.createGain();
-                g.gain.value = gain;
-                const panner = this.makePanner(refDistance, hrtf);
-                this.setPannerPosition(panner, position);
+                const air = this.filter('lowpass', this.airCutoff(distance));
+                const split = ctx.createChannelSplitter(2);
+                const spatial = this.makeSpatializer(refDistance);
+                spatial.level = gain;
+                this.updateSpatializer(spatial, position, 0);
                 src.connect(air);
-                air.connect(g);
-                g.connect(panner);
-                panner.connect(this.mixBus);
-                // Distant sounds arrive more reverberant
-                const send = ctx.createGain();
-                send.gain.value = wet * (1 + Math.min(1.5, distance / 250));
-                g.connect(send);
-                send.connect(this.reverb);
+                air.connect(split);
+                split.connect(spatial.input, 0);
+                spatial.output.connect(this.mixBus);
+                const side = this.gain(gain * spread * P.sideScale * spatial.distanceGain);
+                split.connect(side, 1);
+                side.connect(this.sideBus);
+                // Distant sounds arrive more reverberant; only the mid feeds the reverb. In the
+                // exaggerated modes echoes also fade with distance and lean toward the source's side.
+                // (×√2 keeps a centred send at the level a plain mono send would have.)
+                const send = this.gain(gain * wet * Math.SQRT2 * (1 + Math.min(1.5, distance / 250)) * Math.pow(spatial.distanceGain, P.reverbFalloff));
+                const sendPan = ctx.createStereoPanner();
+                sendPan.pan.value = spatial.pan * P.reverbPan;
+                split.connect(send, 0);
+                send.connect(sendPan);
+                sendPan.connect(this.reverb);
                 src.start(ctx.currentTime + delay);
                 this.activeOneShots++;
                 src.onended = () => {
                     this.activeOneShots--;
-                    [src, air, g, panner, send].forEach(n => n.disconnect());
+                    [src, air, split, side, send, sendPan, ...spatial.nodes].forEach(n => n.disconnect());
                 };
                 return distance;
             },
 
-            pick: function (list) {
-                return list[Math.floor(Math.random() * list.length)];
-            },
-
-            playExplosion: function (position, kind, timeScale, { water = false } = {}) {
+            // `at` delays the explosion itself (the audio lab uses it to lay out a timeline);
+            // the speed-of-sound delay is added on top
+            playExplosion: function (position, kind, { water = false, at = 0 } = {}) {
                 if (!this.isInit || this.isMuted) return;
                 if (this.activeOneShots > 48) return;
                 const distance = position.distanceTo(camera.position);
-                const delay = (distance / SPEED_OF_SOUND) / timeScale;
+                const delay = at + (distance / SPEED_OF_SOUND) / timeScale;
                 const B = this.buffers;
                 const vary = () => 0.92 + Math.random() * 0.16;
 
                 if (kind === 'flak') {
                     // Rounds burst at up to 60/s; thin them out so it crackles instead of roaring
-                    const now = this.ctx.currentTime;
+                    const now = this.ctx.currentTime + at;
                     if (now - this.lastFlakTime < 0.07) return;
                     this.lastFlakTime = now;
-                    this.playAt(this.pick(B.pop), position, { gain: 0.5, refDistance: 25, rate: vary(), wet: 0.25, delay, hrtf: false });
+                    this.playAt(pick(B.pop), position, { gain: 0.5, refDistance: 25, rate: vary(), wet: 0.25, delay, spread: 0.22 });
                 } else if (kind === 'hit') {
-                    this.playAt(this.pick(B.hit), position, { gain: 0.6, refDistance: 18, rate: vary(), wet: 0.15, delay });
+                    this.playAt(pick(B.hit), position, { gain: 0.6, refDistance: 18, rate: vary(), wet: 0.15, delay, spread: 0.18 });
                 } else {
                     const big = kind === 'airburst';
-                    this.playAt(this.pick(B.big), position, {
-                        gain: big ? 1.5 : 2.0, refDistance: big ? 40 : 45, rate: big ? vary() : vary() * 0.85, wet: 0.35, delay
+                    this.playAt(pick(B.big), position, {
+                        gain: big ? 1.5 : 2.0, refDistance: big ? 40 : 45, rate: big ? vary() : vary() * 0.85, wet: 0.35, delay,
+                        spread: 0.42
                     });
                     if (water) {
-                        this.playAt(this.pick(B.splash), position, { gain: 1.0, refDistance: 30, rate: vary(), wet: 0.2, delay: delay + 0.05 });
+                        this.playAt(pick(B.splash), position, { gain: 1.0, refDistance: 30, rate: vary(), wet: 0.2, delay: delay + 0.05, spread: 0.38 });
                     }
                 }
                 this.debugState.explosions.lastKind = kind;
                 this.debugState.explosions.lastDistance = distance;
-                this.debugState.explosions.pending++;
-                setTimeout(() => { this.debugState.explosions.pending--; }, delay * 1000);
+                this.soundArrivals.push(this.ctx.currentTime + delay);
             },
 
             // Called for every round fired. Shots are re-timed onto the audio clock so frame
@@ -1246,9 +1406,32 @@
                 this.lastShotNote = this.ctx.currentTime;
             },
 
-            scheduleGun: function (timeScale) {
+            // One round's sound at an audio-clock time
+            queueShot: function (time) {
+                const src = this.ctx.createBufferSource();
+                src.buffer = pick(this.buffers.shot);
+                src.playbackRate.value = (0.97 + Math.random() * 0.06) * this.slowPitch;
+                const g = this.gain(0.75 + Math.random() * 0.25);
+                src.connect(g);
+                g.connect(this.gunBus);
+                src.start(time);
+                src.onended = () => { src.disconnect(); g.disconnect(); };
+                this.debugState.gun.shots++;
+            },
+
+            // Gap to the next round: the gun takes a moment to reach full rate as the barrels spin up
+            shotSpacing: function (sinceTrigger, interval) {
+                const spinUp = Math.min(1, sinceTrigger / 0.25);
+                return interval * (1.6 - 0.6 * spinUp) + (Math.random() - 0.5) * 0.0008;
+            },
+
+            roundInterval: function () {
+                return FIRE_RATE / (SIM_STEPS_PER_SECOND * timeScale);
+            },
+
+            scheduleGun: function () {
                 const now = this.ctx.currentTime;
-                const interval = FIRE_RATE / (SIM_STEPS_PER_SECOND * timeScale);
+                const interval = this.roundInterval();
                 const held = this.lastShotNote >= 0 && now - this.lastShotNote < Math.max(0.05, interval * 2.5);
                 this.debugState.gun.firing = held;
                 if (!held) {
@@ -1261,102 +1444,50 @@
                 }
                 const lookahead = now + 0.1;
                 while (this.nextShotTime < lookahead) {
-                    const src = this.ctx.createBufferSource();
-                    src.buffer = this.pick(this.buffers.shot);
-                    src.playbackRate.value = (0.97 + Math.random() * 0.06) * this.slowPitch;
-                    const g = this.ctx.createGain();
-                    g.gain.value = 0.75 + Math.random() * 0.25;
-                    src.connect(g);
-                    g.connect(this.gunBus);
-                    src.start(this.nextShotTime);
-                    src.onended = () => src.disconnect();
-                    this.debugState.gun.shots++;
-                    // The gun takes a moment to reach full rate as the barrels spin up
-                    const spinUp = Math.min(1, (this.nextShotTime - this.triggerHeldSince) / 0.25);
-                    this.nextShotTime += interval * (1.6 - 0.6 * spinUp) + (Math.random() - 0.5) * 0.0008;
+                    this.queueShot(this.nextShotTime);
+                    this.nextShotTime += this.shotSpacing(this.nextShotTime - this.triggerHeldSince, interval);
                 }
-                this.debugState.gun.rate = 1 / interval;
             },
 
             createThreatVoice: function (missile) {
                 const ctx = this.ctx;
-                const out = ctx.createGain();
-                out.gain.value = 0;
-                const air = ctx.createBiquadFilter();
-                air.type = 'lowpass';
-                air.frequency.value = 2000;
-                const panner = this.makePanner(missile.isMortar ? 40 : 28);
+                const out = this.gain(0);
+                const air = this.filter('lowpass', 2000);
+                const spatial = this.makeSpatializer(missile.isMortar ? 40 : 28);
                 out.connect(air);
-                air.connect(panner);
-                panner.connect(this.mixBus);
-                const voice = { out, air, panner, oscs: [], isMortar: missile.isMortar };
+                air.connect(spatial.input);
+                spatial.output.connect(this.mixBus);
+                const voice = { out, air, spatial, oscs: [], isMortar: missile.isMortar };
 
                 if (missile.isMortar) {
                     // Incoming shell: a falling whistle over rushing air
                     voice.base = 1250 + Math.random() * 250;
-                    const whistle = ctx.createOscillator();
-                    whistle.type = 'sine';
-                    const whistle2 = ctx.createOscillator();
-                    whistle2.type = 'triangle';
-                    const w2g = ctx.createGain();
-                    w2g.gain.value = 0.25;
-                    whistle.connect(out);
-                    whistle2.connect(w2g);
-                    w2g.connect(out);
-                    const rush = this.loopingNoise(2, 1, () => () => Math.random() * 2 - 1);
-                    const rushBP = ctx.createBiquadFilter();
-                    rushBP.type = 'bandpass';
-                    rushBP.frequency.value = 1800;
-                    rushBP.Q.value = 1.5;
-                    const rushG = ctx.createGain();
-                    rushG.gain.value = 0.5;
+                    const [whistle, whistle2] = this.oscBank([[voice.base, 'sine', 1], [voice.base * 1.004, 'triangle', 0.25]], out);
+                    const rush = this.loopSource(this.noiseLoop);
+                    const rushBP = this.filter('bandpass', 1800, 1.5);
+                    const rushG = this.gain(0.5);
                     rush.connect(rushBP);
                     rushBP.connect(rushG);
                     rushG.connect(out);
+                    rush.start(0, Math.random() * (this.noiseLoop.duration - 0.1));
                     voice.oscs.push({ osc: whistle, mult: 1 }, { osc: whistle2, mult: 1.004 }, { osc: rush, isNoise: true });
-                    whistle.start();
-                    whistle2.start();
-                    rush.start();
                 } else {
                     // Delta-wing drone: a two-stroke engine buzz with a pusher prop
                     voice.base = 95 + Math.random() * 25;
                     const shaper = ctx.createWaveShaper();
-                    const curve = new Float32Array(512);
-                    for (let i = 0; i < curve.length; i++) {
-                        const x = (i / (curve.length - 1)) * 2 - 1;
-                        curve[i] = Math.tanh(x * 3);
-                    }
-                    shaper.curve = curve;
-                    const tone = ctx.createBiquadFilter();
-                    tone.type = 'lowpass';
-                    tone.frequency.value = 1800;
-                    [[1, 'sawtooth', 0.6], [2.003, 'square', 0.25], [0.5, 'sawtooth', 0.3]].forEach(([mult, type, g]) => {
-                        const o = ctx.createOscillator();
-                        o.type = type;
-                        const og = ctx.createGain();
-                        og.gain.value = g;
-                        o.connect(og);
-                        og.connect(shaper);
-                        o.start();
-                        voice.oscs.push({ osc: o, mult });
-                    });
+                    shaper.curve = DSP.softClipCurve(3, 512);
+                    const tone = this.filter('lowpass', 1800);
+                    const engine = [[1, 'sawtooth', 0.6], [2.003, 'square', 0.25], [0.5, 'sawtooth', 0.3]];
+                    this.oscBank(engine.map(([mult, type, g]) => [voice.base * mult, type, g]), shaper)
+                        .forEach((osc, i) => voice.oscs.push({ osc, mult: engine[i][0] }));
                     // Firing-stroke flutter: amplitude-modulate the engine at half its rate
-                    const flutter = ctx.createGain();
-                    flutter.gain.value = 0.75;
-                    const lfo = ctx.createOscillator();
-                    lfo.type = 'square';
-                    const lfoDepth = ctx.createGain();
-                    lfoDepth.gain.value = 0.25;
-                    lfo.connect(lfoDepth);
-                    lfoDepth.connect(flutter.gain);
-                    lfo.start();
+                    const flutter = this.gain(0.75);
+                    const [lfo] = this.oscBank([[voice.base * 0.5, 'square', 0.25]], flutter.gain);
                     voice.oscs.push({ osc: lfo, mult: 0.5 });
                     shaper.connect(tone);
                     tone.connect(flutter);
                     flutter.connect(out);
                 }
-                // Start at pitch so the first frame doesn't glide down from 440 Hz
-                voice.oscs.forEach(o => { if (!o.isNoise) o.osc.frequency.value = voice.base * o.mult; });
                 return voice;
             },
 
@@ -1364,29 +1495,29 @@
                 const t = this.ctx.currentTime;
                 voice.out.gain.setTargetAtTime(0, t, 0.03);
                 voice.oscs.forEach(({ osc }) => osc.stop(t + 0.2));
-                setTimeout(() => voice.panner.disconnect(), 400);
+                setTimeout(() => voice.spatial.output.disconnect(), 400);
             },
 
-            updateThreats: function (missileList, timeScale) {
-                const seen = new Set();
+            updateThreats: function (missileList) {
                 let drones = 0, mortars = 0;
                 const listener = camera.position;
-                const toListener = new THREE.Vector3();
+                const toListener = this._toListener;
                 for (const m of missileList) {
-                    seen.add(m);
                     let voice = this.threatVoices.get(m);
                     if (!voice) {
                         voice = this.createThreatVoice(m);
                         this.threatVoices.set(m, voice);
                     }
+                    voice.seenFrame = this.frameId;
                     if (voice.isMortar) mortars++; else drones++;
                     const pos = m.mesh.position;
                     const distance = pos.distanceTo(listener);
                     // Doppler from the closing speed (velocity is per sim step)
                     toListener.subVectors(listener, pos).normalize();
                     const closing = m.velocity.dot(toListener) * SIM_STEPS_PER_SECOND;
-                    const doppler = THREE.MathUtils.clamp(SPEED_OF_SOUND / (SPEED_OF_SOUND - closing), 0.6, 1.7);
-                    const t = this.ctx.currentTime;
+                    // The profile exaggerates the shift so flybys swoop
+                    const exaggerated = closing * SPATIAL_PROFILES[this.spatialMode].doppler;
+                    const doppler = THREE.MathUtils.clamp(SPEED_OF_SOUND / Math.max(60, SPEED_OF_SOUND - exaggerated), 0.45, 2.4);
                     let freq = voice.base * doppler * this.slowPitch;
                     let level;
                     if (voice.isMortar) {
@@ -1397,43 +1528,21 @@
                     } else {
                         level = 0.45;
                     }
-                    voice.oscs.forEach(o => {
-                        if (!o.isNoise) o.osc.frequency.setTargetAtTime(freq * o.mult, t, 0.05);
-                    });
-                    voice.out.gain.setTargetAtTime(level, t, 0.1);
-                    voice.air.frequency.setTargetAtTime(Math.min(2400, this.airCutoff(distance)), t, 0.1);
-                    this.setPannerPosition(voice.panner, pos, 0.02);
+                    for (const o of voice.oscs) {
+                        if (!o.isNoise) this.setParam(o.osc.frequency, freq * o.mult, 0.05);
+                    }
+                    this.setParam(voice.out.gain, level, 0.1);
+                    this.setParam(voice.air.frequency, Math.min(2400, this.airCutoff(distance)), 0.1);
+                    this.updateSpatializer(voice.spatial, pos, 0.02);
                 }
                 for (const [m, voice] of this.threatVoices) {
-                    if (!seen.has(m)) {
+                    if (voice.seenFrame !== this.frameId) {
                         this.releaseThreatVoice(voice);
                         this.threatVoices.delete(m);
                     }
                 }
                 this.debugState.threats.drones = drones;
                 this.debugState.threats.mortars = mortars;
-            },
-
-            updateListener: function () {
-                const l = this.ctx.listener;
-                const p = camera.position;
-                const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
-                const up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
-                if (l.positionX) {
-                    const t = this.ctx.currentTime;
-                    l.positionX.setTargetAtTime(p.x, t, 0.015);
-                    l.positionY.setTargetAtTime(p.y, t, 0.015);
-                    l.positionZ.setTargetAtTime(p.z, t, 0.015);
-                    l.forwardX.setTargetAtTime(fwd.x, t, 0.015);
-                    l.forwardY.setTargetAtTime(fwd.y, t, 0.015);
-                    l.forwardZ.setTargetAtTime(fwd.z, t, 0.015);
-                    l.upX.setTargetAtTime(up.x, t, 0.015);
-                    l.upY.setTargetAtTime(up.y, t, 0.015);
-                    l.upZ.setTargetAtTime(up.z, t, 0.015);
-                } else {
-                    l.setPosition(p.x, p.y, p.z);
-                    l.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z);
-                }
             },
 
             updateAmbient: function () {
@@ -1448,50 +1557,77 @@
                     const gust = Math.random();
                     this.windGain.gain.setTargetAtTime(0.025 + gust * 0.05, t, 1.2);
                     this.windFilter.frequency.setTargetAtTime(350 + gust * 600, t, 1.2);
+                    this.windPan.pan.setTargetAtTime((Math.random() * 2 - 1) * SPATIAL_PROFILES[this.spatialMode].windSweep, t, 1.5);
                     this.nextGust = t + 1 + Math.random() * 3;
                     this.debugState.ambient.wind = gust;
                 }
                 if (t >= this.nextSlap) {
+                    // Waves slap the hull just outside its waterline
                     const side = Math.random() < 0.5 ? -1 : 1;
-                    const pos = new THREE.Vector3(side * 8.7, WATER_LEVEL, -10 + Math.random() * 50);
-                    this.playAt(this.pick(this.buffers.slap), pos, { gain: 0.25 + Math.random() * 0.2, refDistance: 6, rate: 0.8 + Math.random() * 0.4, wet: 0.05, hrtf: false });
+                    const z = THREE.MathUtils.randFloat(SHIP_BOUNDS.bow + 4, SHIP_BOUNDS.stern);
+                    const pos = new THREE.Vector3(side * (hullHalfWidthAt(z) + 0.2), WATER_LEVEL, z);
+                    this.playAt(pick(this.buffers.slap), pos, { gain: 0.25 + Math.random() * 0.2, refDistance: 6, rate: 0.8 + Math.random() * 0.4, wet: 0.05, spread: 0.3 });
                     this.nextSlap = t + 1.5 + Math.random() * 4;
                 }
             },
 
-            // Per-frame: listener, emitter positions, threat voices, ambience. Runs even after game over.
-            frame: function (missileList, timeScale) {
+            // Rounds that pass close to the camera get a snap-and-whoosh at their closest point.
+            // Rounds fired from beside the listener (gun camera) never count as passing by.
+            updateNearMisses: function () {
+                const radius = SPATIAL_PROFILES[this.spatialMode].whizzRadius;
+                if (radius <= 0 || this.isMuted) return;
+                const cam = camera.position;
+                const start = this._segStart, closest = this._segClosest, seg = this._seg;
+                for (const p of projectiles) {
+                    if (p.whizzed || p.origin.distanceTo(cam) <= radius) continue;
+                    start.copy(p.prevPos);
+                    seg.subVectors(p.mesh.position, start);
+                    const lengthSq = seg.lengthSq();
+                    const k = lengthSq > 0 ? THREE.MathUtils.clamp(closest.subVectors(cam, start).dot(seg) / lengthSq, 0, 1) : 0;
+                    closest.copy(start).addScaledVector(seg, k);
+                    if (closest.distanceTo(cam) > radius) continue;
+                    p.whizzed = true;
+                    const now = this.ctx.currentTime;
+                    if (now - this.lastWhizzTime < 0.045) continue;
+                    this.lastWhizzTime = now;
+                    this.debugState.threats.nearMisses++;
+                    this.playAt(pick(this.buffers.whizz), closest, {
+                        gain: 0.55, refDistance: 3, rate: 0.9 + Math.random() * 0.2, wet: 0.05, spread: 0.15
+                    });
+                }
+            },
+
+            // Per-frame: emitter positions, threat voices, near misses, ambience. Runs even after game over.
+            frame: function (missileList) {
                 if (!this.isInit) return;
+                this.frameId++;
                 this.slowPitch = 0.45 + 0.55 * timeScale;
-                this.updateListener();
-                if (barrels) this.setPannerPosition(this.gunPanner, getMuzzlePosition(), 0.02);
-                this.setPannerPosition(this.mountPanner, new THREE.Vector3(0, 4, 0));
-                this.updateThreats(missileList, timeScale);
+                this.refreshListener();
+                if (barrels) this.updateSpatializer(this.gunSpatial, getMuzzlePosition(this._muzzle), 0.02);
+                this.updateSpatializer(this.mountSpatial, MOUNT_AUDIO_POSITION, 0.02);
+                this.updateThreats(missileList);
+                this.updateNearMisses();
                 this.updateAmbient();
             },
 
-            update: function (barrelSpeed, servoSpeed, isFiring, timeScale) {
+            update: function (barrelSpeed, servoSpeed) {
                 if (!this.isInit) return;
-                const t = this.ctx.currentTime;
-                this.debugState.muted = this.isMuted;
-                this.debugState.masterGain = this.isMuted ? 0 : 1;
-
-                this.scheduleGun(timeScale);
+                this.scheduleGun();
 
                 // Barrel drive whine follows the spin of the cluster
                 const driveFreq = (160 + barrelSpeed * 620) * this.slowPitch;
-                this.driveOscs.forEach(({ osc, mult }) => osc.frequency.setTargetAtTime(driveFreq * mult, t, 0.08));
-                this.driveGain.gain.setTargetAtTime(barrelSpeed * 0.16, t, 0.08);
+                this.driveOscs.forEach((osc, i) => this.setParam(osc.frequency, driveFreq * this.driveMults[i], 0.08));
+                this.setParam(this.driveGain.gain, barrelSpeed * 0.16, 0.08);
                 this.debugState.drive.spin = barrelSpeed;
                 this.debugState.drive.freq = driveFreq;
 
                 // Traverse servos: whine slides with slew rate, gears grind under load
                 const slew = Math.min(1, servoSpeed * 20);
                 const servoFreq = (240 + slew * 900) * this.slowPitch;
-                this.servoOsc.frequency.setTargetAtTime(servoFreq, t, 0.06);
-                this.servoFilter.frequency.setTargetAtTime(servoFreq * 1.6, t, 0.06);
-                this.servoGain.gain.setTargetAtTime(slew * 0.12, t, 0.05);
-                this.grindGain.gain.setTargetAtTime(slew * 0.22, t, 0.05);
+                this.setParam(this.servoOsc.frequency, servoFreq, 0.06);
+                this.setParam(this.servoFilter.frequency, servoFreq * 1.6, 0.06);
+                this.setParam(this.servoGain.gain, slew * 0.12, 0.05);
+                this.setParam(this.grindGain.gain, slew * 0.22, 0.05);
                 this.debugState.traverse.level = slew;
                 this.debugState.traverse.freq = servoFreq;
             }
@@ -1501,70 +1637,77 @@
         let currentBarrelSpeed = 0;
         let isFiring = false;
         let isAudioDebugVisible = false;
+        let audioDebugLastDraw = 0;
 
-        function formatAudioDebugValue(value, digits = 2) {
-            return Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
+        function formatNum(value, digits = 2, fallback = '--') {
+            return Number.isFinite(value) ? value.toFixed(digits) : fallback;
         }
 
-        function updateAudioDebugOverlay() {
+        function pick(list) {
+            return list[Math.floor(Math.random() * list.length)];
+        }
+
+        function updateAudioDebugOverlay(force = false) {
             const panel = document.getElementById('audio-debug');
-            const body = document.getElementById('audio-debug-body');
-            if (!panel || !body) return;
-
-            panel.style.display = isAudioDebugVisible ? 'block' : 'none';
+            const display = isAudioDebugVisible ? 'block' : 'none';
+            if (panel.style.display !== display) panel.style.display = display;
             if (!isAudioDebugVisible) return;
+            const now = performance.now();
+            if (!force && now - audioDebugLastDraw < 100) return;
+            audioDebugLastDraw = now;
 
-            const s = AudioController.debugState;
-            body.textContent =
-`Initialized: ${s.initialized ? 'yes' : 'no'}
-Muted: ${s.muted ? 'yes' : 'no'}
-Context: ${AudioController.ctx ? AudioController.ctx.state : 'none'}
-One-shots playing: ${AudioController.activeOneShots}
+            const A = AudioController;
+            const s = A.debugState;
+            const t = A.ctx ? A.ctx.currentTime : 0;
+            A.soundArrivals = A.soundArrivals.filter(arrival => arrival > t);
+            setText(document.getElementById('audio-debug-body'),
+`Initialized: ${A.isInit ? 'yes' : 'no'}
+Muted: ${A.isMuted ? 'yes' : 'no'}
+Context: ${A.ctx ? A.ctx.state : 'none'}
+Spatial mode: ${SPATIAL_PROFILES[A.spatialMode].label}
+One-shots playing: ${A.activeOneShots}
 
 Gun
   firing: ${s.gun.firing ? 'yes' : 'no'}
-  rate: ${formatAudioDebugValue(s.gun.rate, 1)} rds/s
+  rate: ${formatNum(1 / A.roundInterval(), 1)} rds/s
   rounds voiced: ${s.gun.shots}
 
 Barrel drive
-  spin: ${formatAudioDebugValue(s.drive.spin, 2)}
-  whine: ${formatAudioDebugValue(s.drive.freq, 1)} Hz
+  spin: ${formatNum(s.drive.spin, 2)}
+  whine: ${formatNum(s.drive.freq, 1)} Hz
 
 Traverse
-  slew: ${formatAudioDebugValue(s.traverse.level, 2)}
-  whine: ${formatAudioDebugValue(s.traverse.freq, 1)} Hz
+  slew: ${formatNum(s.traverse.level, 2)}
+  whine: ${formatNum(s.traverse.freq, 1)} Hz
 
 Threats
   drones: ${s.threats.drones}
   mortars: ${s.threats.mortars}
+  near-miss whizzes: ${s.threats.nearMisses}
 
 Explosions
-  in flight (sound): ${Math.max(0, s.explosions.pending)}
-  last: ${s.explosions.lastKind} @ ${formatAudioDebugValue(s.explosions.lastDistance, 0)} m
+  in flight (sound): ${A.soundArrivals.length}
+  last: ${s.explosions.lastKind} @ ${formatNum(s.explosions.lastDistance, 0)} m
 
 Ambient
-  sea swell: ${formatAudioDebugValue(s.ambient.sea, 3)}
-  wind gust: ${formatAudioDebugValue(s.ambient.wind, 2)}`;
+  sea swell: ${formatNum(s.ambient.sea, 3)}
+  wind gust: ${formatNum(s.ambient.wind, 2)}`);
         }
 
-        function clampUnit(value) {
-            return THREE.MathUtils.clamp(value, -1, 1);
+        // Panel text is written only when it changes, and the whole dock refreshes at ~10 Hz
+        const uiElements = new Map();
+        function ui(id) {
+            if (!uiElements.has(id)) uiElements.set(id, document.getElementById(id));
+            return uiElements.get(id);
         }
 
-        function formatLoss(value) {
-            return Number.isFinite(value) ? value.toFixed(4) : '--';
-        }
-
-        // Panel text is written only when it changes, and the canvases redraw at ~10 Hz
-        function setPanelText(id, text) {
-            const el = document.getElementById(id);
+        function setText(el, text) {
             if (el && el.textContent !== text) el.textContent = text;
         }
 
         function setBadge(id, text, kind) {
-            const el = document.getElementById(id);
-            if (!el) return;
-            if (el.textContent !== text) el.textContent = text;
+            const el = ui(id);
+            setText(el, text);
             const cls = `ml-badge ${kind}`;
             if (el.className !== cls) el.className = cls;
         }
@@ -1573,83 +1716,79 @@ Ambient
             return n >= 10000 ? `${(n / 1000).toFixed(1)}k` : String(n);
         }
 
+        // Chip text, status badge and caption for each learning state
+        const LEARN_STATE_UI = {
+            learning: { chip: steps => `LEARNING ${formatCount(steps)}`, badge: 'LEARNING', caption: 'Copying the solver on every tracked target. Doesn\'t change who aims.' },
+            waiting: { chip: () => 'LEARNING · IDLE', badge: 'WAITING FOR TARGET', caption: 'Nothing to learn from until the next target appears.' },
+            off: { chip: () => 'LEARNING OFF', badge: 'OFF', caption: 'The net learns by copying the solver while targets are up.' }
+        };
+
         let mlPanelOpen = false;
         let mlPanelLastDraw = 0;
 
         function toggleMLPanel(force) {
             mlPanelOpen = typeof force === 'boolean' ? force : !mlPanelOpen;
-            const panel = document.getElementById('ml-panel');
-            panel.classList.toggle('open', mlPanelOpen);
-            document.getElementById('ml-toggle').setAttribute('aria-expanded', String(mlPanelOpen));
+            ui('ml-panel').classList.toggle('open', mlPanelOpen);
+            ui('ml-toggle').setAttribute('aria-expanded', String(mlPanelOpen));
             safeStorageSet('ciwsMLPanelOpen', mlPanelOpen ? '1' : '0');
-            mlPanelLastDraw = 0;
-            updateMLPanel();
+            updateMLPanel(true);
         }
 
-        function updateMLPanel() {
+        function updateMLPanel(force = false) {
+            const now = performance.now();
+            if (!force && now - mlPanelLastDraw < 100) return;
+            mlPanelLastDraw = now;
+
             const nn = NeuralController;
             const neural = controllerMode === 'neural';
             const learnState = nn.learningState();
+            const learnUI = LEARN_STATE_UI[learnState];
 
             setBadge('ml-chip-mode', neural ? 'NEURAL' : 'CLASSIC', neural ? 'neural' : 'classic');
-            setBadge('ml-chip-learn',
-                learnState === 'learning' ? `LEARNING ${formatCount(nn.trainedSamples)}`
-                    : learnState === 'waiting' ? 'LEARNING · IDLE' : 'LEARNING OFF',
-                learnState === 'learning' ? 'learning' : learnState === 'waiting' ? 'waiting' : 'off');
+            setBadge('ml-chip-learn', learnUI.chip(nn.trainSteps), learnState);
 
             if (!mlPanelOpen) return;
 
-            const classicBtn = document.getElementById('ml-classic-btn');
-            const neuralBtn = document.getElementById('ml-neural-btn');
-            classicBtn.classList.toggle('active', !neural);
+            ui('ml-classic-btn').classList.toggle('active', !neural);
+            const neuralBtn = ui('ml-neural-btn');
             neuralBtn.classList.toggle('active', neural);
-            neuralBtn.disabled = !nn.isTrained;
-            neuralBtn.title = nn.isTrained ? '' : 'Start learning first: the net has no training yet';
+            if (neuralBtn.disabled !== !nn.isTrained) {
+                neuralBtn.disabled = !nn.isTrained;
+                neuralBtn.title = nn.isTrained ? '' : 'Start learning first: the net has no training yet';
+            }
 
-            setPanelText('ml-mode-caption', neural
+            setText(ui('ml-mode-caption'), neural
                 ? 'The net picks the aim point and decides when to fire.'
                 : nn.isTrained
                     ? 'The ballistic solver aims and fires. The net is ready to try.'
                     : 'The ballistic solver aims and fires. The net needs learning first.');
 
-            const trainBtn = document.getElementById('ml-train-btn');
-            setPanelText('ml-train-btn', nn.isTraining ? 'PAUSE LEARNING' : nn.isTrained ? 'RESUME LEARNING' : 'START LEARNING');
+            const trainBtn = ui('ml-train-btn');
+            setText(trainBtn, nn.isTraining ? 'PAUSE LEARNING' : nn.isTrained ? 'RESUME LEARNING' : 'START LEARNING');
             trainBtn.classList.toggle('running', nn.isTraining);
-            setBadge('ml-learn-state',
-                learnState === 'learning' ? 'LEARNING' : learnState === 'waiting' ? 'WAITING FOR TARGET' : 'OFF',
-                learnState);
-            setPanelText('ml-learn-caption', learnState === 'waiting'
-                ? 'Nothing to learn from until the next target appears.'
-                : nn.isTraining
-                    ? 'Copying the solver on every tracked target. Doesn\'t change who aims.'
-                    : 'The net learns by copying the solver while targets are up.');
+            setBadge('ml-learn-state', learnUI.badge, learnState);
+            setText(ui('ml-learn-caption'), learnUI.caption);
 
-            setPanelText('ml-net-summary', `NETWORK ${nn.inputCount} → ${nn.hiddenCount1} → ${nn.hiddenCount2} → ${nn.outputCount}`);
-            setPanelText('ml-examples', formatCount(nn.liveReplay.length + nn.liveValidation.length));
-            setPanelText('ml-steps', formatCount(nn.trainedSamples));
-            setPanelText('ml-loss', formatLoss(nn.lossEma));
-            setPanelText('ml-aim-error', Number.isFinite(nn.aimErrEma) ? `${nn.aimErrEma.toFixed(2)}°` : '--');
-            setPanelText('ml-fire-agree', Number.isFinite(nn.fireAgreeEma) ? `${Math.round(nn.fireAgreeEma * 100)}%` : '--');
+            setText(ui('ml-net-summary'), `NETWORK ${nn.inputCount} → ${nn.hiddenCount1} → ${nn.hiddenCount2} → ${nn.outputCount}`);
+            setText(ui('ml-examples'), formatCount(nn.liveReplay.length + nn.liveValidation.length));
+            setText(ui('ml-steps'), formatCount(nn.trainSteps));
+            setText(ui('ml-loss'), formatNum(nn.lossEma, 4));
+            setText(ui('ml-aim-error'), Number.isFinite(nn.aimErrEma) ? `${nn.aimErrEma.toFixed(2)}°` : '--');
+            setText(ui('ml-fire-agree'), Number.isFinite(nn.fireAgreeEma) ? `${Math.round(nn.fireAgreeEma * 100)}%` : '--');
 
             ['classic', 'neural'].forEach(mode => {
-                const row = document.getElementById(`ml-perf-${mode}`);
+                const row = ui(`ml-perf-${mode}`);
                 const st = engagementStats[mode];
-                const cells = row.children;
-                const values = [String(st.rounds), String(st.hits), String(st.kills)];
-                values.forEach((v, i) => { if (cells[i + 1].textContent !== v) cells[i + 1].textContent = v; });
+                [st.rounds, st.hits, st.kills].forEach((v, i) => setText(row.children[i + 1], String(v)));
                 row.classList.toggle('current', controllerMode === mode);
             });
 
-            setPanelText('ml-saved', nn.lastSavedAt
+            setText(ui('ml-saved'), nn.lastSavedAt
                 ? `Saved ${formatAgo(Date.now() - nn.lastSavedAt)}`
                 : nn.isTrained ? 'Not saved yet' : 'Nothing to save');
 
-            const now = performance.now();
-            if (now - mlPanelLastDraw > 100) {
-                mlPanelLastDraw = now;
-                drawLossSparkline();
-                drawNetworkViz();
-            }
+            drawLossSparkline();
+            drawNetworkViz();
         }
 
         function formatAgo(ms) {
@@ -1673,8 +1812,7 @@ Ambient
         }
 
         function drawLossSparkline() {
-            const canvas = document.getElementById('ml-loss-canvas');
-            const sized = canvas && sizeCanvas(canvas);
+            const sized = sizeCanvas(ui('ml-loss-canvas'));
             if (!sized) return;
             const { ctx, w, h } = sized;
             const hist = NeuralController.lossHistory;
@@ -1718,8 +1856,7 @@ Ambient
         }
 
         function drawNetworkViz() {
-            const canvas = document.getElementById('ml-network-canvas');
-            const sized = canvas && sizeCanvas(canvas);
+            const sized = sizeCanvas(ui('ml-network-canvas'));
             if (!sized) return;
             const { ctx, w, h } = sized;
             ctx.save();
@@ -1739,16 +1876,18 @@ Ambient
                 const top = 28;
                 const bottom = h - 18;
                 const usable = bottom - top;
-                return layer.map((_, i) => ({
+                return Array.from(layer, (_, i) => ({
                     x: layerX[layerIndex],
                     y: count === 1 ? top + usable / 2 : top + (usable * i) / (count - 1)
                 }));
             });
 
             ctx.lineWidth = 1;
-            drawWeightLines(ctx, positions[0], positions[1], NeuralController.hiddenWeights1);
-            drawWeightLines(ctx, positions[1], positions[2], NeuralController.hiddenWeights2);
-            drawWeightLines(ctx, positions[2], positions[3], NeuralController.outputWeights);
+            drawWeightLines(ctx, [
+                [positions[0], positions[1], NeuralController.hiddenWeights1],
+                [positions[1], positions[2], NeuralController.hiddenWeights2],
+                [positions[2], positions[3], NeuralController.outputWeights]
+            ]);
 
             ctx.font = '9px ui-monospace, Menlo, monospace';
             ctx.textAlign = 'center';
@@ -1792,20 +1931,27 @@ Ambient
             ctx.restore();
         }
 
-        function drawWeightLines(ctx, fromPositions, toPositions, weights) {
-            for (let to = 0; to < toPositions.length; to++) {
-                for (let from = 0; from < fromPositions.length; from++) {
-                    const weight = weights[to]?.[from] || 0;
-                    const alpha = THREE.MathUtils.clamp(Math.abs(weight) * 1.2, 0.04, 0.35);
-                    ctx.strokeStyle = weight >= 0
-                        ? `rgba(150, 255, 80, ${alpha})`
-                        : `rgba(80, 180, 255, ${alpha})`;
-                    ctx.beginPath();
-                    ctx.moveTo(fromPositions[from].x, fromPositions[from].y);
-                    ctx.lineTo(toPositions[to].x, toPositions[to].y);
-                    ctx.stroke();
+        // Weight lines grouped by sign and one of 8 opacity steps, so ~1000 lines take 16 strokes
+        const WEIGHT_ALPHA_STEPS = 8;
+        function drawWeightLines(ctx, links) {
+            const buckets = Array.from({ length: WEIGHT_ALPHA_STEPS * 2 }, () => new Path2D());
+            for (const [fromPositions, toPositions, weights] of links) {
+                for (let to = 0; to < toPositions.length; to++) {
+                    for (let from = 0; from < fromPositions.length; from++) {
+                        const weight = weights[to]?.[from] || 0;
+                        const alpha = THREE.MathUtils.clamp(Math.abs(weight) * 1.2, 0.04, 0.35);
+                        const step = Math.min(WEIGHT_ALPHA_STEPS - 1, Math.floor((alpha - 0.04) / 0.31 * WEIGHT_ALPHA_STEPS));
+                        const path = buckets[(weight >= 0 ? 0 : WEIGHT_ALPHA_STEPS) + step];
+                        path.moveTo(fromPositions[from].x, fromPositions[from].y);
+                        path.lineTo(toPositions[to].x, toPositions[to].y);
+                    }
                 }
             }
+            buckets.forEach((path, b) => {
+                const alpha = 0.04 + ((b % WEIGHT_ALPHA_STEPS) + 0.5) / WEIGHT_ALPHA_STEPS * 0.31;
+                ctx.strokeStyle = b < WEIGHT_ALPHA_STEPS ? `rgba(150, 255, 80, ${alpha})` : `rgba(80, 180, 255, ${alpha})`;
+                ctx.stroke(path);
+            });
         }
 
         function randomSigned(range) {
@@ -1818,6 +1964,16 @@ Ambient
 
         function sigmoid(x) {
             return 1 / (1 + Math.exp(-x));
+        }
+
+        // Exponential moving average that starts at the first value it sees
+        function ema(prev, value, k) {
+            return Number.isFinite(prev) ? prev + (value - prev) * k : value;
+        }
+
+        function pushBounded(list, item, max) {
+            list.push(item);
+            if (list.length > max) list.shift();
         }
 
         // Target state in the line-of-sight frame: range, closing speed, sideways (yaw-direction)
@@ -1849,8 +2005,7 @@ Ambient
         // regardless of reach; the net learns to hold fire until a round can get there).
         // Sideways lead is the true angle off the sight line (yaw lead × cos elevation): yaw
         // itself blows up as targets approach overhead, which would make steep mortars hard to learn.
-        function makeControllerTargets(solution, targetPos, muzzlePos) {
-            const sight = computeSightAngles(targetPos, muzzlePos);
+        function makeControllerTargets(solution, sight) {
             const yawDelta = wrapAngle(solution.targetYaw - sight.targetYaw);
             const pitchDelta = solution.targetPitch - sight.targetPitch;
 
@@ -1870,41 +2025,17 @@ Ambient
         }
 
         function isInReach(solution) {
-            return solution.interceptSteps !== null && solution.interceptSteps <= ROUND_LIFE_STEPS;
+            return solution.interceptSteps !== null && solution.interceptSteps <= ROUND_TRAVEL_STEPS;
         }
+
+        const LOSS_HISTORY_LENGTH = 120;
 
         const NeuralController = {
             inputCount: 7,
             hiddenCount1: 32,
             hiddenCount2: 24,
             outputCount: 3,
-            // Weight rows are [w_0 .. w_n-1, bias]; Adam moments mirror them
-            hiddenWeights1: [],
-            hiddenWeights2: [],
-            outputWeights: [],
-            adam: null,
-            trainedSamples: 0, // Adam (minibatch) steps taken
-            lastLoss: NaN,
-            isTraining: false,
-            isTrained: false,
             storageKey: 'ciwsNeuralControllerV8',
-            legacyStorageKeys: ['ciwsNeuralControllerV7'],
-            lastInputs: [],
-            lastHidden1: [],
-            lastHidden2: [],
-            lastOutputs: [],
-            liveReplay: [],
-            liveValidation: [],
-            observedSamples: 0,
-            activationSource: 'IDLE',
-            // Smoothed readouts for the panel
-            lossEma: NaN,
-            aimErrEma: NaN,
-            fireAgreeEma: NaN,
-            lossHistory: [],
-            lastHistoryAt: 0,
-            lastSampleAt: 0,
-            lastSavedAt: 0,
 
             // Identifies the feature layout and scaling. Saved weights only load when it matches,
             // so changing any of these discards stale models instead of misreading them.
@@ -1922,7 +2053,7 @@ Ambient
                 return performance.now() - this.lastSampleAt < 400 ? 'learning' : 'waiting';
             },
 
-            // Glorot-uniform weights, zero biases
+            // Glorot-uniform weights, zero biases. Rows are [w_0 .. w_n-1, bias].
             makeLayer(fanIn, fanOut) {
                 const limit = Math.sqrt(6 / (fanIn + fanOut));
                 return Array.from({ length: fanOut }, () => {
@@ -1932,28 +2063,38 @@ Ambient
                 });
             },
 
+            layers() {
+                return [this.hiddenWeights1, this.hiddenWeights2, this.outputWeights];
+            },
+
             zerosLike(layer) {
-                return layer.map(row => new Array(row.length).fill(0));
+                return layer.map(row => new Float64Array(row.length));
             },
 
+            // Adam moments plus reusable gradient and activation buffers, sized to the weights
             resetOptimizer() {
-                const layers = [this.hiddenWeights1, this.hiddenWeights2, this.outputWeights];
-                this.adam = {
-                    m: layers.map(l => this.zerosLike(l)),
-                    v: layers.map(l => this.zerosLike(l)),
-                    t: 0
-                };
+                const layers = this.layers();
+                this.adam = { m: layers.map(l => this.zerosLike(l)), v: layers.map(l => this.zerosLike(l)), t: 0 };
+                this._grads = layers.map(l => this.zerosLike(l));
+                this._h1 = new Float64Array(this.hiddenCount1);
+                this._h2 = new Float64Array(this.hiddenCount2);
+                this._out = new Float64Array(this.outputCount);
+                this._dH1 = new Float64Array(this.hiddenCount1);
+                this._dH2 = new Float64Array(this.hiddenCount2);
+                this._dOut = new Float64Array(this.outputCount);
+                this._batch = new Array(NN_BATCH_SIZE);
             },
 
+            // All mutable state lives here
             reset() {
                 this.hiddenWeights1 = this.makeLayer(this.inputCount, this.hiddenCount1);
                 this.hiddenWeights2 = this.makeLayer(this.hiddenCount1, this.hiddenCount2);
                 this.outputWeights = this.makeLayer(this.hiddenCount2, this.outputCount);
                 this.resetOptimizer();
 
-                this.trainedSamples = 0;
-                this.lastLoss = NaN;
+                this.isTraining = false;
                 this.isTrained = false;
+                this.trainSteps = 0; // Adam (minibatch) steps taken
                 this.lastInputs = new Array(this.inputCount).fill(0);
                 this.lastHidden1 = new Array(this.hiddenCount1).fill(0);
                 this.lastHidden2 = new Array(this.hiddenCount2).fill(0);
@@ -1962,10 +2103,13 @@ Ambient
                 this.liveValidation = [];
                 this.observedSamples = 0;
                 this.activationSource = 'IDLE';
+                // Smoothed readouts for the panel
                 this.lossEma = NaN;
                 this.aimErrEma = NaN;
                 this.fireAgreeEma = NaN;
                 this.lossHistory = [];
+                this.lastHistoryAt = 0;
+                this.lastSampleAt = 0;
                 this.lastSavedAt = 0;
             },
 
@@ -1977,8 +2121,8 @@ Ambient
                     hiddenWeights1: this.hiddenWeights1,
                     hiddenWeights2: this.hiddenWeights2,
                     outputWeights: this.outputWeights,
-                    trainedSamples: this.trainedSamples,
-                    lastLoss: this.lossEma,
+                    trainSteps: this.trainSteps,
+                    lossEma: this.lossEma,
                     lossHistory: this.lossHistory,
                     savedAt: Date.now()
                 };
@@ -1989,11 +2133,6 @@ Ambient
             },
 
             load() {
-                // Old formats can never load into this network
-                this.legacyStorageKeys.forEach(key => {
-                    try { localStorage.removeItem(key); } catch (err) { /* ignore */ }
-                });
-
                 const raw = safeStorageGet(this.storageKey);
                 if (!raw) return false;
 
@@ -2001,21 +2140,20 @@ Ambient
                     const state = JSON.parse(raw);
                     if (!state || state.spec !== this.spec) {
                         console.info('Discarding saved neural controller: feature spec changed');
-                        try { localStorage.removeItem(this.storageKey); } catch (err) { /* ignore */ }
+                        safeStorageRemove(this.storageKey);
                         return false;
                     }
 
+                    this.reset();
                     this.hiddenWeights1 = state.hiddenWeights1;
                     this.hiddenWeights2 = state.hiddenWeights2;
                     this.outputWeights = state.outputWeights;
                     this.resetOptimizer();
-                    this.trainedSamples = Number.isFinite(state.trainedSamples) ? state.trainedSamples : 0;
-                    this.lastLoss = Number.isFinite(state.lastLoss) ? state.lastLoss : NaN;
-                    this.lossEma = this.lastLoss;
-                    this.lossHistory = Array.isArray(state.lossHistory) ? state.lossHistory.slice(-120) : [];
+                    this.trainSteps = Number.isFinite(state.trainSteps) ? state.trainSteps : 0;
+                    this.lossEma = Number.isFinite(state.lossEma) ? state.lossEma : NaN;
+                    this.lossHistory = Array.isArray(state.lossHistory) ? state.lossHistory.slice(-LOSS_HISTORY_LENGTH) : [];
                     this.lastSavedAt = Number.isFinite(state.savedAt) ? state.savedAt : 0;
-                    this.isTrained = this.trainedSamples > 0;
-                    this.isTraining = false;
+                    this.isTrained = this.trainSteps > 0;
                     this.activationSource = 'LOADED';
                     return this.isTrained;
                 } catch (err) {
@@ -2024,33 +2162,39 @@ Ambient
                 }
             },
 
-            // Hidden layers are tanh; outputs are linear (aim) plus a logit (fire).
-            // record=true stores activations for the network diagram (live decisions only,
-            // so the diagram shows what the gun is doing rather than random replay samples).
-            forwardDetailed(inputs, record = false) {
-                const layer = (weights, x, activate) => weights.map(row => {
-                    let sum = row[x.length];
-                    for (let i = 0; i < x.length; i++) sum += row[i] * x[i];
-                    return activate ? Math.tanh(sum) : sum;
-                });
-                const hidden1 = layer(this.hiddenWeights1, inputs, true);
-                const hidden2 = layer(this.hiddenWeights2, hidden1, true);
-                const outputs = layer(this.outputWeights, hidden2, false);
+            // out = activate(weights · x + bias), written in place
+            layerInto(weights, x, out, activate) {
+                const n = x.length;
+                for (let r = 0; r < weights.length; r++) {
+                    const row = weights[r];
+                    let sum = row[n];
+                    for (let i = 0; i < n; i++) sum += row[i] * x[i];
+                    out[r] = activate ? Math.tanh(sum) : sum;
+                }
+                return out;
+            },
 
+            // Hidden layers are tanh; outputs are linear (aim) plus a logit (fire). Returns a buffer
+            // that the next forward pass overwrites, along with this._h1 and this._h2.
+            forward(inputs) {
+                this.layerInto(this.hiddenWeights1, inputs, this._h1, true);
+                this.layerInto(this.hiddenWeights2, this._h1, this._h2, true);
+                return this.layerInto(this.outputWeights, this._h2, this._out, false);
+            },
+
+            // record=true stores activations for the network diagram (live decisions only,
+            // so the diagram shows what the gun is doing rather than random replay samples)
+            predict(inputs, record = false) {
+                const outputs = this.forward(inputs);
                 if (record) {
-                    this.lastInputs = inputs.slice();
-                    this.lastHidden1 = hidden1;
-                    this.lastHidden2 = hidden2;
+                    this.lastInputs = Array.from(inputs);
+                    this.lastHidden1 = Array.from(this._h1);
+                    this.lastHidden2 = Array.from(this._h2);
                     // Diagram colors expect -1..1: squash aim outputs, show fire as 2p-1
                     this.lastOutputs = [Math.tanh(outputs[0]), Math.tanh(outputs[1]), 2 * sigmoid(outputs[2]) - 1];
                     this.activationSource = controllerMode === 'neural' ? 'LIVE: NET AIMING' : 'LIVE: SHADOWING SOLVER';
                 }
-
-                return { hidden1, hidden2, outputs };
-            },
-
-            predict(inputs, record = false) {
-                return this.forwardDetailed(inputs, record).outputs;
+                return outputs;
             },
 
             // Aim: squared error in scaled lead units. Fire: binary cross-entropy on the logit.
@@ -2062,38 +2206,36 @@ Ambient
                 return 0.5 * (eYaw * eYaw + ePitch * ePitch) + NN_FIRE_LOSS_WEIGHT * bce;
             },
 
-            evaluateReplayLoss() {
+            evaluateReplayLoss(count) {
                 const samples = this.liveValidation.length ? this.liveValidation : this.liveReplay;
                 if (!samples.length) return NaN;
-
-                const count = Math.min(48, samples.length);
                 let loss = 0;
-
                 for (let i = 0; i < count; i++) {
-                    const sample = samples[Math.floor(Math.random() * samples.length)];
+                    const sample = pick(samples);
                     loss += this.lossFor(this.predict(sample.inputs), sample.targets);
                 }
-
                 return loss / count;
             },
 
             // One Adam step on a minibatch drawn from the replay buffer
             trainBatch(batch) {
-                const layers = [this.hiddenWeights1, this.hiddenWeights2, this.outputWeights];
-                const grads = layers.map(l => this.zerosLike(l));
+                const layers = this.layers();
+                const grads = this._grads;
+                grads.forEach(layer => layer.forEach(row => row.fill(0)));
+                const dOut = this._dOut, dH1 = this._dH1, dH2 = this._dH2;
                 let loss = 0;
 
                 for (const { inputs, targets } of batch) {
-                    const { hidden1, hidden2, outputs } = this.forwardDetailed(inputs);
+                    const outputs = this.forward(inputs);
+                    const hidden1 = this._h1, hidden2 = this._h2;
                     loss += this.lossFor(outputs, targets);
 
                     // dLoss/d(pre-activation) for each output
-                    const dOut = [
-                        outputs[0] - targets[0],
-                        outputs[1] - targets[1],
-                        NN_FIRE_LOSS_WEIGHT * (sigmoid(outputs[2]) - targets[2])
-                    ];
-                    const dH2 = new Array(this.hiddenCount2).fill(0);
+                    dOut[0] = outputs[0] - targets[0];
+                    dOut[1] = outputs[1] - targets[1];
+                    dOut[2] = NN_FIRE_LOSS_WEIGHT * (sigmoid(outputs[2]) - targets[2]);
+
+                    dH2.fill(0);
                     for (let o = 0; o < this.outputCount; o++) {
                         const row = this.outputWeights[o], g = grads[2][o];
                         for (let h = 0; h < this.hiddenCount2; h++) {
@@ -2104,7 +2246,7 @@ Ambient
                     }
                     for (let h = 0; h < this.hiddenCount2; h++) dH2[h] *= 1 - hidden2[h] * hidden2[h];
 
-                    const dH1 = new Array(this.hiddenCount1).fill(0);
+                    dH1.fill(0);
                     for (let h = 0; h < this.hiddenCount2; h++) {
                         const row = this.hiddenWeights2[h], g = grads[1][h];
                         for (let i = 0; i < this.hiddenCount1; i++) {
@@ -2144,53 +2286,38 @@ Ambient
                 return loss / batch.length;
             },
 
+            // Every 5th sample is held out for the loss readout
             rememberLiveSample(inputs, targets) {
-                const sample = {
-                    inputs: inputs.slice(),
-                    targets: targets.slice()
-                };
-
+                const sample = { inputs, targets };
                 this.observedSamples++;
-
                 if (this.observedSamples % 5 === 0) {
-                    this.liveValidation.push(sample);
-                    if (this.liveValidation.length > NN_LIVE_VALIDATION_LIMIT) {
-                        this.liveValidation.shift();
-                    }
-                    return;
-                }
-
-                this.liveReplay.push(sample);
-
-                if (this.liveReplay.length > NN_LIVE_REPLAY_LIMIT) {
-                    this.liveReplay.shift();
+                    pushBounded(this.liveValidation, sample, NN_LIVE_VALIDATION_LIMIT);
+                } else {
+                    pushBounded(this.liveReplay, sample, NN_LIVE_REPLAY_LIMIT);
                 }
             },
 
             trainFromLiveReplay(batchCount) {
                 if (this.liveReplay.length === 0) return;
 
+                const batch = this._batch;
                 for (let b = 0; b < batchCount; b++) {
-                    const batch = [];
-                    for (let i = 0; i < NN_BATCH_SIZE; i++) {
-                        batch.push(this.liveReplay[Math.floor(Math.random() * this.liveReplay.length)]);
-                    }
+                    for (let i = 0; i < NN_BATCH_SIZE; i++) batch[i] = pick(this.liveReplay);
                     this.trainBatch(batch);
                 }
-
-                this.trainedSamples += batchCount;
-                this.lastLoss = this.evaluateReplayLoss();
+                this.trainSteps += batchCount;
                 this.isTrained = true;
 
                 const now = performance.now();
                 this.lastSampleAt = now;
-                if (Number.isFinite(this.lastLoss)) {
-                    this.lossEma = Number.isFinite(this.lossEma) ? this.lossEma + (this.lastLoss - this.lossEma) * 0.05 : this.lastLoss;
-                }
-                if (now - this.lastHistoryAt > 500 && Number.isFinite(this.lossEma)) {
+                // The validation loss only feeds a slow readout, so check it twice a second
+                if (now - this.lastHistoryAt > 500) {
                     this.lastHistoryAt = now;
-                    this.lossHistory.push(this.lossEma);
-                    if (this.lossHistory.length > 120) this.lossHistory.shift();
+                    const loss = this.evaluateReplayLoss(128);
+                    if (Number.isFinite(loss)) {
+                        this.lossEma = ema(this.lossEma, loss, 0.3);
+                        pushBounded(this.lossHistory, this.lossEma, LOSS_HISTORY_LENGTH);
+                    }
                 }
                 if (Date.now() - this.lastSavedAt > 15000) this.save(); // autosave while learning
             },
@@ -2198,23 +2325,17 @@ Ambient
             // Compare the net's aim with the solver's, and its fire call with the in-reach label
             recordAgreement(net, teacher, inReach) {
                 const aimErr = aimAngleBetween(net.targetYaw, net.targetPitch, teacher.targetYaw, teacher.targetPitch) * THREE.MathUtils.RAD2DEG;
-                const agree = net.canFire === inReach ? 1 : 0;
-                this.aimErrEma = Number.isFinite(this.aimErrEma) ? this.aimErrEma + (aimErr - this.aimErrEma) * 0.03 : aimErr;
-                this.fireAgreeEma = Number.isFinite(this.fireAgreeEma) ? this.fireAgreeEma + (agree - this.fireAgreeEma) * 0.03 : agree;
+                this.aimErrEma = ema(this.aimErrEma, aimErr, 0.03);
+                this.fireAgreeEma = ema(this.fireAgreeEma, net.canFire === inReach ? 1 : 0, 0.03);
             },
 
-            decide(targetPos, targetVelocity, isMortar, targetInfo, muzzlePos) {
-                const D = targetPos.clone().sub(muzzlePos);
-                const inputs = makeControllerInputs(D, targetVelocity, isMortar);
+            // inputs from makeControllerInputs, sight from computeSightAngles for the same target
+            decide(inputs, sight) {
                 const outputs = this.predict(inputs, true);
-                const sight = computeSightAngles(targetPos, muzzlePos);
-                const fireConfidence = sigmoid(outputs[2]);
-
                 return {
                     targetYaw: wrapAngle(sight.targetYaw + outputs[0] * NN_YAW_SCALE / Math.max(0.05, Math.cos(sight.targetPitch))),
                     targetPitch: sight.targetPitch + outputs[1] * NN_PITCH_SCALE,
-                    canFire: fireConfidence > 0.5,
-                    fireConfidence
+                    canFire: outputs[2] > 0 // logit > 0 ⇔ fire probability > 0.5
                 };
             }
         };
@@ -2227,6 +2348,10 @@ Ambient
 
         function safeStorageSet(key, value) {
             try { localStorage.setItem(key, value); return true; } catch (err) { return false; }
+        }
+
+        function safeStorageRemove(key) {
+            try { localStorage.removeItem(key); } catch (err) { /* ignore */ }
         }
 
         // Rounds, hits and kills credited to whichever controller fired the round
@@ -2247,14 +2372,14 @@ Ambient
                 statusText.innerText = controllerMode === 'neural' ? 'AUTO-ENGAGE · NEURAL' : 'AUTO-ENGAGE · CLASSIC';
             }
 
-            updateMLPanel();
+            updateMLPanel(true);
         }
 
         // Toggle learning on or off. The net imitates the classic solver whenever a target is tracked.
         function trainNeuralImitation() {
             NeuralController.isTraining = !NeuralController.isTraining;
             if (!NeuralController.isTraining) NeuralController.save();
-            updateMLPanel();
+            updateMLPanel(true);
         }
 
         // Two clicks within 3 s: wipe the net and its saved copy, and hand the gun back to the solver
@@ -2276,9 +2401,8 @@ Ambient
             resetArmedUntil = 0;
             btn.textContent = 'RESET NET';
             btn.classList.remove('confirm');
-            NeuralController.isTraining = false;
             NeuralController.reset();
-            try { localStorage.removeItem(NeuralController.storageKey); } catch (err) { /* ignore */ }
+            safeStorageRemove(NeuralController.storageKey);
             setControllerMode('classic');
         }
 
@@ -2289,7 +2413,7 @@ Ambient
 
         function toggleAudioDebug() {
             isAudioDebugVisible = !isAudioDebugVisible;
-            updateAudioDebugOverlay();
+            updateAudioDebugOverlay(true);
         }
 
         function handleGlobalHotkeys(event) {
@@ -2539,6 +2663,28 @@ Ambient
             [0, -17], [5.5, -11], [8, -3], [8.5, 6], [8.5, 44],
             [-8.5, 44], [-8.5, 6], [-8, -3], [-5.5, -11]
         ];
+        const SHIP_BOUNDS = {
+            halfWidth: Math.max(...SHIP_OUTLINE.map(([x]) => Math.abs(x))),
+            bow: Math.min(...SHIP_OUTLINE.map(([, z]) => z)),
+            stern: Math.max(...SHIP_OUTLINE.map(([, z]) => z))
+        };
+
+        // Half the hull's width at a point along its length (the outline is symmetric)
+        function hullHalfWidthAt(z) {
+            const side = SHIP_OUTLINE.filter(([x]) => x >= 0).sort((a, b) => a[1] - b[1]);
+            if (z <= side[0][1]) return side[0][0];
+            for (let i = 1; i < side.length; i++) {
+                const [x0, z0] = side[i - 1], [x1, z1] = side[i];
+                if (z <= z1) return x0 + (x1 - x0) * (z - z0) / (z1 - z0);
+            }
+            return side[side.length - 1][0];
+        }
+
+        // Within `margin` of the ship's bounding box (in plan)
+        function nearShip(position, margin = 0) {
+            return Math.abs(position.x) < SHIP_BOUNDS.halfWidth + margin &&
+                position.z > SHIP_BOUNDS.bow - margin && position.z < SHIP_BOUNDS.stern + margin;
+        }
 
         function shapeFromOutline(points, scale = 1) {
             // Shape y maps to world -z after rotateX(-PI/2)
@@ -2581,7 +2727,7 @@ Ambient
             for (let i = 0; i < SHIP_OUTLINE.length; i++) {
                 const [x1, z1] = SHIP_OUTLINE[i];
                 const [x2, z2] = SHIP_OUTLINE[(i + 1) % SHIP_OUTLINE.length];
-                if (z1 === 44 && z2 === 44) continue; // open stern
+                if (z1 === SHIP_BOUNDS.stern && z2 === SHIP_BOUNDS.stern) continue; // open stern
                 const len = Math.hypot(x2 - x1, z2 - z1);
                 const tex = hazardTex.clone();
                 tex.needsUpdate = true;
@@ -2640,11 +2786,13 @@ Ambient
 
         function init() {
             // Load high score from localStorage
-            const savedHighScore = localStorage.getItem('ciwsHighScore');
+            const savedHighScore = safeStorageGet('ciwsHighScore');
             if (savedHighScore) {
                 highScore = parseInt(savedHighScore);
                 document.getElementById('high-score').innerText = highScore;
             }
+
+            AudioController.setSpatialMode(safeStorageGet('ciwsSpatialMode') || 'extreme');
 
             // Restore a saved net, and the controller the player last chose (classic by default)
             NeuralController.load();
@@ -2993,7 +3141,7 @@ Ambient
                 do {
                     x = (Math.random() * 2 - 1) * halfArea;
                     z = (Math.random() * 2 - 1) * halfArea;
-                } while (Math.abs(x) < 22 && z > -35 && z < 62); // keep clear of our own ship
+                } while (nearShip({ x, z }, 15)); // keep clear of our own ship
 
                 const mesh = createFriendlyBoat();
                 mesh.position.set(x, 0.75, z);
@@ -3747,8 +3895,7 @@ Ambient
         }
 
         function isOverOpenWater(position) {
-            const onShip = Math.abs(position.x) < 10 && position.z > -19 && position.z < 46;
-            return !onShip && position.y < 4;
+            return !nearShip(position, 1.5) && position.y < 4;
         }
 
         // Drone kill: big airburst that blooms, cools into smoke and throws burning debris
@@ -3797,8 +3944,7 @@ Ambient
 
         // Missile reaching its target: a ground-hugging fireball, smoke column and,
         // on open water, a splash
-        function spawnImpact(pos) {
-            const onWater = isOverOpenWater(pos);
+        function spawnImpact(pos, onWater) {
             spawnFlash(pos, 10, 0.24, 14);
             if (onWater) spawnFoamRing(pos.x, pos.z, 26, 1.1);
             else spawnShockRing(pos, 26, 0.5);
@@ -3880,19 +4026,15 @@ Ambient
             }
         }
 
-        function createExplosion(position, size, options = {}) {
-            const {
-                playSound = true,
-                kind = size >= 2 ? 'airburst' : size >= 1 ? 'impact' : 'hit'
-            } = options;
-
+        // kind: 'airburst' (drone kill), 'impact' (missile reaches its target),
+        // 'hit' (round strikes without killing), 'flak' (round self-destructs)
+        function createExplosion(position, kind) {
             const pos = position.clone();
-            if (playSound) {
-                AudioController.playExplosion(pos, kind, timeScale, { water: kind === 'impact' && isOverOpenWater(pos) });
-            }
+            const water = kind === 'impact' && isOverOpenWater(pos);
+            AudioController.playExplosion(pos, kind, { water });
 
-            if (kind === 'airburst') spawnAirburst(pos, size / 2);
-            else if (kind === 'impact') spawnImpact(pos);
+            if (kind === 'airburst') spawnAirburst(pos);
+            else if (kind === 'impact') spawnImpact(pos, water);
             else if (kind === 'flak') spawnFlak(pos);
             else spawnHit(pos);
         }
@@ -4031,20 +4173,16 @@ Ambient
                 updateTrail(t);
             }
 
-            // Spark streaks, all in one instanced draw
+            // Spark streaks, all in one instanced draw; expired sparks are compacted out in place
+            const sparkDrag = Math.exp(-1.5 * dt);
             let live = 0;
-            for (let i = fxSparks.length - 1; i >= 0; i--) {
-                const s = fxSparks[i];
+            for (const s of fxSparks) {
                 s.age += dt;
-                if (s.age >= s.life) {
-                    fxSparks.splice(i, 1);
-                    continue;
-                }
-                s.vel.multiplyScalar(Math.exp(-1.5 * dt));
+                if (s.age >= s.life) continue;
+                s.vel.multiplyScalar(sparkDrag);
                 s.vel.y -= FX_GRAVITY * 0.6 * dt;
                 s.pos.addScaledVector(s.vel, dt);
-            }
-            for (const s of fxSparks) {
+                fxSparks[live] = s;
                 const k = s.age / s.life;
                 _tmpDir.copy(s.vel).normalize();
                 _sparkQuat.setFromUnitVectors(_zAxis, _tmpDir);
@@ -4055,6 +4193,7 @@ Ambient
                 sparkMesh.setColorAt(live, _sparkColor.copy(_sparkHot).lerp(_sparkCool, k));
                 live++;
             }
+            fxSparks.length = live;
             sparkMesh.count = live;
             sparkMesh.instanceMatrix.needsUpdate = true;
             if (sparkMesh.instanceColor) sparkMesh.instanceColor.needsUpdate = true;
@@ -4076,9 +4215,7 @@ Ambient
         }
 
         function shoot() {
-            // Muzzle flash location (approximate end of barrels)
-            const muzzlePos = new THREE.Vector3(0, 0, 3.5);
-            muzzlePos.applyMatrix4(barrels.matrixWorld);
+            const muzzlePos = getMuzzlePosition();
 
             // Create Tracer
             const bullet = new THREE.Mesh(TRACER_GEO, TRACER_MAT);
@@ -4102,7 +4239,9 @@ Ambient
                 mesh: bullet,
                 velocity: velocity.clone(), // Current velocity (will be affected by gravity)
                 life: ROUND_LIFE_STEPS,
-                firedBy: controllerMode
+                firedBy: controllerMode,
+                origin: muzzlePos.clone(),
+                prevPos: muzzlePos.clone() // where it was before its latest move
             });
             engagementStats[controllerMode].rounds++;
 
@@ -4206,10 +4345,9 @@ Ambient
             return dist / speed;
         }
 
-        function getMuzzlePosition() {
-            const muzzlePos = new THREE.Vector3(0, 0, 3.5);
-            muzzlePos.applyMatrix4(barrels.matrixWorld);
-            return muzzlePos;
+        // End of the barrels in world space
+        function getMuzzlePosition(out = new THREE.Vector3()) {
+            return out.set(0, 0, 3.5).applyMatrix4(barrels.matrixWorld);
         }
 
         function computeSightAngles(targetPos, muzzlePos) {
@@ -4247,12 +4385,10 @@ Ambient
             const aimAngles = computeSightAngles(aimPoint, muzzlePos);
 
             return {
-                aimPoint,
                 targetYaw: aimAngles.targetYaw,
                 targetPitch: aimAngles.targetPitch,
                 interceptSteps,
-                canFire: interceptSteps !== null,
-                fireConfidence: interceptSteps !== null ? 1 : 0
+                canFire: interceptSteps !== null
             };
         }
 
@@ -4429,7 +4565,7 @@ Ambient
 
                 // Impact Check
                 if (distToTarget < 5 || passedThroughTarget) {
-                    createExplosion(m.mesh.position, 1);
+                    createExplosion(m.mesh.position, 'impact');
                     scene.remove(m.mesh);
                     missiles.splice(i, 1);
                     if (m.targetInfo.type === 'ciws') {
@@ -4476,20 +4612,17 @@ Ambient
                 // The classic solver always runs: it aims the gun in classic mode and is the
                 // teacher the net imitates while learning
                 const teacherDecision = computeAimSolution(targetPos, targetVelocity, target.isMortar, muzzlePos);
+                const netInputs = makeControllerInputs(targetPos.clone().sub(muzzlePos), targetVelocity, target.isMortar);
+                const sight = computeSightAngles(targetPos, muzzlePos);
 
                 if (NeuralController.isTraining) {
-                    NeuralController.rememberLiveSample(
-                        makeControllerInputs(targetPos.clone().sub(muzzlePos), targetVelocity, target.isMortar),
-                        makeControllerTargets(teacherDecision, targetPos, muzzlePos)
-                    );
+                    NeuralController.rememberLiveSample(netInputs, makeControllerTargets(teacherDecision, sight));
                     NeuralController.trainFromLiveReplay(NN_BATCHES_PER_FRAME);
                 }
 
                 // Once trained, the net answers every frame: it drives in neural mode and
                 // shadows the solver otherwise, so the panel can compare the two
-                const netDecision = NeuralController.isTrained
-                    ? NeuralController.decide(targetPos, targetVelocity, target.isMortar, target.targetInfo, muzzlePos)
-                    : null;
+                const netDecision = NeuralController.isTrained ? NeuralController.decide(netInputs, sight) : null;
                 if (netDecision) NeuralController.recordAgreement(netDecision, teacherDecision, isInReach(teacherDecision));
 
                 const decision = controllerMode === 'neural' && netDecision ? netDecision : teacherDecision;
@@ -4576,20 +4709,20 @@ Ambient
                 // Audio update handled below
             }
 
-            AudioController.update(currentBarrelSpeed, servoSpeed, isFiring, timeScale);
+            AudioController.update(currentBarrelSpeed, servoSpeed);
 
             // 3. Projectiles & Collision
             for (let i = projectiles.length - 1; i >= 0; i--) {
                 const p = projectiles[i];
                 p.life -= simSteps;
                 if (p.life <= 0) {
-                    createExplosion(p.mesh.position, 0.35, { kind: 'flak' });
+                    createExplosion(p.mesh.position, 'flak');
                     scene.remove(p.mesh);
                     projectiles.splice(i, 1);
                     continue;
                 }
 
-                const prevPos = p.mesh.position.clone();
+                const prevPos = p.prevPos.copy(p.mesh.position);
 
                 // Apply gravity to velocity
                 p.velocity.y -= GRAVITY * simSteps;
@@ -4615,7 +4748,7 @@ Ambient
                         const distToRay = ray.distanceSqToPoint(mPos);
                         if (distToRay < 1.0) {
                             // HIT
-                            createExplosion(mPos, 0.5);
+                            createExplosion(mPos, 'hit');
                             m.health--;
                             engagementStats[p.firedBy].hits++;
 
@@ -4625,7 +4758,7 @@ Ambient
                             hit = true;
 
                             if (m.health <= 0) {
-                                createExplosion(mPos, 2.0);
+                                createExplosion(mPos, 'airburst');
                                 scene.remove(m.mesh);
                                 missiles.splice(j, 1);
                                 engagementStats[p.firedBy].kills++;
@@ -4635,7 +4768,7 @@ Ambient
                                 // Update high score if beaten
                                 if (score > highScore) {
                                     highScore = score;
-                                    localStorage.setItem('ciwsHighScore', highScore);
+                                    safeStorageSet('ciwsHighScore', highScore);
                                     document.getElementById('high-score').innerText = highScore;
                                 }
                             }
@@ -4701,6 +4834,10 @@ Ambient
         window.toggleCameraFollow = toggleCameraFollow;
         window.toggleMute = toggleMute;
         window.toggleSlowMo = toggleSlowMo;
+        window.cycleSpatialMode = () => {
+            const i = SPATIAL_MODES.indexOf(AudioController.spatialMode);
+            AudioController.setSpatialMode(SPATIAL_MODES[(i + 1) % SPATIAL_MODES.length]);
+        };
         window.setControllerMode = setControllerMode;
         window.trainNeuralImitation = trainNeuralImitation;
         window.resetNeuralNetwork = resetNeuralNetwork;
@@ -4809,7 +4946,7 @@ Ambient
             }
 
             updateExplosionFX(simSteps / SIM_STEPS_PER_SECOND, realDt);
-            AudioController.frame(missiles, timeScale);
+            AudioController.frame(missiles);
 
             waterMaterial.uniforms.time.value = clock.elapsedTime;
             skyDome.position.copy(camera.position);

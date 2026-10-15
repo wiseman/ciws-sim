@@ -9,19 +9,14 @@ Reports input ranges, fire-label balance, aim accuracy (degrees and miss distanc
 target versus a no-lead baseline), fire-call accuracy, and per-controller rounds/hits/kills.
 With drive_seconds > 0 the net then aims the gun (learning stays on) for that long.
 """
-import http.server, json, socketserver, sys, threading, time
-from functools import partial
-from pathlib import Path
-from playwright.sync_api import sync_playwright
+import json
+import sys
+import time
 
-root = Path(__file__).resolve().parent.parent
+from _harness import game_page, report_errors
+
 learn_seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 45
 drive_seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 0
-handler = partial(http.server.SimpleHTTPRequestHandler, directory=str(root))
-handler.log_message = lambda *a: None
-srv = socketserver.TCPServer(("127.0.0.1", 0), handler)
-port = srv.server_address[1]
-threading.Thread(target=srv.serve_forever, daemon=True).start()
 
 PROBE = r"""() => {
   const M = window.__ciwsML, nn = M.NeuralController, C = M.consts;
@@ -51,7 +46,7 @@ PROBE = r"""() => {
   const inReach = val.filter(s => s.targets[2] > 0.5);
   const fireRight = val.filter(s => (M.sigmoid(nn.predict(s.inputs)[2]) > 0.5) === (s.targets[2] > 0.5)).length;
   return {
-    examples: all.length, adamSteps: nn.trainedSamples, lossEma: nn.lossEma && r3(nn.lossEma),
+    examples: all.length, trainSteps: nn.trainSteps, lossEma: nn.lossEma && r3(nn.lossEma),
     inputs,
     fireLabelInReachPct: +(all.filter(s => s.targets[2] > 0.5).length / all.length * 100).toFixed(1),
     aim: {
@@ -71,29 +66,21 @@ PROBE = r"""() => {
   };
 }"""
 
-with sync_playwright() as p:
-    b = p.chromium.launch(args=["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"])
-    pg = b.new_page(viewport={"width": 1280, "height": 760})
-    errors = []
-    pg.on("pageerror", lambda e: errors.append(str(e)))
-    pg.on("console", lambda m: m.type in ("error", "warning") and errors.append(m.text))
-    pg.goto(f"http://127.0.0.1:{port}/index.html")
+
+with game_page(console_levels=("error", "warning")) as (page, errors):
     time.sleep(2)
-    pg.evaluate("() => { localStorage.clear(); window.__ciwsML.NeuralController.reset(); window.trainNeuralImitation(); }")
+    page.evaluate("() => { localStorage.clear(); window.__ciwsML.NeuralController.reset(); window.trainNeuralImitation(); }")
     time.sleep(learn_seconds)
     print("== after learning", learn_seconds, "s ==")
-    print(json.dumps(pg.evaluate(PROBE), indent=1))
-    print("game over:", pg.evaluate("() => document.getElementById('game-over').style.display === 'block'"),
-          "| wave:", pg.inner_text("#wave-count"), "| time:", pg.inner_text("#time-elapsed"))
+    print(json.dumps(page.evaluate(PROBE), indent=1))
+    print("game over:", page.evaluate("() => document.getElementById('game-over').style.display === 'block'"),
+          "| wave:", page.inner_text("#wave-count"), "| time:", page.inner_text("#time-elapsed"))
     if drive_seconds > 0:
-        pg.evaluate("() => window.setControllerMode('neural')")
+        page.evaluate("() => window.setControllerMode('neural')")
         time.sleep(drive_seconds)
         print("== after the net aimed for", drive_seconds, "s ==")
-        out = pg.evaluate(PROBE)
+        out = page.evaluate(PROBE)
         print(json.dumps({"aim": out["aim"], "byType": out["byType"], "fireCallAccuracyPct": out["fireCallAccuracyPct"], "session": out["session"]}, indent=1))
-        print("game over:", pg.evaluate("() => document.getElementById('game-over').style.display === 'block'"),
-              "| wave:", pg.inner_text("#wave-count"), "| time:", pg.inner_text("#time-elapsed"))
-    if errors:
-        print("errors:", errors)
-    b.close()
-srv.shutdown()
+        print("game over:", page.evaluate("() => document.getElementById('game-over').style.display === 'block'"),
+              "| wave:", page.inner_text("#wave-count"), "| time:", page.inner_text("#time-elapsed"))
+report_errors(errors)
