@@ -620,6 +620,11 @@
         const YAW_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const PITCH_FIRE_THRESHOLD = 0.10;   // radians (~5.7°)
         const MAX_TRAVERSE_RATE = 0.08;   // max yaw/pitch change per step (radians/step)
+        // Visual spin rates (radians/step). Far slower than the real thing: a 6-barrel cluster at
+        // 75 rev/s, or a prop, strobes to a standstill at display frame rates.
+        const BARREL_SPIN_RATE = 0.38;
+        const PROP_SPIN_RATE = 0.45;
+        const BARREL_SPIN_HOLD = 75;   // steps the barrels stay spun up after the last shot
         const MAX_TRAVERSE_ACCEL = 0.005; // max yaw/pitch acceleration per step²
         const RADAR_TRACK_ERROR_BASE = 0.3;
         const RADAR_TRACK_ERROR_RANGE_FACTOR = 0.00375;
@@ -651,7 +656,7 @@
         // --- STATE ---
         let scene, camera, renderer, controls;
         let clock, deltaTime;
-        let ciwsGroup, turretYaw, turretPitch, barrels;
+        let ciwsGroup, turretYaw, turretPitch, barrels, barrelBlur;
         let projectiles = [];
         let missiles = [];
         let target = null;
@@ -703,6 +708,8 @@
         const SPATIAL_MODES = Object.keys(SPATIAL_PROFILES);
         const GUN_SPATIAL_LIMITS = { maxPan: 0.2, cueScale: 0.25 };
         const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, 4, 0);
+        const AUDIBLE_FLOOR = 0.006; // ≈ -44 dB: one-shot parts quieter than this aren't played
+        const MAX_ONE_SHOTS = 32;    // concurrent one-shot sounds; more are dropped
 
         // Small offline DSP toolkit for building buffers
         const DSP = {
@@ -764,6 +771,15 @@
                 let max = 0;
                 for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
                 if (max > 0) for (let i = 0; i < data.length; i++) data[i] *= peak / max;
+            },
+            // Unity gain up to `knee`, then a smooth bend that never exceeds ±1
+            safetyCurve(knee, size = 2048) {
+                const curve = new Float32Array(size);
+                for (let i = 0; i < size; i++) {
+                    const x = (i / (size - 1)) * 2 - 1, a = Math.abs(x);
+                    curve[i] = a <= knee ? x : Math.sign(x) * (knee + (1 - knee) * Math.tanh((a - knee) / (1 - knee)));
+                }
+                return curve;
             },
             // tanh soft-clip curve for a WaveShaperNode, cached by its settings
             _curves: new Map(),
@@ -828,9 +844,15 @@
                 limiter.ratio.value = 12;
                 limiter.attack.value = 0.002;
                 limiter.release.value = 0.25;
+                // The compressor can let a fast transient slip past full scale; a soft clipper
+                // after it rounds those off instead of letting the output hard-clip
+                const safety = ctx.createWaveShaper();
+                safety.curve = DSP.safetyCurve(0.8);
+                safety.oversample = '2x';
                 this.masterGain.connect(limiter);
-                limiter.connect(ctx.destination);
-                this.output = limiter; // tap point for recording
+                limiter.connect(safety);
+                safety.connect(ctx.destination);
+                this.output = safety; // tap point for recording
 
                 this.mixBus = this.gain(1);
                 this.mixBus.connect(this.masterGain);
@@ -942,7 +964,9 @@
                 this._invCam.copy(camera.quaternion).invert();
             },
 
-            updateSpatializer: function (sp, position, smoothing = 0.03) {
+            // Direction and distance cues for a source at `position`, under the current profile.
+            // far is the ear (0 left, 1 right) that gets the delay and treble cut.
+            spatialCues: function (position, refDistance, maxPan = 1, cueScale = 1) {
                 const P = SPATIAL_PROFILES[this.spatialMode];
                 const rel = this._rel.subVectors(position, camera.position);
                 const distance = rel.length();
@@ -952,24 +976,35 @@
                     rel.set(0, 0, -1);
                 }
                 // rel is now in camera space: +x right, +y up, -z straight ahead
-                const pan = THREE.MathUtils.clamp(rel.x * P.panGain, -sp.maxPan, sp.maxPan);
-                const amount = Math.abs(pan) * sp.cueScale;
-                const behind = Math.max(0, rel.z) * sp.cueScale;
+                const pan = THREE.MathUtils.clamp(rel.x * P.panGain, -maxPan, maxPan);
+                const amount = Math.abs(pan) * cueScale;
+                const behind = Math.max(0, rel.z) * cueScale;
                 const angle = (pan + 1) * Math.PI / 4;
-                const far = pan > 0 ? 0 : 1;
-                const distanceGain = sp.refDistance / (sp.refDistance + P.rolloff * Math.max(0, distance - sp.refDistance));
-                sp.pan = pan;
-                sp.distanceGain = distanceGain;
+                const distanceGain = refDistance / (refDistance + P.rolloff * Math.max(0, distance - refDistance));
+                return {
+                    distance, pan, distanceGain,
+                    level: distanceGain * (1 - P.rearDuck * behind),
+                    rearHz: 20000 * Math.pow(P.rearHz / 20000, behind),
+                    earGains: [Math.cos(angle) * 1.2, Math.sin(angle) * 1.2],
+                    far: pan > 0 ? 0 : 1,
+                    farDelay: amount * P.itd,
+                    farShadowHz: 20000 * Math.pow(P.shadowHz / 20000, amount)
+                };
+            },
 
-                this.setParam(sp.input.gain, sp.level * distanceGain * (1 - P.rearDuck * behind), smoothing);
-                this.setParam(sp.rear.frequency, 20000 * Math.pow(P.rearHz / 20000, behind), smoothing);
+            updateSpatializer: function (sp, position, smoothing = 0.03) {
+                const c = this.spatialCues(position, sp.refDistance, sp.maxPan, sp.cueScale);
+                sp.pan = c.pan;
+                sp.distanceGain = c.distanceGain;
+                this.setParam(sp.input.gain, sp.level * c.level, smoothing);
+                this.setParam(sp.rear.frequency, c.rearHz, smoothing);
                 for (let i = 0; i < 2; i++) {
                     const ear = sp.ears[i];
-                    this.setParam(ear.gain.gain, (i === 0 ? Math.cos(angle) : Math.sin(angle)) * 1.2, smoothing);
-                    this.setParam(ear.delay.delayTime, i === far ? amount * P.itd : 0, smoothing);
-                    this.setParam(ear.shadow.frequency, i === far ? 20000 * Math.pow(P.shadowHz / 20000, amount) : 20000, smoothing);
+                    this.setParam(ear.gain.gain, c.earGains[i], smoothing);
+                    this.setParam(ear.delay.delayTime, i === c.far ? c.farDelay : 0, smoothing);
+                    this.setParam(ear.shadow.frequency, i === c.far ? c.farShadowHz : 20000, smoothing);
                 }
-                return distance;
+                return c.distance;
             },
 
             setSpatialMode: function (mode) {
@@ -1059,9 +1094,12 @@
                 const sideScale = sideEnergy > 0 ? midScale * Math.sqrt(midEnergy / sideEnergy) : 0;
                 const buf = this.ctx.createBuffer(2, len, sr);
                 const m = buf.getChannelData(0), sd = buf.getChannelData(1);
+                // Fade the last 15 ms so a tail that hasn't fully decayed doesn't end in a click
+                const fadeStart = len - Math.floor(sr * 0.015);
                 for (let i = 0; i < len; i++) {
-                    m[i] = mid[i] * midScale;
-                    sd[i] = side[i] * sideScale;
+                    const fade = i < fadeStart ? 1 : 0.5 + 0.5 * Math.cos(Math.PI * (i - fadeStart) / (len - fadeStart));
+                    m[i] = mid[i] * midScale * fade;
+                    sd[i] = side[i] * sideScale * fade;
                 }
                 return buf;
             },
@@ -1329,48 +1367,77 @@
 
             // Plays a one-shot buffer at a world position, `delay` seconds from now.
             // spread: how much stereo width the side channel adds around the positioned mid.
+            // One-shots don't move, so their cues are baked into a lighter graph than the live
+            // spatializer, and any part too faint to hear (direct sound, echo or both) is skipped.
             playAt: function (buffer, position, { gain = 1, refDistance = 20, rate = 1, wet = 0.2, delay = 0, spread = 0.5 } = {}) {
                 const ctx = this.ctx;
                 const P = SPATIAL_PROFILES[this.spatialMode];
-                const distance = position.distanceTo(camera.position);
-                const src = ctx.createBufferSource();
-                src.buffer = buffer;
-                src.playbackRate.value = rate * this.slowPitch;
-                const air = this.filter('lowpass', this.airCutoff(distance));
-                const split = ctx.createChannelSplitter(2);
-                const spatial = this.makeSpatializer(refDistance);
-                spatial.level = gain;
-                this.updateSpatializer(spatial, position, 0);
-                src.connect(air);
-                air.connect(split);
-                split.connect(spatial.input, 0);
-                spatial.output.connect(this.mixBus);
-                const side = this.gain(gain * spread * P.sideScale * spatial.distanceGain);
-                split.connect(side, 1);
-                side.connect(this.sideBus);
+                const c = this.spatialCues(position, refDistance);
+                const direct = gain * c.level;
                 // Distant sounds arrive more reverberant; only the mid feeds the reverb. In the
                 // exaggerated modes echoes also fade with distance and lean toward the source's side.
                 // (×√2 keeps a centred send at the level a plain mono send would have.)
-                const send = this.gain(gain * wet * Math.SQRT2 * (1 + Math.min(1.5, distance / 250)) * Math.pow(spatial.distanceGain, P.reverbFalloff));
-                const sendPan = ctx.createStereoPanner();
-                sendPan.pan.value = spatial.pan * P.reverbPan;
-                split.connect(send, 0);
-                send.connect(sendPan);
-                sendPan.connect(this.reverb);
+                const wetLevel = gain * wet * Math.SQRT2 * (1 + Math.min(1.5, c.distance / 250)) * Math.pow(c.distanceGain, P.reverbFalloff);
+                const playDirect = direct >= AUDIBLE_FLOOR;
+                const playWet = wetLevel * 0.55 >= AUDIBLE_FLOOR; // 0.55: reverb return level
+                if (!playDirect && !playWet) return c.distance;
+
+                const src = ctx.createBufferSource();
+                src.buffer = buffer;
+                src.playbackRate.value = rate * this.slowPitch;
+                const air = this.filter('lowpass', Math.min(this.airCutoff(c.distance), c.rearHz));
+                const split = ctx.createChannelSplitter(2);
+                src.connect(air);
+                air.connect(split);
+                const nodes = [src, air, split];
+                const add = node => { nodes.push(node); return node; };
+
+                if (playDirect) {
+                    // Near ear straight through; far ear delayed and darkened
+                    const input = add(this.gain(direct));
+                    input.channelCount = 1;
+                    input.channelCountMode = 'explicit';
+                    split.connect(input, 0);
+                    const merger = add(ctx.createChannelMerger(2));
+                    const near = 1 - c.far;
+                    const nearGain = add(this.gain(c.earGains[near]));
+                    input.connect(nearGain);
+                    nearGain.connect(merger, 0, near);
+                    const farDelay = add(ctx.createDelay(0.01));
+                    farDelay.delayTime.value = c.farDelay;
+                    const farShadow = add(this.filter('lowpass', c.farShadowHz));
+                    const farGain = add(this.gain(c.earGains[c.far]));
+                    input.connect(farDelay);
+                    farDelay.connect(farShadow);
+                    farShadow.connect(farGain);
+                    farGain.connect(merger, 0, c.far);
+                    merger.connect(this.mixBus);
+                    const side = add(this.gain(gain * spread * P.sideScale * c.distanceGain));
+                    split.connect(side, 1);
+                    side.connect(this.sideBus);
+                }
+                if (playWet) {
+                    const send = add(this.gain(wetLevel));
+                    const sendPan = add(ctx.createStereoPanner());
+                    sendPan.pan.value = c.pan * P.reverbPan;
+                    split.connect(send, 0);
+                    send.connect(sendPan);
+                    sendPan.connect(this.reverb);
+                }
                 src.start(ctx.currentTime + delay);
                 this.activeOneShots++;
                 src.onended = () => {
                     this.activeOneShots--;
-                    [src, air, split, side, send, sendPan, ...spatial.nodes].forEach(n => n.disconnect());
+                    nodes.forEach(n => n.disconnect());
                 };
-                return distance;
+                return c.distance;
             },
 
             // `at` delays the explosion itself (the audio lab uses it to lay out a timeline);
             // the speed-of-sound delay is added on top
             playExplosion: function (position, kind, { water = false, at = 0 } = {}) {
                 if (!this.isInit || this.isMuted) return;
-                if (this.activeOneShots > 48) return;
+                if (this.activeOneShots >= MAX_ONE_SHOTS) return;
                 const distance = position.distanceTo(camera.position);
                 const delay = at + (distance / SPEED_OF_SOUND) / timeScale;
                 const B = this.buffers;
@@ -1635,6 +1702,7 @@
 
         // Audio State
         let currentBarrelSpeed = 0;
+        let barrelSpinHold = 0; // sim steps the barrels keep spinning after the last shot
         let isFiring = false;
         let isAudioDebugVisible = false;
         let audioDebugLastDraw = 0;
@@ -2972,6 +3040,7 @@ Ambient
 
             // Barrels (The Vulcan cannon)
             barrels = new THREE.Group();
+            barrels.name = 'barrels';
             const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 3.5, 16);
             for (let i = 0; i < 6; i++) {
                 const barrel = new THREE.Mesh(barrelGeo, barrelMat);
@@ -2990,9 +3059,82 @@ Ambient
                 clamp.position.z = z;
                 barrels.add(clamp);
             });
+            barrelBlur = createBarrelBlur();
+            barrels.add(barrelBlur.shell, barrelBlur.swirl);
             gunBlock.add(barrels); // Add barrels to gunblock, gunblock is in pitch group
 
             addOutlines(turretYaw);
+        }
+
+        // Cel-style smear for the spinning barrels: hard-banded comet streaks on a sleeve around the
+        // cluster and a swirl on the muzzle face. Both are children of the barrels, so the streaks
+        // turn with them; the angle is taken per fragment so there is no seam.
+        function createBarrelBlur() {
+            const mat = new THREE.ShaderMaterial({
+                uniforms: {
+                    uSpin: { value: 0 },
+                    uPhase: { value: 0 },
+                    uFill: { value: 0 },
+                    uLight: { value: new THREE.Color(0xeef3f6) },
+                    uDark: { value: new THREE.Color(0x1d2226) }
+                },
+                vertexShader: `
+                    varying vec3 vPos;
+                    void main() {
+                        vPos = position;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }`,
+                fragmentShader: `
+                    uniform float uSpin;
+                    uniform float uPhase;
+                    uniform float uFill;
+                    uniform vec3 uLight;
+                    uniform vec3 uDark;
+                    varying vec3 vPos;
+                    void main() {
+                        // Three streaks around, each a light smear stepping up from a faint tail to an
+                        // ink-edged leading head. Between them, a ghosted fill that thickens at full speed.
+                        float u = atan(vPos.y, vPos.x) / 6.2831853 + 0.5;
+                        float s = fract(u * 3.0 + uPhase) / 0.55;
+                        if (s > 1.0 || s < 0.15) {
+                            if (uFill <= 0.0) discard;
+                            gl_FragColor = vec4(mix(uDark, uLight, 0.75), uFill);
+                            return;
+                        }
+                        vec3 col = s > 0.9 ? uDark : uLight;
+                        float alpha = s > 0.9 ? 0.9 : (s > 0.5 ? 0.8 : 0.4);
+                        gl_FragColor = vec4(col, uSpin * alpha);
+                    }`,
+                transparent: true,
+                depthWrite: false
+            });
+
+            // Sleeve over the exposed length of the barrels (breech face to muzzle)
+            const shellGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.95, 36, 1, true);
+            shellGeo.rotateX(Math.PI / 2);
+            const shell = new THREE.Mesh(shellGeo, mat);
+            shell.position.z = 2.53;
+
+            const swirl = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.32, 36), mat);
+            swirl.position.z = 3.52;
+
+            [shell, swirl].forEach(m => {
+                m.userData.noOutline = true;
+                m.visible = false;
+            });
+            return { shell, swirl, uniforms: mat.uniforms };
+        }
+
+        // The streaks jump by a golden-ratio fraction of their spacing each frame (scaled down in slow
+        // motion), so they land somewhere new every frame and the eye reads a spin too fast to follow
+        // instead of tracking a slow rotation
+        function setBarrelBlur(speed, simSteps) {
+            const amount = THREE.MathUtils.smoothstep(speed, 0.25, 0.9);
+            const u = barrelBlur.uniforms;
+            u.uSpin.value = amount;
+            u.uFill.value = 0.4 * THREE.MathUtils.smoothstep(speed, 0.7, 1.0);
+            u.uPhase.value = (u.uPhase.value + 0.618 * amount * Math.min(1, simSteps)) % 1;
+            barrelBlur.shell.visible = barrelBlur.swirl.visible = amount > 0.01;
         }
 
         function createClouds() {
@@ -3231,16 +3373,27 @@ Ambient
             propHub.position.set(0, -0.18, -3.22);
             drone.add(propHub);
 
+            // Spun each frame via the 'prop' name; the faint disc reads as blade blur
+            const prop = new THREE.Group();
+            prop.name = 'prop';
+            prop.position.copy(propHub.position);
+            drone.add(prop);
+
             const prop1 = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.06, 0.12), detailMat);
             prop1.userData.noOutline = true;
-            prop1.position.copy(propHub.position);
-            drone.add(prop1);
+            prop.add(prop1);
 
             const prop2 = new THREE.Mesh(new THREE.BoxGeometry(0.06, 2.2, 0.12), detailMat);
             prop2.userData.noOutline = true;
-            prop2.position.copy(propHub.position);
             prop2.rotation.z = 0.25;
-            drone.add(prop2);
+            prop.add(prop2);
+
+            const propDisc = new THREE.Mesh(
+                new THREE.CircleGeometry(1.1, 24),
+                new THREE.MeshBasicMaterial({ color: 0x2d2d2d, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false })
+            );
+            propDisc.userData.noOutline = true;
+            prop.add(propDisc);
 
             [-1.85, 1.85].forEach((x, index) => {
                 const fin = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.35, 1.0), bodyMat);
@@ -3365,7 +3518,8 @@ Ambient
                     retuneIn: 0
                 },
                 targetInfo,
-                eta: null
+                eta: null,
+                prop: missile.getObjectByName('prop') || null
             });
         }
 
@@ -4345,6 +4499,12 @@ Ambient
             return dist / speed;
         }
 
+        // Spin about local z, capped per frame below the strobe limit of an n-fold symmetric part
+        // (approaching half its symmetry angle per frame, it appears to stall or run backwards)
+        function spinVisual(obj, angle, symmetry) {
+            obj.rotation.z = (obj.rotation.z + Math.min(angle, (2 * Math.PI / symmetry) * 0.38)) % (2 * Math.PI);
+        }
+
         // End of the barrels in world space
         function getMuzzlePosition(out = new THREE.Vector3()) {
             return out.set(0, 0, 3.5).applyMatrix4(barrels.matrixWorld);
@@ -4548,6 +4708,7 @@ Ambient
                     // Regular missiles point toward their assigned target
                     m.mesh.lookAt(m.targetInfo.position);
                 }
+                if (m.prop) spinVisual(m.prop, PROP_SPIN_RATE * simSteps, 4);
 
                 updateRadarTrack(m, simSteps);
 
@@ -4672,13 +4833,6 @@ Ambient
                 // Update servoSpeed for audio
                 servoSpeed = servoSpeedVal;
 
-                if (isFiring) {
-                    currentBarrelSpeed = Math.min(1.0, currentBarrelSpeed + 0.05 * simSteps);
-                } else {
-                    currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.035 * simSteps);
-                }
-                barrels.rotation.z += currentBarrelSpeed * simSteps;
-
             } else {
 
                 const yawTraverse = stepTraverseAxis(
@@ -4700,15 +4854,20 @@ Ambient
                 turretPitch.rotation.x = pitchTraverse.angle;
                 turretPitchRate = pitchTraverse.rate;
 
-                // Spin down when idle
-                currentBarrelSpeed = Math.max(0, currentBarrelSpeed - 0.035 * simSteps);
-                barrels.rotation.z += currentBarrelSpeed * simSteps;
                 isFiring = false;
                 servoSpeed = Math.abs(turretYawRate) + Math.abs(turretPitchRate);
 
                 // Audio update handled below
             }
 
+            // Like the real mount, the barrels stay spun up through a burst and the gaps between
+            // bursts, rather than following every gated shot, and only wind down once firing stops
+            barrelSpinHold = isFiring ? BARREL_SPIN_HOLD : Math.max(0, barrelSpinHold - simSteps);
+            currentBarrelSpeed = barrelSpinHold > 0
+                ? Math.min(1.0, currentBarrelSpeed + 0.05 * simSteps)
+                : Math.max(0, currentBarrelSpeed - 0.035 * simSteps);
+            spinVisual(barrels, currentBarrelSpeed * BARREL_SPIN_RATE * simSteps, 6);
+            setBarrelBlur(currentBarrelSpeed, simSteps);
             AudioController.update(currentBarrelSpeed, servoSpeed);
 
             // 3. Projectiles & Collision
