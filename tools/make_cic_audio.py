@@ -12,11 +12,14 @@ Usage:
 keeps the raw takes in sounds/src/ so the radio processing can be re-tuned without regenerating.
 The API key is read from the environment only; never put it in a file.
 
-`process` gives each take its radio character and writes the game's assets:
+`process` gives each take its character and writes the game's assets:
   net  (CIC tactical net): band-limited 350-3200 Hz, driven and compressed, hiss bed, key-up click
        and a squelch tail
   1mc  (shipboard announcing system): horn-speaker band, a metallic resonance and a slap echo
-       down the passageways
+       down the passageways; "1mc-hurried" is the same chain on eleven_v3 takes directed to sound
+       rushed (general quarters, damage control and rescue calls)
+  dry  (crew right next to us): no radio, just trimmed and evened out; eleven_v3 takes, whose
+       [bracketed] audio tags direct the delivery and aren't spoken
 Needs ffmpeg on PATH (decode and mp3 encode).
 """
 import json
@@ -47,14 +50,94 @@ def bearing_words(deg):
     return " ".join(DIGITS[int(c)] for c in f"{deg:03d}")
 
 
-# name -> (text, chain); CHAINS (below the processing) gives each chain's voice and processing
+# A second CIC watchstander for some of the vampire variations
+VOICE_NET_2 = "iP95p4xoKVk53GoZ742B"   # "Chris"
+# Delivery direction for the hurried 1MC calls: an eleven_v3 audio tag describing the voice (not
+# spoken). With the speed setting at its maximum and stability at "creative", this was the take
+# that sounded most hurried.
+HURRIED = "[urgent, fast and clipped, out of breath] "
+
+# Crew voices for the dry reactions (ElevenLabs premade), rotated so a ship's reactions come from
+# different people
+CREW = ["TX3LPaxmHKxFdv7VOQHJ", "CwhRBWXzGAHq8TQ4Fs17", "FGY2WhTYpPnrIDTdsKH5", "iP95p4xoKVk53GoZ742B",
+        "cjVigY5qzO86Huf0OWal", "EXAVITQu4vr4xnSDxMaL", "bIHbv24MWmeRgasZH58o", "nPczCjzI2devNBz1zQrb"]
+# Fictional but plausible names for the friendly ships (file names use the lower-case key)
+SHIPS = {"halvorsen": "Halvorsen", "whitcomb": "Whitcomb", "cordell": "Cordell", "pellam": "Pellam",
+         "marsden": "Marsden", "talbert": "Talbert", "vanover": "Vanover", "cape-sable": "Cape Sable"}
+REACTIONS = [
+    "[shocked] Oh no... {ship} just got hit!",
+    "[angry] Damn it! They got {ship}!",
+    "[urgent] {ship}'s hit! She's burning!",
+    "[shouting] Holy... {ship} just took one!",
+]
+GENERIC_REACTIONS = {
+    "oh-no": "[shocked] Oh no, they got hit!",
+    "look-at-that": "[whispering] Jesus... look at that smoke.",
+    "going-down": "[sad] She's going down...",
+    "get-out": "[urgent] Come on, come on, get out of there...",
+    "no-no-no": "[shocked] No, no, no...",
+    "survivors": "[urgent] Somebody get eyes on survivors!",
+    "god-help": "[quietly] God help them.",
+    "direct-hit": "[shouting] Direct hit! They're hit!",
+}
+
+# name -> (text, chain[, voice]); CHAINS (below the processing) gives each chain's default voice,
+# model and processing
 LINES = {
     **{f"vampire-{deg:03d}": (f"Vampire, vampire, vampire! Bearing {bearing_words(deg)}, inbound!", "net")
        for deg in range(0, 360, 30)},
     "splash": ("Splash one vampire.", "net"),
     "birds-away": ("Birds away.", "net"),
     "general-quarters": ("General quarters, general quarters. All hands man your battle stations.", "1mc"),
+    "missile-launch": ("Stand by for missile launch. All hands clear the weather decks.", "1mc"),
+    # Damage control after a hit. Not an official script (the real wording is in each ship's damage
+    # control bill): the commonly described pattern of casualty type, fire class, compartment as
+    # deck-frame-position-use, then the repair locker that responds.
+    "dc-fire-bravo": ("Fire, fire, fire. Class Bravo fire in compartment two, one-twenty, one, Lima. "
+                      "Repair Two, respond.", "1mc"),
+    "dc-fire-charlie": ("Fire, fire, fire. Class Charlie fire in compartment one, two-forty, two, Charlie. "
+                        "Repair Three, respond.", "1mc"),
+    "dc-flooding": ("Flooding, flooding, flooding in compartment three, one-forty-two, zero, Echo. "
+                    "Repair Two, respond.", "1mc"),
+    "dc-hit": ("Missile impact, starboard side, frame two-ten. "
+               "All repair lockers investigate and report to D C Central.", "1mc"),
+    # More damage control variations. The third part of a compartment number is the position: odd is
+    # starboard, even is port, zero is the centerline.
+    "dc-hit-port": ("Missile impact, port side, frame one-sixty. "
+                    "All repair lockers investigate and report to D C Central.", "1mc"),
+    "dc-hit-port-aft": ("Missile impact, port side aft, frame three-ten. "
+                        "Repair Three, investigate and report.", "1mc"),
+    "dc-hit-stbd-fwd": ("Missile impact, starboard side forward, frame eighty. "
+                        "Repair Two, investigate and report.", "1mc"),
+    "dc-fire-bravo-port": ("Fire, fire, fire. Class Bravo fire in compartment four, two-twenty, two, Echo. "
+                           "Repair Five, respond.", "1mc"),
+    "dc-fire-alpha-port": ("Fire, fire, fire. Class Alpha fire in compartment two, ninety-six, two, Lima. "
+                           "Repair Two, respond.", "1mc"),
+    "dc-fire-charlie-stbd": ("Fire, fire, fire. Class Charlie fire in compartment zero one, one-fifty, one, Charlie. "
+                             "Repair Three, respond.", "1mc"),
+    "dc-flooding-port": ("Flooding, flooding, flooding in compartment four, one-eighty, two, Echo. "
+                         "Repair Five, respond.", "1mc"),
+    # More ways to call a vampire, so the same words don't come round every time
+    **{f"vampire-{deg:03d}-b": (f"Vampire, vampire! Bearing {bearing_words(deg)}, closing fast!", "net")
+       for deg in range(0, 360, 30)},
+    **{f"vampire-{deg:03d}-c": (f"Vampire inbound, bearing {bearing_words(deg)}! Sea-skimmer!", "net", VOICE_NET_2)
+       for deg in range(0, 360, 30)},
+    # Crew next to us when a friendly is hit: per-ship reactions, then generic ones
+    **{f"hit-{key}-{i + 1}": (template.format(ship=name), "dry", CREW[(i + 2 * j) % len(CREW)])
+       for j, (key, name) in enumerate(SHIPS.items()) for i, template in enumerate(REACTIONS)},
+    **{f"hit-{key}": (text, "dry", CREW[i % len(CREW)]) for i, (key, text) in enumerate(GENERIC_REACTIONS.items())},
+    # Rescue of a stricken friendly: the rescue and assistance (R and A) team and the boat crew
+    **{f"rescue-{key}": (f"{name} has been hit. Away the rescue and assistance team. "
+                         "R and A team, lay to the boat deck.", "1mc") for key, name in SHIPS.items()},
+    "rescue-rhib-stbd": ("Away the starboard RHIB. Boat crew and SAR swimmer, lay to the starboard boat deck.", "1mc"),
+    "rescue-rhib-port": ("Away the port RHIB. Boat crew and SAR swimmer, lay to the port boat deck.", "1mc"),
+    "rescue-medical": ("Medical, stand by to receive casualties on the flight deck.", "1mc"),
+    "rescue-lookouts": ("Lookouts, report all survivors in the water to the bridge.", "1mc"),
 }
+# General quarters, damage control and rescue calls go out hurried
+for _name, (_text, _chain, *_voice) in LINES.items():
+    if _name == "general-quarters" or _name.startswith(("dc-", "rescue-")):
+        LINES[_name] = (HURRIED + _text, "1mc-hurried", *_voice)
 
 
 def generate(names):
@@ -63,9 +146,10 @@ def generate(names):
         sys.exit("set ELEVENLABS_API_KEY in the environment")
     SRC.mkdir(parents=True, exist_ok=True)
     for name in names:
-        text, chain = LINES[name]
-        voice, settings = CHAINS[chain]["voice"], CHAINS[chain]["settings"]
-        body = json.dumps({"text": text, "model_id": MODEL, "voice_settings": settings}).encode()
+        text, chain, *voice = LINES[name]
+        c = CHAINS[chain]
+        voice = voice[0] if voice else c["voice"]
+        body = json.dumps({"text": text, "model_id": c.get("model", MODEL), "voice_settings": c["settings"]}).encode()
         req = urllib.request.Request(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=mp3_44100_128",
             data=body, headers={"xi-api-key": key, "Content-Type": "application/json"})
@@ -188,12 +272,22 @@ def onemc_chain(x, seed):
     return out
 
 
-# chain -> ElevenLabs voice and settings, radio processing, and the target loudness (RMS, dBFS)
+def dry_chain(x, seed):
+    # Crew talking right beside us: no radio, just rumble removed and peaks evened out
+    x = signal.sosfilt(sos("highpass", 90, 2), peak_norm(x))
+    return compress(peak_norm(x), -18, 2.5)
+
+
+# chain -> ElevenLabs voice, model and settings, processing, and the target loudness (RMS, dBFS)
 CHAINS = {
     "net": {"voice": VOICE_NET, "settings": {"stability": 0.38, "similarity_boost": 0.8, "style": 0.35, "use_speaker_boost": True, "speed": 1.08},
             "process": net_chain, "rms_db": -15},
     "1mc": {"voice": VOICE_1MC, "settings": {"stability": 0.55, "similarity_boost": 0.8, "style": 0.15, "use_speaker_boost": True},
             "process": onemc_chain, "rms_db": -17},
+    "1mc-hurried": {"voice": VOICE_1MC, "model": "eleven_v3", "settings": {"stability": 0.0, "similarity_boost": 0.8, "speed": 1.2},
+                    "process": onemc_chain, "rms_db": -17},
+    "dry": {"voice": CREW[0], "model": "eleven_v3", "settings": {"stability": 0.5, "similarity_boost": 0.8},
+            "process": dry_chain, "rms_db": -17},
 }
 
 
@@ -215,7 +309,7 @@ def finish(y, peak_db=-1.0, rms_db=-15.0):
 
 
 def process():
-    for i, (name, (_, chain)) in enumerate(LINES.items()):
+    for i, (name, (_, chain, *_)) in enumerate(LINES.items()):
         src = SRC / f"{name}.mp3"
         if not src.exists():
             print("missing", src)
@@ -233,7 +327,7 @@ if __name__ == "__main__":
     elif cmd == "process":
         process()
     elif cmd == "list":
-        for name, (text, _) in LINES.items():
+        for name, (text, *_) in LINES.items():
             print(f"{name:20s} {text}")
     else:
         sys.exit(__doc__)

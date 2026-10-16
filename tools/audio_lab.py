@@ -14,6 +14,9 @@ render matches what the game plays. Timeline (listener at the default orbit came
   18.5 s VLS launch from our ship's module   25.5 s anti-ship missile (turbojet voice), ~200 m, 3 s
   29.0 s general alarm, then at 30.5 s the "vampire" callout on the CIC net, with the gun
          firing under it from 31.0 s (the battle ducks under the voice)
+  36.5 s a friendly (Halvorsen, to starboard) is hit, far off: a crew reaction ~37-37.7 s with the
+         gun firing under it from 37.0 s (a lighter duck), then the 1MC's rescue call ~3.5 s later
+  52.0 s an anti-ship missile hits our starboard side forward: damage control's call ~1-2 s later
 """
 import base64
 import sys
@@ -27,16 +30,17 @@ mode = sys.argv[2] if len(sys.argv) > 2 else "extreme"
 
 JS = """async (mode) => {
   %s
-  const { camera } = window.__ciws;
+  const { camera, layout } = window.__ciws;
   const V = camera.position.constructor;
-  const sr = 48000, seconds = 36;
+  const sr = 48000, seconds = 68;
   const ctx = new OfflineAudioContext(2, sr * seconds, sr);
-  const A = await window.__ciwsAudio.makeOffline(ctx, mode);
+  const A = await window.__ciwsAudio.makeOffline(ctx, mode, { decodeAll: true });
 
-  camera.position.set(-15, 10, 20); camera.lookAt(0, 5, 0); camera.updateMatrixWorld();
+  const m = layout.mountY;
+  camera.position.set(-15, m + 10, 20); camera.lookAt(0, m + 5, 0); camera.updateMatrixWorld();
   A.refreshListener();
-  A.updateSpatializer(A.gunSpatial, new V(0, 5, 3.5), 0);
-  A.updateSpatializer(A.mountSpatial, new V(0, 4, 0), 0);
+  A.updateSpatializer(A.gunSpatial, new V(0, m + 5, 3.5), 0);
+  A.updateSpatializer(A.mountSpatial, new V(0, m + 4, 0), 0);
 
   // 2 s gun burst with the game's own spin-up spacing
   const start = 0.1;
@@ -53,11 +57,11 @@ JS = """async (mode) => {
   boom(4.0, place(120, 220, 60), 'airburst');
   for (let i = 0; i < 6; i++) boom(8.0 + i * 0.13, place(380, -60 + i * 25, 80), 'flak');
   boom(9.5, place(25, -45, 0.75), 'impact', true);
-  boom(13.0, new V(0, 2, 0), 'impact');
+  boom(13.0, new V(0, m + 2, 0), 'impact');
   [0, 0.12, 0.2].forEach(dt => boom(15.5 + dt, place(-60, 0, 12), 'hit'));
 
-  // VLS launch from the cell module on our foredeck-aft
-  A.playVLSLaunch(new V(1, 0.2, 19), 1, { at: 18.5 });
+  // VLS launch from the cell module on our forecastle
+  A.playVLSLaunch(new V(1, layout.deckHeightAt(-10.5) + 0.2, -10.5), 1, { at: 18.5 });
 
   // A held anti-ship missile voice: built by the game's own update, then gated on and off
   const ascm = { type: 'ascm', mesh: { position: place(150, 120, 4) }, velocity: new V(-1.5, 0, -1.4) };
@@ -77,6 +81,18 @@ JS = """async (mode) => {
   A.announceVampire(270, 29.0);
   const g0 = 31.0;
   for (let t = g0; t < 34.0; t += A.shotSpacing(t - g0, 1 / 60)) A.queueShot(t);
+
+  // A friendly hit: the crew reaction (over a burst) and the rescue call. (The follow-up call is
+  // marked as recently made, so the timeline doesn't depend on its coin toss.)
+  boom(36.2, place(260, 160, 1), 'impact', true);
+  A.lastAt['rescue-followup'] = 30;
+  A.announceFriendlyHit('halvorsen', 1, 36.5);
+  const g1 = 37.0;
+  for (let t = g1; t < 40.0; t += A.shotSpacing(t - g1, 1 / 60)) A.queueShot(t);
+
+  // A missile hit on our starboard side forward, then damage control's call
+  boom(52.0, new V(7, layout.deckHeightAt(-20) + 2, -20), 'impact');
+  A.announceDamage(1, 90, true, 52.0);
 
   const buf = await ctx.startRendering();
   // Encode 16-bit stereo WAV

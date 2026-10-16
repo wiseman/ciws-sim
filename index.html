@@ -585,6 +585,7 @@
             <p>TARGETS DESTROYED: <span id="final-score">0</span></p>
             <p>TIME SURVIVED: <span id="final-time">00:00</span></p>
             <p>FRIENDLIES REMAINING: <span id="final-friendlies">0/0</span></p>
+            <p id="final-lost"></p>
             <p>HIGH SCORE: <span id="final-high-score">0</span></p>
             <button onclick="rebootSystem()"
                 style="padding: 10px 20px; background: #333; color: white; border: 1px solid white; cursor: pointer;">REBOOT
@@ -605,7 +606,7 @@
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+        import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
         // --- CONFIGURATION ---
         const MISSILE_SPEED_BASE = 0.8;
@@ -667,6 +668,8 @@
         // Damaged friendlies break, list and settle over this many (sim) seconds, then go under
         const WRECK_SINK_SECONDS = 95;
         const WRECK_PLUNGE_SECONDS = 20;
+        // World height of the 01-level deck the CIWS stands on (the sea is at WATER_LEVEL)
+        const MOUNT_Y = 4;
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -725,30 +728,94 @@
         };
         const SPATIAL_MODES = Object.keys(SPATIAL_PROFILES);
         const GUN_SPATIAL_LIMITS = { maxPan: 0.2, cueScale: 0.25 };
-        const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, 4, 0);
+        const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, MOUNT_Y + 4, 0);
         const AUDIBLE_FLOOR = 0.006; // ≈ -44 dB: one-shot parts quieter than this aren't played
         const MAX_ONE_SHOTS = 32;    // concurrent one-shot sounds; more are dropped
         // US Navy general alarm: a 400 Hz triangle-wave "bong" that decays over 520 ms, repeated
         // (on ship it runs ~15 s; ~100 per minute measured from a public-domain USS Nimitz recording).
         // pitch (Hz), spacing, decay time constant and tone length (s), total length (s)
         const GQ_ALARM = { pitch: 400, interval: 0.6, decay: 0.15, tone: 0.52, seconds: 5.4 };
+        // Our ship's missile-launch warning: a run of short, bright beeps (odd harmonics), higher and
+        // quicker than the GQ bong. pitch (Hz), beep spacing and length, total length (s)
+        const LAUNCH_ALARM = { pitch: 1050, period: 0.18, on: 0.11, seconds: 1.2 };
         // Callout pacing (s). cooldown: how soon it can go out again; lead: from the event to the
-        // voice (alarm: from the alarm's first bong; gq: from the end of the vampire callout)
+        // voice (alarm: from the alarm's first bong; gq: from the end of the vampire callout;
+        // rescue: from the crew reaction; rescue-followup: from the rescue call's start (they run
+        // ~8.5 s, so it doesn't queue long enough to go stale); launch: from the end of "Stand by
+        // for missile launch" to the launch alarm); jitter: up to this much more
         const CIC_TIMING = {
             vampire: { cooldown: 6, lead: 0.05 },
             alarm: { cooldown: 40, lead: 1.5 },
             gq: { cooldown: 180, lead: 0.5 },
             splash: { cooldown: 8, lead: 0.3 },
-            'birds-away': { cooldown: 30, lead: 0.4 }
+            'birds-away': { cooldown: 30, lead: 0.4 },
+            reaction: { lead: 0.5, jitter: 0.7 },
+            rescue: { cooldown: 20, lead: 3.5 },
+            'rescue-followup': { cooldown: 45, lead: 9 },
+            dc: { cooldown: 20, lead: 1, jitter: 1 },
+            'missile-launch': { cooldown: 90, lead: 0.3 },
+            launch: { lead: 0.4 }
         };
+        // Voice traffic on the CIC bus. radio: the CIC net and the 1MC; crew: the people next to us.
+        // level: into the bus; duck: how far the battle drops under it; queued calls go out `gap` s
+        // apart and are dropped if they'd go out more than `stale` s late
+        const VOICE = {
+            radio: { level: 1, duck: 0.5, gap: 0.6, stale: 8 },
+            crew: { level: 1, duck: 0.75, gap: 0.3, stale: 3 }
+        };
+        // Seconds of lazily decoded callouts kept; past that the least recently used are dropped
+        // (and decoded again if they're needed). ~190 KB of PCM per second at 48 kHz.
+        const LAZY_CALLOUT_SECONDS = 60;
         // The recorded "vampire" callout for a bearing (degrees): one every 30°, named by the
         // three-digit bearing, e.g. vampire-030
         const vampireCallout = deg => `vampire-${String((Math.round(deg / 30) * 30) % 360).padStart(3, '0')}`;
-        // Recorded voice callouts in sounds/: ElevenLabs text-to-speech (voices "Adam" for the CIC
-        // net, "Bill" for the 1MC), radio-processed by tools/make_cic_audio.py
-        const CIC_CALLOUTS = [
+        // Each bearing also has two other wordings (-b "closing fast", -c "sea-skimmer", in a second
+        // voice); only the first is decoded at start-up
+        const vampireCallouts = deg => ['', '-b', '-c'].map(v => vampireCallout(deg) + v);
+        // The friendlies' names (fictional): sound-file key -> display name. Each friendly draws a
+        // different one at the start (createFriendlies).
+        const FRIENDLY_NAMES = {
+            halvorsen: 'Halvorsen', whitcomb: 'Whitcomb', cordell: 'Cordell', pellam: 'Pellam',
+            marsden: 'Marsden', talbert: 'Talbert', vanover: 'Vanover', 'cape-sable': 'Cape Sable'
+        };
+        // Crew reactions to a friendly being hit: four per ship naming her (hit-<key>-1..4), and these
+        const crewReactions = key => [1, 2, 3, 4].map(i => `hit-${key}-${i}`);
+        const CREW_GENERIC = [
+            'hit-oh-no', 'hit-look-at-that', 'hit-going-down', 'hit-get-out',
+            'hit-no-no-no', 'hit-survivors', 'hit-god-help', 'hit-direct-hit'
+        ];
+        // Damage control's 1MC calls, by the side and frame they name (their compartment numbers
+        // agree: the position digit is odd for starboard, even for port, 0 on the centreline).
+        // side: 1 starboard, -1 port, 0 centreline; missile: a "Missile impact" line (anti-ship
+        // missile hits); the rest are fire and flooding calls
+        const DC_CALLS = [
+            { name: 'dc-hit-stbd-fwd', side: 1, frame: 80, missile: true },
+            { name: 'dc-hit', side: 1, frame: 210, missile: true },
+            { name: 'dc-hit-port', side: -1, frame: 160, missile: true },
+            { name: 'dc-hit-port-aft', side: -1, frame: 310, missile: true },
+            { name: 'dc-fire-bravo', side: 1, frame: 120 },
+            { name: 'dc-fire-charlie-stbd', side: 1, frame: 150 },
+            { name: 'dc-fire-alpha-port', side: -1, frame: 96 },
+            { name: 'dc-flooding-port', side: -1, frame: 180 },
+            { name: 'dc-fire-bravo-port', side: -1, frame: 220 },
+            { name: 'dc-fire-charlie', side: -1, frame: 240 },
+            { name: 'dc-flooding', side: 0, frame: 142 }
+        ];
+        // Recorded voice callouts in sounds/: ElevenLabs text-to-speech ("Adam" on the CIC net, "Bill"
+        // on the 1MC, eight crew voices for the reactions), processed by tools/make_cic_audio.py:
+        // radio for the net and 1MC, dry for the crew. CIC_URGENT are decoded at start-up (they go
+        // out with little or no lead); the rest when first needed.
+        const CIC_URGENT = [
             ...Array.from({ length: 12 }, (_, i) => vampireCallout(i * 30)),
-            'splash', 'birds-away', 'general-quarters'
+            'splash', 'birds-away', 'general-quarters', 'missile-launch'
+        ];
+        const CIC_CALLOUTS = [
+            ...CIC_URGENT,
+            ...Array.from({ length: 12 }, (_, i) => vampireCallouts(i * 30).slice(1)).flat(),
+            ...DC_CALLS.map(c => c.name),
+            ...Object.keys(FRIENDLY_NAMES).flatMap(key => [...crewReactions(key), `rescue-${key}`]),
+            ...CREW_GENERIC,
+            'rescue-rhib-stbd', 'rescue-rhib-port', 'rescue-medical', 'rescue-lookouts'
         ];
 
         // Small offline DSP toolkit for building buffers
@@ -866,7 +933,7 @@
                 drive: { spin: 0, freq: 0 },
                 traverse: { level: 0, freq: 0 },
                 threats: { drones: 0, mortars: 0, ascms: 0, nearMisses: 0 },
-                cic: { last: '-', loaded: 0 },
+                cic: { last: '-', fetched: 0, decoded: 0, queued: 0, dropped: 0, skipped: 0 },
                 explosions: { lastKind: '-', lastDistance: 0 },
                 ambient: { sea: 0, wind: 0 }
             },
@@ -886,8 +953,9 @@
             },
 
             // A private copy of the controller driving an offline context, for rendering the game's
-            // own sounds to a buffer (tools/audio_lab.py, tools/audio_stress.py)
-            makeOffline: async function (ctx, spatialMode = this.spatialMode) {
+            // own sounds to a buffer (tools/audio_lab.py, tools/audio_stress.py). decodeAll: decode
+            // every callout up front, so ones queued before rendering are scheduled straight away.
+            makeOffline: async function (ctx, spatialMode = this.spatialMode, { decodeAll = false } = {}) {
                 const A = Object.create(this);
                 Object.assign(A, {
                     isMuted: false, isInit: true, spatialMode, slowPitch: 1, activeOneShots: 0,
@@ -896,7 +964,7 @@
                 });
                 A.buildGraph(ctx);
                 A.buildVLSRoar();
-                await A.loadCallouts();
+                await A.loadCallouts(decodeAll);
                 return A;
             },
 
@@ -1353,6 +1421,23 @@
                 DSP.normalize(ad, 0.9);
                 DSP.fadeOut(ad, sr);
                 B.alarm = alarm;
+
+                // Missile-launch warning: square-ish beeps (odd harmonics, falling 1/h). Mono and
+                // inside the ship, like the general alarm.
+                const L = LAUNCH_ALARM, harmonics = [1, 3, 5, 7];
+                const launch = this.ctx.createBuffer(1, Math.floor(sr * L.seconds), sr);
+                const ld = launch.getChannelData(0);
+                for (let i = 0; i < ld.length; i++) {
+                    const t = i / sr, p = t % L.period;
+                    if (p >= L.on) continue;
+                    const env = Math.min(1, p / 0.004, (L.on - p) / 0.006);
+                    let s = 0;
+                    for (let h = 0; h < harmonics.length; h++) s += Math.sin(2 * Math.PI * L.pitch * harmonics[h] * t) / harmonics[h];
+                    ld[i] = s * env;
+                }
+                DSP.normalize(ld, 0.9);
+                DSP.fadeOut(ld, sr);
+                B.launchAlarm = launch;
             },
 
             // VLS launch: ignition slam, then a crackling rocket roar that darkens and fades as
@@ -1496,49 +1581,139 @@
                 this.nextSlap = 2;
             },
 
-            // Inside the ship: the general alarm, the CIC net and the 1MC. Not positioned, and it
-            // skips the mix bus so ducking the battle under a callout leaves the voice alone.
+            // Inside the ship: the alarms, the CIC net and the 1MC, and the crew around us. Not
+            // positioned, and it skips the mix bus so ducking the battle under a voice leaves the
+            // voice alone.
             buildCIC: function () {
                 this.cicBus = this.gain(0.8);
                 this.cicBus.connect(this.masterGain);
-                this.callouts = {};
-                this.cicBusyUntil = 0;
+                this.callouts = {};        // name -> decoded clip (null: unavailable)
+                this.calloutBytes = {};    // name -> promise of its compressed bytes (null: unavailable)
+                this.decoding = {};        // name -> promise of its clip, while it's being decoded
+                this.lazyCallouts = [];    // lazily decoded names, least recently used first
+                this.lazySeconds = LAZY_CALLOUT_SECONDS; // how much of them to keep
+                this.cicBusyUntil = 0;     // end of the last voice scheduled on the net or 1MC
+                this.launchAlarmUntil = 0; // end of the last launch alarm
+                this.paHoldUntil = 0;      // queued 1MC calls wait for this (a launch under way)
+                this.crewUntil = 0;        // end of the last crew reaction
+                this.vampireVoice = [0, 0]; // when the latest vampire callout is on (the crew keep quiet)
+                this.paQueue = [];         // 1MC calls waiting to go out (queuePA)
+                this.ducks = [];           // [from, to, level]: the battle ducked under a voice
+                this.recentCrew = [];      // the last few crew reactions picked
+                this.lastDC = null;
+                this.lastFollowup = null;
+                this.lastVampire = null;
                 this.lastAt = {}; // CIC_TIMING key -> when it last went out
             },
 
-            // Voice callouts are recorded assets (sounds/*.mp3, see tools/make_cic_audio.py);
-            // the game plays on silently without them
-            loadCallouts: async function () {
-                const ctx = this.ctx;
-                await Promise.all(CIC_CALLOUTS.map(async name => {
-                    try {
-                        const res = await fetch(`sounds/${name}.mp3`);
-                        if (!res.ok) throw new Error(res.status);
-                        this.callouts[name] = await ctx.decodeAudioData(await res.arrayBuffer());
-                        this.debugState.cic.loaded++;
-                    } catch (err) {
-                        console.info(`CIC callout ${name} unavailable`, err.message);
-                    }
+            // Voice callouts are recorded assets (sounds/*.mp3, see tools/make_cic_audio.py). The
+            // compressed files (~4 MB) are all fetched up front; CIC_URGENT are decoded straight
+            // away and the rest on first use (getCallout), so minutes of crew and 1MC lines aren't
+            // held as PCM from the start. The game plays on silently without any of them.
+            // decodeAll: decode and keep the lot (offline renders)
+            loadCallouts: async function (decodeAll = false) {
+                const cic = this.debugState.cic;
+                if (decodeAll) this.lazySeconds = Infinity;
+                await Promise.all(CIC_CALLOUTS.map(name => {
+                    this.calloutBytes[name] = fetch(`sounds/${name}.mp3`)
+                        .then(res => {
+                            if (!res.ok) throw new Error(res.status);
+                            return res.arrayBuffer();
+                        })
+                        .then(bytes => { cic.fetched++; return bytes; })
+                        .catch(err => {
+                            console.info(`CIC callout ${name} unavailable`, err.message);
+                            return null;
+                        });
+                    return decodeAll || CIC_URGENT.includes(name) ? this.getCallout(name) : null;
                 }));
             },
 
-            // Pull the battle down under a voice from `from` to `to`
-            duckFor: function (from, to) {
-                const g = this.mixBus.gain;
-                g.cancelScheduledValues(from);
-                g.setTargetAtTime(0.5, from, 0.04);
-                g.setTargetAtTime(1, to, 0.35);
+            // A callout's clip if it's decoded (null if it's unavailable), else undefined
+            cachedCallout: function (name) {
+                const buffer = this.callouts[name];
+                const i = this.lazyCallouts.indexOf(name);
+                if (i >= 0) this.lazyCallouts.push(...this.lazyCallouts.splice(i, 1)); // most recently used
+                return buffer;
             },
 
-            // Plays a callout on the net when nothing else is being said; returns its end time
+            // Resolves to a callout's clip (null if it's unavailable), decoding it on first use.
+            // Lazily decoded clips beyond lazySeconds are dropped, least recently used first; their
+            // compressed bytes are kept to decode again.
+            getCallout: function (name) {
+                const cached = this.cachedCallout(name);
+                if (cached !== undefined) return Promise.resolve(cached);
+                return this.decoding[name] ??= (async () => {
+                    let buffer = null;
+                    try {
+                        const bytes = await this.calloutBytes[name];
+                        if (bytes) buffer = await this.ctx.decodeAudioData(bytes.slice(0)); // decoding detaches its input
+                    } catch (err) {
+                        console.info(`CIC callout ${name} undecodable`, err.message);
+                    }
+                    delete this.decoding[name];
+                    this.callouts[name] = buffer;
+                    if (buffer) {
+                        this.debugState.cic.decoded++;
+                        if (!CIC_URGENT.includes(name)) this.keepLazy(name);
+                    }
+                    return buffer;
+                })();
+            },
+
+            // Caches a lazily decoded clip, dropping the least recently used past lazySeconds
+            keepLazy: function (name) {
+                const lazy = this.lazyCallouts;
+                lazy.push(name);
+                let seconds = lazy.reduce((sum, n) => sum + this.callouts[n].duration, 0);
+                while (seconds > this.lazySeconds && lazy.length > 1) {
+                    const old = lazy.shift();
+                    seconds -= this.callouts[old].duration;
+                    delete this.callouts[old];
+                    this.debugState.cic.decoded--;
+                }
+            },
+
+            // Pull the battle down to `level` under a voice from `from` to `to`; where ducks overlap
+            // (a crew reaction over a 1MC call) the deepest wins
+            duckFor: function (from, to, level) {
+                this.ducks.push([from, to, level]);
+                this.applyDucks();
+            },
+
+            // Rebuilds the mix bus's gain automation from now on from the ducks still to come
+            applyDucks: function () {
+                const now = this.ctx.currentTime, g = this.mixBus.gain, ducks = this.ducks;
+                for (let i = ducks.length - 1; i >= 0; i--) if (ducks[i][1] <= now) ducks.splice(i, 1);
+                const levelAt = t => ducks.reduce((l, [from, to, level]) => (from <= t && t < to ? Math.min(l, level) : l), 1);
+                const edges = ducks.flatMap(([from, to]) => [from, to]).filter(t => t > now).sort((a, b) => a - b);
+                g.cancelScheduledValues(now);
+                let level = levelAt(now);
+                g.setTargetAtTime(level, now, level < g.value ? 0.04 : 0.35);
+                for (const t of edges) {
+                    const next = levelAt(t);
+                    if (next !== level) g.setTargetAtTime(next, t, next < level ? 0.04 : 0.35);
+                    level = next;
+                }
+            },
+
+            // Plays a voice clip on the CIC bus at `when` and ducks the battle under it; returns its
+            // end time. kind: a VOICE key.
+            speak: function (name, buffer, when, kind) {
+                const mix = VOICE[kind];
+                const { end } = this.playBuffer(buffer, when, mix.level, this.cicBus);
+                this.duckFor(when, end, mix.duck);
+                if (kind === 'radio') this.cicBusyUntil = Math.max(this.cicBusyUntil, end);
+                this.debugState.cic.last = name;
+                return end;
+            },
+
+            // Plays a callout on the net (urgent ones only: it doesn't wait for a decode); returns
+            // its end time, or null if it isn't loaded
             say: function (name, when) {
                 const buffer = this.callouts[name];
                 if (!buffer) return null;
-                const { end } = this.playBuffer(buffer, when, 1, this.cicBus);
-                this.duckFor(when, end);
-                this.cicBusyUntil = end;
-                this.debugState.cic.last = name;
-                return end;
+                return this.speak(name, buffer, when, 'radio');
             },
 
             // True if CIC_TIMING[key]'s cooldown has run out at time t, and restarts it
@@ -1555,13 +1730,71 @@
                 if (t >= this.cicBusyUntil && this.ready(name, t)) this.say(name, t + CIC_TIMING[name].lead);
             },
 
+            // Puts a 1MC call (damage control, rescue) in line to go out at `due` on the audio clock.
+            // Calls go out one at a time in the order queued, each once its clip is decoded and the
+            // net is free, and are dropped if that's more than VOICE.radio.stale late.
+            queuePA: function (name, due) {
+                const item = { name, due, buffer: this.cachedCallout(name) };
+                this.paQueue.push(item);
+                this.debugState.cic.queued++;
+                if (item.buffer !== undefined) this.pumpPA();
+                else this.getCallout(name).then(buffer => { item.buffer = buffer; this.pumpPA(); });
+            },
+
+            // Schedules the calls at the head of the queue whose clips are ready (in order)
+            pumpPA: function () {
+                const q = this.paQueue, { gap, stale } = VOICE.radio;
+                while (q.length && q[0].buffer !== undefined) {
+                    const item = q.shift();
+                    if (!item.buffer) continue;
+                    const start = Math.max(item.due, this.cicBusyUntil + gap, this.paHoldUntil, this.ctx.currentTime + 0.05);
+                    if (start - item.due > stale) {
+                        this.debugState.cic.dropped++;
+                        continue;
+                    }
+                    this.speak(item.name, item.buffer, start, 'radio');
+                }
+            },
+
+            // A crew member next to us, at `due`: one at a time, never over a vampire callout, and
+            // dropped if that's more than VOICE.crew.stale late
+            sayCrew: function (name, due) {
+                const go = buffer => {
+                    if (!buffer || !this.isInit) return;
+                    const { gap, stale } = VOICE.crew;
+                    const [vFrom, vTo] = this.vampireVoice;
+                    let start = Math.max(due, this.crewUntil + gap, this.ctx.currentTime + 0.02);
+                    if (start < vTo && start + buffer.duration > vFrom) start = vTo + gap;
+                    if (start - due > stale) return;
+                    this.crewUntil = this.speak(name, buffer, start, 'crew');
+                };
+                const cached = this.cachedCallout(name);
+                if (cached !== undefined) go(cached);
+                else this.getCallout(name).then(go);
+            },
+
+            // One of `names`, avoiding the last few crew reactions picked
+            pickCrew: function (names) {
+                const fresh = names.filter(n => !this.recentCrew.includes(n));
+                const name = pick(fresh.length ? fresh : names);
+                this.recentCrew.push(name);
+                if (this.recentCrew.length > 4) this.recentCrew.shift();
+                return name;
+            },
+
             // New anti-ship missile on radar: the general alarm (if it hasn't sounded lately),
             // "Vampire, vampire, vampire, bearing ...", and every few minutes the 1MC's
-            // "General quarters". `at` schedules it on the audio clock (default: now).
+            // "General quarters". Vampires are frequent, so one never interrupts: if anyone is
+            // talking (or about to) on the net, the 1MC or among the crew, or a launch alarm is
+            // sounding, it's skipped outright. `at` schedules it on the audio clock (default: now).
             announceVampire: function (bearing, at) {
                 if (!this.isInit || this.isMuted) return;
                 const t = at ?? this.ctx.currentTime;
-                if (t < this.cicBusyUntil || !this.ready('vampire', t)) return;
+                if (t < Math.max(this.cicBusyUntil, this.crewUntil, this.launchAlarmUntil)) {
+                    this.debugState.cic.skipped++;
+                    return;
+                }
+                if (!this.ready('vampire', t)) return;
                 let voiceAt = t + CIC_TIMING.vampire.lead;
                 if (this.ready('alarm', t)) {
                     const alarm = this.playBuffer(this.buffers.alarm, t, 0.32, this.cicBus);
@@ -1569,8 +1802,81 @@
                     // The alarm keeps ringing under the voice, quieter
                     alarm.g.gain.setTargetAtTime(0.12, voiceAt - 0.05, 0.08);
                 }
-                const end = this.say(vampireCallout(bearing), voiceAt);
+                const end = this.say(this.pickVampire(bearing), voiceAt);
+                if (end !== null) this.vampireVoice = [voiceAt, end];
                 if (end !== null && this.ready('gq', t)) this.say('general-quarters', end + CIC_TIMING.gq.lead);
+            },
+
+            // One of the bearing's wordings that's decoded, not the last one used if there's a choice;
+            // the others start decoding so they're ready next time
+            pickVampire: function (bearing) {
+                const names = vampireCallouts(bearing);
+                names.forEach(name => { if (this.callouts[name] === undefined) this.getCallout(name); });
+                const ready = names.filter(name => this.callouts[name]);
+                const fresh = ready.filter(name => name !== this.lastVampire);
+                const pool = fresh.length ? fresh : ready;
+                this.lastVampire = pool.length ? pool[Math.floor(Math.random() * pool.length)] : names[0];
+                return this.lastVampire;
+            },
+
+            // A friendly hit: a crew reaction (usually naming her), a few seconds later the 1MC's
+            // rescue call, and sometimes a follow-up (the RHIB on her side of us, medical or the
+            // lookouts). Rescue calls coalesce: a hit soon after another still gets its own
+            // reaction, but at most a follow-up. key: a FRIENDLY_NAMES key; side: 1 if she's to
+            // starboard of us, -1 to port. `at` schedules it on the audio clock (default: now).
+            announceFriendlyHit: function (key, side, at) {
+                if (!this.isInit || this.isMuted) return;
+                const t = at ?? this.ctx.currentTime, T = CIC_TIMING;
+                const reactAt = t + T.reaction.lead + Math.random() * T.reaction.jitter;
+                this.sayCrew(this.pickCrew(Math.random() < 0.7 ? crewReactions(key) : CREW_GENERIC), reactAt);
+                const rescueAt = reactAt + T.rescue.lead;
+                const rescue = this.ready('rescue', t);
+                if (rescue) this.queuePA(`rescue-${key}`, rescueAt);
+                if ((!rescue || Math.random() < 0.5) && this.ready('rescue-followup', t)) {
+                    const options = [side > 0 ? 'rescue-rhib-stbd' : 'rescue-rhib-port', 'rescue-medical', 'rescue-lookouts']
+                        .filter(n => n !== this.lastFollowup);
+                    this.lastFollowup = pick(options);
+                    this.queuePA(this.lastFollowup, rescueAt + T['rescue-followup'].lead);
+                }
+            },
+
+            // A hit on our ship: damage control's call for it. side: 1 starboard, -1 port, 0 on the
+            // centreline; frame: where along the hull (DC_CALLS frames); missile: an anti-ship
+            // missile ("Missile impact" lines; otherwise fire and flooding). Prefers the side and
+            // kind, then the nearest frame, never the last call twice running if there's another.
+            announceDamage: function (side, frame, missile, at) {
+                if (!this.isInit || this.isMuted) return;
+                const t = at ?? this.ctx.currentTime;
+                if (!this.ready('dc', t)) return;
+                const sided = DC_CALLS.filter(c => c.side === side);
+                const fresh = sided.filter(c => c.name !== this.lastDC);
+                const kind = fresh.filter(c => !!c.missile === missile);
+                const choices = kind.length ? kind : fresh.length ? fresh : sided;
+                const call = choices.reduce((a, b) => (Math.abs(b.frame - frame) < Math.abs(a.frame - frame) ? b : a));
+                this.lastDC = call.name;
+                this.queuePA(call.name, t + CIC_TIMING.dc.lead + Math.random() * CIC_TIMING.dc.jitter);
+            },
+
+            // Our ship is about to fire a VLS round. Routine: the 1MC's "Stand by for missile launch"
+            // (if it hasn't gone out lately and the net frees up soon), then the launch alarm;
+            // answering a vampire: the alarm alone, once the vampire callout is over. Queued 1MC
+            // calls hold off until "Birds away". Returns how long (s) the launch should wait: 0 if
+            // nothing was sounded.
+            warnVLSLaunch: function (routine) {
+                if (!this.isInit || this.isMuted) return 0;
+                const now = this.ctx.currentTime, T = CIC_TIMING;
+                let alarmAt = Math.max(now, this.vampireVoice[1]);
+                const call = this.callouts['missile-launch'];
+                if (routine && call) {
+                    const callAt = Math.max(alarmAt + T['missile-launch'].lead, this.cicBusyUntil + VOICE.radio.gap);
+                    if (callAt - now < VOICE.radio.stale && this.ready('missile-launch', now)) {
+                        alarmAt = this.speak('missile-launch', call, callAt, 'radio') + T.launch.lead;
+                    }
+                }
+                const alarm = this.playBuffer(this.buffers.launchAlarm, alarmAt, 0.22, this.cicBus);
+                this.launchAlarmUntil = alarm.end;
+                this.paHoldUntil = Math.max(this.paHoldUntil, alarm.end + T['birds-away'].lead + 1.5);
+                return alarm.end - now;
             },
 
             // `at` delays the launch itself, like playExplosion's; the speed-of-sound delay is added on top
@@ -1598,6 +1904,7 @@
                 }
                 this.debugState.gun.firing = false;
                 this.soundArrivals.length = 0;
+                if (this.paQueue) this.paQueue.length = 0;
             },
 
             // Plays a one-shot buffer at a world position, `delay` seconds from now.
@@ -2002,7 +2309,9 @@ Threats
   near-miss whizzes: ${s.threats.nearMisses}
 
 CIC
-  callouts loaded: ${s.cic.loaded}/${CIC_CALLOUTS.length}
+  callouts fetched: ${s.cic.fetched}/${CIC_CALLOUTS.length}, decoded: ${s.cic.decoded}
+  1MC queued: ${s.cic.queued} (waiting ${A.paQueue ? A.paQueue.length : 0}, dropped ${s.cic.dropped})
+  vampire calls skipped (net busy): ${s.cic.skipped}
   last: ${s.cic.last}
 
 Explosions
@@ -2843,29 +3152,24 @@ Ambient
             return root;
         }
 
+        // Yellow and black diagonal stripes, two to a tile, repeating along u
         function makeHazardTexture() {
-            const size = 128;
-            const canvas = document.createElement('canvas');
-            canvas.width = size;
-            canvas.height = size;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#e2b53a';
-            ctx.fillRect(0, 0, size, size);
-            ctx.fillStyle = '#25303d';
-            const band = size * 0.22; // solid yellow cap band along the top
-            for (let x = -size; x < size * 2; x += size / 2) {
-                ctx.beginPath();
-                ctx.moveTo(x, size);
-                ctx.lineTo(x + size / 4, size);
-                ctx.lineTo(x + size / 4 + (size - band), band);
-                ctx.lineTo(x + (size - band), band);
-                ctx.closePath();
-                ctx.fill();
-            }
-            const tex = new THREE.CanvasTexture(canvas);
-            tex.colorSpace = THREE.SRGBColorSpace;
+            const size = 64;
+            const tex = canvasTexture(size, size, ctx => {
+                ctx.fillStyle = '#e2b53a';
+                ctx.fillRect(0, 0, size, size);
+                ctx.fillStyle = '#25303d';
+                for (let x = -size; x < size * 2; x += size / 2) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, size);
+                    ctx.lineTo(x + size / 4, size);
+                    ctx.lineTo(x + size / 4 + size, 0);
+                    ctx.lineTo(x + size, 0);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+            });
             tex.wrapS = THREE.RepeatWrapping;
-            tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
             return tex;
         }
 
@@ -2978,10 +3282,130 @@ Ambient
             scene.add(water);
         }
 
-        // Deck outline in world (x, z); bow points toward -z with the CIWS on the forecastle
+        // --- Ship and mount models ---
+        // Built in code from a few helpers. Each rigid group's parts are merged into one mesh per
+        // material (outlined or not), so the detail costs triangles rather than draw calls.
+        const INK_MAT = new THREE.MeshBasicMaterial({ color: PALETTE.ink }); // drawn lines, lenses, bores
+        const _partQuat = new THREE.Quaternion(), _partEuler = new THREE.Euler(), _unitScale = new THREE.Vector3(1, 1, 1);
+
+        // A part's transform: position, then rotation (radians, XYZ order) and optional scale
+        function at(x, y, z, rx = 0, ry = 0, rz = 0, scale = _unitScale) {
+            _partQuat.setFromEuler(_partEuler.set(rx, ry, rz));
+            return new THREE.Matrix4().compose(new THREE.Vector3(x, y, z), _partQuat, scale);
+        }
+
+        // A thin box (or, round, a rod) from point p to point q (THREE.Vector3s): struts, rails, legs
+        const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1);
+        const UNIT_ROD = new THREE.CylinderGeometry(0.5, 0.5, 1, 8).rotateX(Math.PI / 2);
+        function strut(p, q, thickness, round = false) {
+            const dir = _v3a.subVectors(q, p);
+            const length = dir.length();
+            _partQuat.setFromUnitVectors(_zAxis, dir.divideScalar(length));
+            const scale = new THREE.Vector3(thickness, thickness, length);
+            return { geo: round ? UNIT_ROD : UNIT_BOX, matrix: new THREE.Matrix4().compose(_v3b.addVectors(p, q).multiplyScalar(0.5), _partQuat, scale) };
+        }
+
+        // parts: [{ geo, mat, matrix?, noOutline? }]. Bakes each part's transform in and merges the
+        // parts into one mesh per (material, outlined or not). Geometries are cut down to position
+        // and normal (and uv, for textured materials), and made non-indexed, so any mix of them merges.
+        function mergeByMaterial(parts, { castShadow = false, receiveShadow = false } = {}) {
+            const groups = new Map();
+            for (const { geo, mat, matrix, noOutline = false } of parts) {
+                const src = geo.index ? geo.toNonIndexed() : geo.clone();
+                const clean = new THREE.BufferGeometry();
+                clean.setAttribute('position', src.getAttribute('position'));
+                clean.setAttribute('normal', src.getAttribute('normal'));
+                if (mat.map) clean.setAttribute('uv', src.getAttribute('uv'));
+                if (matrix) clean.applyMatrix4(matrix);
+                const key = mat.uuid + (noOutline ? ':plain' : '');
+                if (!groups.has(key)) groups.set(key, { mat, noOutline, geos: [] });
+                groups.get(key).geos.push(clean);
+            }
+            return [...groups.values()].map(({ mat, noOutline, geos }) => {
+                const mesh = new THREE.Mesh(mergeGeometries(geos), mat);
+                mesh.userData.noOutline = noOutline;
+                mesh.castShadow = castShadow && !noOutline;
+                mesh.receiveShadow = receiveShadow;
+                return mesh;
+            });
+        }
+
+        // Flat-faceted convex solid from triangles given as [a, b, c] point arrays ([x, y, z]); each
+        // face is turned to point away from the solid's centre, so the winding doesn't matter
+        function convexSolid(triangles) {
+            const centre = new THREE.Vector3();
+            triangles.forEach(t => t.forEach(p => centre.add(_v3a.fromArray(p))));
+            centre.divideScalar(triangles.length * 3);
+            const positions = [];
+            const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+            for (const [pa, pb, pc] of triangles) {
+                a.fromArray(pa); b.fromArray(pb); c.fromArray(pc);
+                const normal = _v3a.subVectors(b, a).cross(_v3b.subVectors(c, a));
+                const out = _v3b.addVectors(a, b).add(c).divideScalar(3).sub(centre);
+                positions.push(...pa, ...(normal.dot(out) < 0 ? [...pc, ...pb] : [...pb, ...pc]));
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.computeVertexNormals();
+            return geo;
+        }
+        const _v3a = new THREE.Vector3(), _v3b = new THREE.Vector3();
+
+        // Capped, flat-faceted solid between two convex loops of [x, y, z] points with the same count
+        function loftLoops(a, b) {
+            const tris = [];
+            for (let i = 0; i < a.length; i++) {
+                const j = (i + 1) % a.length;
+                tris.push([a[i], a[j], b[j]], [a[i], b[j], b[i]]);
+            }
+            for (let i = 1; i < a.length - 1; i++) tris.push([a[0], a[i], a[i + 1]], [b[0], b[i], b[i + 1]]);
+            return convexSolid(tris);
+        }
+
+        // Rectangle of half-sizes (hu, hv) around (cu, cv) with its corners cut by c, as 8 [u, v]
+        // points in order; map them into 3D for loftLoops
+        function chamferRect(hu, hv, c, cu = 0, cv = 0) {
+            return [[hu, hv - c], [hu - c, hv], [c - hu, hv], [-hu, hv - c],
+                [-hu, c - hv], [c - hu, -hv], [hu - c, -hv], [hu, c - hv]].map(([u, v]) => [cu + u, cv + v]);
+        }
+        // Chamfered rectangle in a horizontal plane at height y
+        const levelLoop = (hx, hz, c, y, cx = 0, cz = 0) => chamferRect(hx, hz, c, cx, cz).map(([x, z]) => [x, y, z]);
+
+        // Our ship: a compressed Arleigh Burke destroyer (Flight IIA, DDG-81 to 84 fit), 112 long,
+        // bow toward -z, with the CIWS on the 01 level ahead of the bridge at the origin. Heights are
+        // squeezed so nothing bulky near the gun rises into its line of fire.
+        const NAVY_HAZE = toonMat(0x8e969a);    // hull sides
+        const NAVY_HAZE_LT = toonMat(0x9ca3a7); // superstructure, a step lighter than the hull
+        const NAVY_DECK = toonMat(0x5f666b);    // weather decks
+        const BOOT_TOP = toonMat(0x1c2023);     // waterline band and the bottom below it
+
+        // Hull stations, bow to transom: [z, deck height (sheer), deck-edge half-breadth, waterline
+        // half-breadth, keel height]. The hull is lofted through them; the deck plan and deck
+        // heights the game uses come from them too.
+        const HULL_STATIONS = [
+            [-42, 4.6, 0.25, 0, -1.2],
+            [-39, 4.15, 1.7, 0.15, -2.8],
+            [-36, 3.75, 3.0, 0.8, -4.0],
+            [-33, 3.35, 4.1, 1.7, -4.8],
+            [-30, 3.0, 5.1, 2.6, -5.3],
+            [-26, 2.65, 6.2, 3.7, -5.7],
+            [-22, 2.35, 7.0, 4.7, -5.9],
+            [-18, 2.12, 7.6, 5.5, -6],
+            [-14, 2.0, 8.0, 6.2, -6],
+            [-10, 2.0, 8.3, 6.8, -6],
+            [-5, 2.0, 8.45, 7.3, -6],
+            [2, 2.0, 8.5, 7.6, -6],
+            [50, 2.0, 8.5, 7.6, -6],
+            [58, 1.95, 8.4, 7.2, -4.5],
+            [64, 1.9, 8.1, 6.6, -2.6],
+            [70, 1.85, 7.8, 6.0, -0.9]
+        ];
+
+        // Deck outline in world (x, z), from the stations: symmetric, starboard (x > 0) bow to stern
+        // then port stern to bow
         const SHIP_OUTLINE = [
-            [0, -17], [5.5, -11], [8, -3], [8.5, 6], [8.5, 44],
-            [-8.5, 44], [-8.5, 6], [-8, -3], [-5.5, -11]
+            ...HULL_STATIONS.map(([z, , half]) => [half, z]),
+            ...HULL_STATIONS.slice().reverse().map(([z, , half]) => [-half, z])
         ];
         const SHIP_BOUNDS = {
             halfWidth: Math.max(...SHIP_OUTLINE.map(([x]) => Math.abs(x))),
@@ -3006,19 +3430,19 @@ Ambient
                 position.z > SHIP_BOUNDS.bow - margin && position.z < SHIP_BOUNDS.stern + margin;
         }
 
-        function shapeFromOutline(points, scale = 1) {
+        function shapeFromOutline(points) {
             // Shape y maps to world -z after rotateX(-PI/2)
             const shape = new THREE.Shape();
             points.forEach(([x, z], i) => {
-                if (i === 0) shape.moveTo(x * scale, -z * scale);
-                else shape.lineTo(x * scale, -z * scale);
+                if (i === 0) shape.moveTo(x, -z);
+                else shape.lineTo(x, -z);
             });
             shape.closePath();
             return shape;
         }
 
-        function extrudeOutline(points, bottom, top, scale = 1) {
-            const geo = new THREE.ExtrudeGeometry(shapeFromOutline(points, scale), {
+        function extrudeOutline(points, bottom, top) {
+            const geo = new THREE.ExtrudeGeometry(shapeFromOutline(points), {
                 depth: top - bottom,
                 bevelEnabled: false
             });
@@ -3027,120 +3451,487 @@ Ambient
             return geo;
         }
 
+        // The station at a point along the hull, interpolated between its neighbours (clamped to the ends)
+        function stationAt(z) {
+            const s = HULL_STATIONS;
+            if (z <= s[0][0]) return s[0];
+            const i = s.findIndex(([sz]) => sz >= z);
+            if (i < 0) return s[s.length - 1];
+            const k = (z - s[i - 1][0]) / (s[i][0] - s[i - 1][0]);
+            return s[i - 1].map((a, n) => a + (s[i][n] - a) * k);
+        }
+
+        // Height of the main deck at a point along the hull
+        const deckHeightAt = z => stationAt(z)[1];
+
+        // One station's starboard half-section, keel to bulwark, as [x, y, z] points: the same count
+        // at every station, so neighbours stitch straight across. Forward, the section breaks at a
+        // knuckle (the upper strake flares out harder), a bulwark rises off the deck edge and the
+        // stem rakes forward; aft, the bottom lifts out of the water to a raked transom.
+        function hullSection([z, deckY, halfDeck, halfWL, keelY]) {
+            const { clamp } = THREE.MathUtils;
+            const bow = clamp((-14 - z) / 28, 0, 1);
+            const stemRake = clamp((-30 - z) / 12, 0, 1) * 0.75;   // forward per unit of height
+            const transomRake = clamp((z - 64) / 6, 0, 1) * -0.12;
+            const bulwark = 0.8 * clamp((-28 - z) / 6, 0, 1);
+            const thick = Math.min(0.15, bulwark / 2);
+            const wlY = Math.max(WATER_LEVEL, keelY);
+            const bilgeY = keelY + Math.max(0, 0.55 * (WATER_LEVEL - keelY));
+            const knuckleY = WATER_LEVEL + 0.7 * (deckY - WATER_LEVEL);
+            const knuckleX = halfWL + 0.7 * (halfDeck - halfWL) - 0.25 * bow * (halfDeck - halfWL);
+            const bootY = Math.max(WATER_LEVEL + 0.45, wlY);
+            const bootX = halfWL + (knuckleX - halfWL) * (bootY - wlY) / (knuckleY - wlY);
+            return [
+                [0, keelY], [0.45 * halfWL, keelY + Math.min(0.15 + 1.6 * bow, 0.8 * (bilgeY - keelY))],
+                [0.88 * halfWL, bilgeY], [halfWL, wlY], [bootX, bootY], [knuckleX, knuckleY],
+                [halfDeck, deckY], [halfDeck + 0.03 * bulwark, deckY + bulwark],
+                [halfDeck - thick, deckY + bulwark], [halfDeck - thick, deckY]
+            ].map(([x, y]) => [x, y, z + (deckY - y) * (stemRake + transomRake)]);
+        }
+        // The section at any z (true to the loft in the parallel midbody, where a friendly's wreck breaks)
+        const hullSectionAt = z => hullSection(stationAt(z));
+        const HULL_BOOT_TOP_POINTS = 5; // the section's first five points run up to the boot-top's upper edge
+
+        // The lofted hull through `sections` (hullSection point lists, bow to stern; a friendly's
+        // wreck lofts part of it) as three flat-faceted geometries: the sides (with the bulwark and
+        // both end caps), the dark boot-top band and bottom, and the deck
+        function buildHull(sections = HULL_STATIONS.map(hullSection)) {
+            const sides = [], bottom = [], deck = [];
+            const port = ([x, y, z]) => [-x, y, z];
+            // Quad a-b-c-d, counter-clockwise seen from the side it faces
+            const quad = (out, a, b, c, d) => out.push(...a, ...b, ...c, ...a, ...c, ...d);
+            for (let s = 1; s < sections.length; s++) {
+                const A = sections[s - 1], B = sections[s];
+                for (let k = 0; k < A.length - 1; k++) {
+                    const out = k < HULL_BOOT_TOP_POINTS - 1 ? bottom : sides;
+                    quad(out, A[k], A[k + 1], B[k + 1], B[k]);
+                    quad(out, port(A[k]), port(B[k]), port(B[k + 1]), port(A[k + 1]));
+                }
+                const a = A[A.length - 1], b = B[B.length - 1];
+                quad(deck, a, port(a), port(b), b);
+            }
+            // Stem and transom: fans from the middle of the end sections, facing out of the hull
+            [[sections[0], -1], [sections[sections.length - 1], 1]].forEach(([section, facing]) => {
+                const ring = [...section, ...section.slice().reverse().map(port)];
+                const mid = ring.reduce((m, p) => m.add(_v3a.fromArray(p)), new THREE.Vector3()).divideScalar(ring.length).toArray();
+                for (let i = 0; i < ring.length - 1; i++) {
+                    const [a, b] = [ring[i], ring[i + 1]];
+                    const nz = (a[0] - mid[0]) * (b[1] - mid[1]) - (a[1] - mid[1]) * (b[0] - mid[0]);
+                    sides.push(...mid, ...(nz * facing > 0 ? [...a, ...b] : [...b, ...a]));
+                }
+            });
+            return [sides, bottom, deck].map(positions => {
+                const geo = new THREE.BufferGeometry();
+                geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                geo.computeVertexNormals();
+                return geo;
+            });
+        }
+
+        // Box with its top drawn in (the inclined walls of stealthy superstructure): half-width hx
+        // about x, z0..z1 at the base y0; at the top y1 the sides come in by `side` and the ends by
+        // `front` and `back`, and the whole top shifts aft by `lean`
+        function slopedBlock(opts) {
+            return loftLoops(...slopedLoops(opts));
+        }
+        // Its bottom and top loops; faces (for loftFace) 0 front, 1 port side, 2 back, 3 starboard
+        function slopedLoops({ hx, z0, z1, y0, y1, side = 0, front = 0, back = 0, lean = 0, x = 0 }) {
+            const loop = (h, za, zb, y) => [[x + h, y, za], [x - h, y, za], [x - h, y, zb], [x + h, y, zb]];
+            return [loop(hx, z0, z1, y0), loop(hx - side, z0 + front + lean, z1 - back + lean, y1)];
+        }
+
+        // Transform for UNIT_BOX as an upright wall of height h and thickness t, from foot p to foot q
+        function wallMatrix(p, q, h, t) {
+            const dx = q.x - p.x, dz = q.z - p.z;
+            return at((p.x + q.x) / 2, (p.y + q.y) / 2 + h / 2, (p.z + q.z) / 2, 0, Math.atan2(dx, dz), 0, new THREE.Vector3(t, h, Math.hypot(dx, dz)));
+        }
+
+        // A painted marking: lit like the surface under it, and drawn over it without z-fighting
+        const decalMat = (map, opts = {}) => toonMat(0xffffff, { map, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2, ...opts });
+
+        // Canvas texture of w x h pixels, drawn by draw(ctx)
+        function canvasTexture(w, h, draw) {
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            draw(canvas.getContext('2d'));
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.colorSpace = THREE.SRGBColorSpace;
+            tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            return tex;
+        }
+
+        // Flight deck markings (canvas up is forward): deck edge lines, the centreline, the yellow
+        // landing circle and lineup line
+        const makeFlightDeckTexture = () => canvasTexture(512, 216, ctx => {
+            const W = 512, H = 216, k = W / 14.6; // pixels per unit
+            ctx.fillStyle = '#60666a';
+            ctx.fillRect(0, 0, W, H);
+            ctx.strokeStyle = '#f0efe9';
+            ctx.lineWidth = 0.14 * k;
+            ctx.strokeRect(0.35 * k, 0.3 * k, W - 0.7 * k, H - 0.6 * k);
+            ctx.setLineDash([0.6 * k, 0.45 * k]);
+            ctx.beginPath();
+            ctx.moveTo(W / 2, 0.3 * k);
+            ctx.lineTo(W / 2, H - 0.3 * k);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = '#e2b53a';
+            ctx.lineWidth = 0.18 * k;
+            ctx.beginPath();
+            ctx.arc(W / 2, H / 2, 2.2 * k, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(W / 2 + 0.3 * k, H - 0.3 * k);
+            ctx.lineTo(W / 2 + 0.3 * k, 0.3 * k);
+            ctx.stroke();
+        });
+
+        // A hull number: white numerals with a black drop shadow, on clear
+        const makeHullNumberTexture = text => canvasTexture(256, 96, ctx => {
+            ctx.font = 'bold 84px Arial, Helvetica, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#161b20';
+            ctx.fillText(text, 133, 53);
+            ctx.fillStyle = '#f4f3ee';
+            ctx.fillText(text, 128, 48);
+        });
+
+        // Lifelines along a path of deck-edge points (THREE.Vector3s): stanchions about every 2
+        // units and two rails, as thin ink parts (all sizes times `scale`)
+        function lifelineParts(path, scale = 1) {
+            const parts = [];
+            const lift = h => p => p.clone().setY(p.y + h * scale);
+            for (let i = 1; i < path.length; i++) {
+                const a = path[i - 1], b = path[i];
+                const n = Math.max(1, Math.round(a.distanceTo(b) / (2 * scale)));
+                for (let j = 0; j < n; j++) {
+                    const p = a.clone().lerp(b, j / n);
+                    parts.push(strut(p, lift(1.05)(p), 0.06 * scale));
+                }
+                [0.55, 1.05].forEach(h => parts.push(strut(lift(h)(a), lift(h)(b), 0.045 * scale)));
+            }
+            const end = path[path.length - 1];
+            parts.push(strut(end, lift(1.05)(end), 0.06 * scale));
+            return parts.map(p => ({ ...p, mat: INK_MAT, noOutline: true }));
+        }
+
+        // The painted safety circle round the CIWS: yellow and black stripes, inner to outer radius,
+        // at height y
+        function hazardRing(inner, outer, y) {
+            const segments = 96;
+            const repeats = Math.round(Math.PI * (inner + outer) / (2 * (outer - inner))); // about square tiles
+            const positions = [], uvs = [], index = [];
+            for (let i = 0; i <= segments; i++) {
+                const a = (i / segments) * Math.PI * 2;
+                [inner, outer].forEach((r, j) => {
+                    positions.push(Math.cos(a) * r, y, Math.sin(a) * r);
+                    uvs.push((i / segments) * repeats, j);
+                });
+                if (i < segments) index.push(2 * i, 2 * i + 3, 2 * i + 1, 2 * i, 2 * i + 2, 2 * i + 3);
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geo.setIndex(index);
+            geo.computeVertexNormals();
+            const ring = new THREE.Mesh(geo, decalMat(makeHazardTexture()));
+            ring.receiveShadow = true;
+            ring.userData.noOutline = true;
+            return ring;
+        }
+
+        const WINDOW_MAT = toonMat(0x22303a);  // bridge windows, hangar doors
+        const SPY_FACE = toonMat(0x7b8489);
+        const SPY_RIM = toonMat(0x5d656b);
+
+        // Face i of a loft between loops a (bottom) and b (top), as returned by levelLoop: the point
+        // at fraction s along it and t of the way up, and its outward normal
+        function loftFace(a, b, i) {
+            const j = (i + 1) % a.length;
+            const [a0, a1, b0, b1] = [a[i], a[j], b[i], b[j]].map(p => new THREE.Vector3(...p));
+            const centre = a.concat(b).reduce((c, p) => c.add(_v3a.fromArray(p)), new THREE.Vector3()).divideScalar(2 * a.length);
+            const normal = a1.clone().sub(a0).cross(b0.clone().sub(a0)).normalize();
+            if (normal.dot(a0.clone().sub(centre)) < 0) normal.negate();
+            const at = (s, t) => a0.clone().lerp(a1, s).lerp(b0.clone().lerp(b1, s), t);
+            return { at, normal };
+        }
+
+        // A thin slab laid on a loft face (windows, doors): the patch s0..s1 along it, t0..t1 up it
+        function facePanel(face, s0, s1, t0, t1, thickness = 0.04) {
+            const quad = [[s0, t0], [s1, t0], [s1, t1], [s0, t1]].map(([s, t]) => face.at(s, t).addScaledVector(face.normal, 0.005));
+            return loftLoops(quad.map(p => p.toArray()), quad.map(p => p.addScaledVector(face.normal, thickness).toArray()));
+        }
+
+        // A flat octagon (flat edge up) of radius r standing proud of a loft face at (s, t)
+        function faceOctagon(face, s, t, r, proud, thickness) {
+            const centre = face.at(s, t), n = face.normal;
+            const across = new THREE.Vector3(0, 1, 0).cross(n).normalize(), up = n.clone().cross(across);
+            const ring = Array.from({ length: 8 }, (_, k) => {
+                const a = Math.PI / 8 + k * Math.PI / 4;
+                return centre.clone().addScaledVector(across, r * Math.cos(a)).addScaledVector(up, r * Math.sin(a)).addScaledVector(n, proud);
+            });
+            return loftLoops(ring.map(p => p.toArray()), ring.map(p => p.addScaledVector(n, thickness).toArray()));
+        }
+
+        // A RHIB's hull in plan, (x, z) bow forward: ours on their davits, the friendlies' on deck
+        const RHIB_PLAN = [[0, -3.3], [0.75, -2.4], [1.05, -1.0], [1.05, 3.0], [-1.05, 3.0], [-1.05, -1.0], [-0.75, -2.4]];
+
+        let shipRadar; // the mast's surface-search antenna, turning
         function createShip() {
             const ship = new THREE.Group();
+            ship.name = 'ship';
+            // Every fixed part is gathered here and merged at the end, one mesh per material
+            const structure = [];
+            const v = (x, y, z) => new THREE.Vector3(x, y, z);
+            const part = (geo, mat, matrix, noOutline = false) => ({ geo, mat, matrix, noOutline });
 
-            const deckMat = toonMat(0x9da3a4);
-            const hullMat = toonMat(0x6d7a85);
-            const hull = new THREE.Mesh(extrudeOutline(SHIP_OUTLINE, -4.5, 0), [deckMat, hullMat]);
-            hull.receiveShadow = true;
-            ship.add(hull);
+            const [sides, bottom, deck] = buildHull();
+            // The hull sides don't cast shadows: the sea doesn't take them, and on the hull they only make acne
+            mergeByMaterial([part(sides, NAVY_HAZE)], { receiveShadow: true }).forEach(m => { m.name = 'hull'; ship.add(m); });
+            structure.push(part(bottom, BOOT_TOP, null, true), part(deck, NAVY_DECK, null, true));
 
-            const bootTop = new THREE.Mesh(extrudeOutline(SHIP_OUTLINE, -4.6, WATER_LEVEL + 0.35, 1.012), toonMat(0x8c3b33));
-            bootTop.userData.noOutline = true;
-            ship.add(bootTop);
+            // Superstructure. The 01 level: the CIWS deck, its front sloped back like a breakwater,
+            // running aft as the 01 deckhouse, with walkways down both sides of the main deck. On it
+            // the bridge block, its corners cut for the SPY-1D faces, and a lower 02 deckhouse aft
+            // to the second funnel. Everything near the gun stays under its line of fire
+            // (MOUNT_Y + 5 at the muzzle): the bridge roof is at 8.5.
+            const level01 = { hx: 6, z0: -6, z1: 48, side: 0.28, front: 1.1 };
+            const deckTop = { hx: 6 - 0.28 - 0.04, z0: -6 + 1.1 + 0.04, z1: level01.z1 - 0.04 };
+            const bridgeY0 = MOUNT_Y - 0.06, bridgeRoof = 8.5;
+            const bridgeBase = levelLoop(deckTop.hx, 7.5, 2.2, bridgeY0, 0, 16.5);
+            const bridgeTop = levelLoop(5.09, 6.65, 2.0, bridgeRoof, 0, 16.85);
+            const bridgeFace = i => loftFace(bridgeBase, bridgeTop, i); // 5 is the front, 4 and 6 the forward corners
+            const windowBand = [7.3, 8.1].map(y => (y - bridgeY0) / (bridgeRoof - bridgeY0));
+            const hangar = slopedLoops({ hx: 7.0, z0: 56.5, z1: 63.5, y0: 1.9, y1: 7.0, side: 0.6, back: 0.3 });
+            structure.push(
+                part(slopedBlock({ ...level01, y0: 1.9, y1: MOUNT_Y - 0.06 }), NAVY_HAZE_LT),
+                part(slopedBlock({ ...deckTop, y0: MOUNT_Y - 0.08, y1: MOUNT_Y }), NAVY_DECK),
+                part(loftLoops(bridgeBase, bridgeTop), NAVY_HAZE_LT),
+                part(slopedBlock({ hx: 4.6, z0: 23.5, z1: level01.z1, y0: MOUNT_Y - 0.06, y1: 6.6, side: 0.37, back: 0.4 }), NAVY_HAZE_LT),
+                part(loftLoops(...hangar), NAVY_HAZE_LT),
+                // Bridge wings, and the windows across the front and the forward corners
+                ...[-1, 1].map(side => part(slopedBlock({ hx: 1.5, x: side * 6.5, z0: 10.6, z1: 12.8, y0: 7.0, y1: 7.9 }), NAVY_HAZE_LT)),
+                part(facePanel(bridgeFace(5), 0.03, 0.97, ...windowBand), WINDOW_MAT, null, true),
+                ...[4, 6].map(i => part(facePanel(bridgeFace(i), 0.1, 0.9, ...windowBand), WINDOW_MAT, null, true)),
+                // SPY-1D faces on the four cut corners, the aft pair a little higher; hangar doors
+                ...[[4, 0.47], [6, 0.47], [0, 0.6], [2, 0.6]].flatMap(([i, t]) => [
+                    part(faceOctagon(bridgeFace(i), 0.5, t, 1.22, 0, 0.06), SPY_RIM, null, true),
+                    part(faceOctagon(bridgeFace(i), 0.5, t, 1.08, 0.06, 0.05), SPY_FACE, null, true)
+                ]),
+                ...[[0.08, 0.46], [0.54, 0.92]].map(([s0, s1]) => part(facePanel(loftFace(...hangar, 2), s0, s1, 0, 0.72), WINDOW_MAT, null, true))
+            );
+            ship.add(hazardRing(3.5, 4.05, MOUNT_Y + 0.004));
 
-            // Hazard-striped bulwark around the deck edge
-            const hazardTex = makeHazardTexture();
-            const capMat = toonMat(0xe2b53a);
-            const bulwarkHeight = 1.1;
-            for (let i = 0; i < SHIP_OUTLINE.length; i++) {
-                const [x1, z1] = SHIP_OUTLINE[i];
-                const [x2, z2] = SHIP_OUTLINE[(i + 1) % SHIP_OUTLINE.length];
-                if (z1 === SHIP_BOUNDS.stern && z2 === SHIP_BOUNDS.stern) continue; // open stern
-                const len = Math.hypot(x2 - x1, z2 - z1);
-                const tex = hazardTex.clone();
-                tex.needsUpdate = true;
-                tex.repeat.x = Math.max(1, Math.round(len / bulwarkHeight));
-                const sideMat = toonMat(0xffffff, { map: tex });
-                const wall = new THREE.Mesh(
-                    new THREE.BoxGeometry(len + 0.25, bulwarkHeight, 0.25),
-                    [capMat, capMat, capMat, capMat, sideMat, sideMat]
-                );
-                // Pull the wall slightly inboard so it sits on the deck
-                const mx = (x1 + x2) / 2, mz = (z1 + z2) / 2;
-                const inward = new THREE.Vector2(z2 - z1, x1 - x2).normalize();
-                if (inward.dot(new THREE.Vector2(-mx, 13 - mz)) < 0) inward.negate();
-                inward.multiplyScalar(0.12);
-                wall.position.set(mx + inward.x, bulwarkHeight / 2, mz + inward.y);
-                wall.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
-                wall.castShadow = true;
-                wall.receiveShadow = true;
-                ship.add(wall);
-            }
-
-            // Deck fittings
-            const fittingMat = toonMat(0x4d555c);
-            [[-4.5, -6], [4.5, -6], [-6, 12], [6, 12]].forEach(([x, z]) => {
-                const bollard = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 0.7, 20), fittingMat);
-                bollard.position.set(x, 0.35, z);
-                bollard.castShadow = true;
-                ship.add(bollard);
+            // Two funnels, raked aft, with dark caps and exhaust stubs
+            [27, 41].forEach(z0 => {
+                const funnel = { hx: 1.9, z0, z1: z0 + 6.5, y0: 6.5, y1: 10.6, side: 0.35, front: 0.5, back: 0.1, lean: 0.6 };
+                structure.push(part(slopedBlock(funnel), NAVY_HAZE_LT));
+                const top = { hx: 1.4, z0: z0 + 1.2, z1: z0 + 6.9, y0: 10.55, y1: 10.7 };
+                structure.push(part(slopedBlock(top), BOOT_TOP, null, true));
+                [-0.6, 0.6].forEach(x => structure.push(part(new THREE.CylinderGeometry(0.33, 0.33, 0.7, 12), BOOT_TOP, at(x, 10.9, z0 + 4.1), true)));
             });
-            const hatch = new THREE.Mesh(new THREE.BoxGeometry(3.2, 0.35, 3.2), toonMat(0x7d8689));
-            hatch.position.set(0, 0.175, 11);
-            hatch.receiveShadow = true;
-            ship.add(hatch);
-            createShipVLS(ship);
 
-            // Low deckhouse and mast aft
-            const houseMat = toonMat(0xd9dad3);
-            const house = new THREE.Mesh(new THREE.BoxGeometry(12, 3.6, 12), houseMat);
-            house.position.set(0, 1.8, 32);
-            house.castShadow = true;
-            house.receiveShadow = true;
-            ship.add(house);
-            const windows = new THREE.Mesh(new THREE.BoxGeometry(10.5, 0.7, 0.1), toonMat(0x2b3a45));
-            windows.position.set(0, 2.6, 26);
-            windows.userData.noOutline = true;
-            ship.add(windows);
-            const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 7, 16), fittingMat);
-            mast.position.set(0, 7, 33);
-            ship.add(mast);
-            const yard = new THREE.Mesh(new THREE.BoxGeometry(4, 0.18, 0.18), fittingMat);
-            yard.position.set(0, 9.2, 33);
-            ship.add(yard);
+            // Tripod mast, raked aft, from the bridge roof: two yards, a platform with the SPS-67
+            // radome, a pole with the TACAN pod, whip aerials (drawn as ink lines), and the turning
+            // surface-search antenna
+            const rake = Math.tan(THREE.MathUtils.degToRad(8));
+            const mastAt = y => v(0, y, 20.6 + (y - 17) * rake);
+            const rod = (p, q, diameter) => ({ ...strut(p, q, diameter, true), mat: NAVY_HAZE_LT });
+            structure.push(
+                ...[v(-2.0, bridgeRoof, 17.4), v(2.0, bridgeRoof, 17.4), v(0, bridgeRoof, 22.8)].map(foot => rod(foot, mastAt(17), 0.44)),
+                rod(mastAt(16.9), mastAt(25.5), 0.3),
+                part(slopedBlock({ hx: 1.3, z0: mastAt(17).z - 1.3, z1: mastAt(17).z + 1.3, y0: 16.85, y1: 17.15 }), NAVY_HAZE_LT),
+                part(new THREE.SphereGeometry(0.45, 12, 8), RADOME_WHITE, at(0, 17.6, mastAt(17).z - 0.8)),
+                part(new THREE.CylinderGeometry(0.32, 0.32, 0.8, 12), NAVY_HAZE_LT, at(0, 24.6, mastAt(24.6).z)),
+                ...[18.6, 21.0].map(y => part(UNIT_BOX, NAVY_HAZE_LT, at(0, y, mastAt(y).z, 0, 0, 0, v(y < 20 ? 6 : 4.4, 0.15, 0.15)), true)),
+                ...[-2.9, 2.9, -2.1, 2.1].map((x, i) => {
+                    const foot = v(x, i < 2 ? 18.6 : 21.0, mastAt(i < 2 ? 18.6 : 21.0).z);
+                    return { ...strut(foot, foot.clone().add(v(0, 2.6, 0.4)), 0.04), mat: INK_MAT, noOutline: true };
+                })
+            );
+            shipRadar = new THREE.Group();
+            shipRadar.position.copy(mastAt(22.2));
+            mergeByMaterial([
+                part(UNIT_BOX, NAVY_HAZE_LT, at(0, 0.2, 0, 0, 0, 0, v(2.6, 0.32, 0.12))),
+                part(UNIT_BOX, NAVY_HAZE_LT, at(0, 0, 0, 0, 0, 0, v(0.3, 0.3, 0.3)))
+            ]).forEach(m => { m.name = 'radar'; shipRadar.add(m); });
+            ship.add(shipRadar);
+
+            // Mk 45 Mod 4 5-inch gun on the forecastle: the faceted gunhouse on a short barbette,
+            // its barrel out of the sloped front at a few degrees' elevation, and a low breakwater
+            const gunZ = -26, gunY = deckHeightAt(gunZ);
+            const gunhouse = (y, plan) => plan.map(([x, z]) => [x, y, gunZ + z]);
+            const gunBase = gunhouse(gunY + 0.35, [[0.9, -2.2], [1.4, -1.2], [1.4, 2.2], [-1.4, 2.2], [-1.4, -1.2], [-0.9, -2.2]]);
+            const gunTop = gunhouse(gunY + 2.25, [[0.55, -0.7], [1.1, -0.2], [1.1, 1.9], [-1.1, 1.9], [-1.1, -0.2], [-0.55, -0.7]]);
+            const elevation = THREE.MathUtils.degToRad(5);
+            const breech = v(0, gunY + 1.1, gunZ - 1.4);
+            const muzzle = breech.clone().add(v(0, Math.sin(elevation), -Math.cos(elevation)).multiplyScalar(6.2));
+            const breakwater = [v(-3.6, 0, -29.8), v(0, 0, -31.6), v(3.6, 0, -29.8)].map(p => p.setY(deckHeightAt(p.z) - 0.1));
+            structure.push(
+                part(loftLoops(gunBase, gunTop), NAVY_HAZE_LT),
+                part(new THREE.CylinderGeometry(1.55, 1.6, 0.8, 24), NAVY_HAZE_LT, at(0, gunY + 0.05, gunZ)),
+                { ...strut(breech, muzzle, 0.24, true), mat: NAVY_HAZE_LT },
+                { ...strut(muzzle.clone().lerp(breech, 0.06), muzzle, 0.32, true), mat: NAVY_HAZE_LT },
+                part(facePanel(loftFace(gunBase, gunTop, 5), 0.38, 0.62, 0.12, 0.7), WINDOW_MAT, null, true),
+                ...[0, 1].map(i => part(UNIT_BOX, NAVY_HAZE_LT, wallMatrix(breakwater[i], breakwater[i + 1], 0.75, 0.12)))
+            );
+
+            // Missile banks: two fixed modules either side of the live one (24 cells forward) and
+            // four across the deck aft of the second funnel (32 cells)
+            structure.push(
+                ...[-3.9, 3.9].flatMap(x => vlsModuleParts(VLS_ORIGIN.clone().setX(x))),
+                ...[-5.7, -1.9, 1.9, 5.7].flatMap(x => vlsModuleParts(v(x, deckHeightAt(52.4), 52.4)))
+            );
+
+            // Deck fittings: the anchor windlass and its cables to the hawse pipes, bollards, a RHIB
+            // on davits each side, life-raft canisters, decoy launchers ahead of the bridge and two
+            // fire-control illuminators aft
+            const windlassY = deckHeightAt(-35.5);
+            [-1, 1].forEach(side => {
+                structure.push(part(new THREE.CylinderGeometry(0.34, 0.34, 0.45, 16), CIWS_DARK, at(side * 0.85, windlassY + 0.4, -35.5, 0, 0, Math.PI / 2)));
+                const hawse = v(side * 1.5, deckHeightAt(-38.2) + 0.05, -38.2);
+                structure.push(part(new THREE.CylinderGeometry(0.2, 0.24, 0.12, 12), BOOT_TOP, at(hawse.x, hawse.y, hawse.z), true));
+                const drum = v(side * 0.85, windlassY + 0.12, -35.5);
+                for (let i = 0; i < 7; i++) {
+                    const p = drum.clone().lerp(hawse, (i + 0.5) / 7);
+                    structure.push(part(UNIT_BOX, BOOT_TOP, at(p.x, p.y + 0.04, p.z, 0, Math.atan2(hawse.x - drum.x, hawse.z - drum.z), i % 2 ? Math.PI / 2 : 0, v(0.12, 0.05, 0.28)), true));
+                }
+                [-18, 6, 30].forEach(z => [-0.3, 0.3].forEach(dz =>
+                    structure.push(part(new THREE.CylinderGeometry(0.17, 0.2, 0.42, 12), CIWS_DARK, at(side * 7.5, deckHeightAt(z + dz) + 0.21, z + dz)))));
+                structure.push(part(UNIT_BOX, CIWS_DARK, at(0, windlassY + 0.15, -35.5, 0, 0, 0, v(2.4, 0.3, 0.8))));
+
+                // RHIB in its cradle by the 01 deckhouse: grey hull, dark tube collar, console
+                const boatAt = (scale) => RHIB_PLAN.map(([x, z]) => [side * 7.2 + x * scale, 36 + z * scale]);
+                structure.push(part(extrudeOutline(boatAt(1), 3.95, 4.4), NAVY_HAZE_LT));
+                structure.push(part(extrudeOutline(boatAt(1.07), 4.35, 4.66), BOOT_TOP));
+                structure.push(part(extrudeOutline(boatAt(0.84), 4.4, 4.68), NAVY_HAZE_LT, null, true));
+                structure.push(part(UNIT_BOX, NAVY_HAZE_LT, at(side * 7.2, 4.95, 36.6, 0, 0, 0, v(0.7, 0.5, 0.8))));
+                [33.6, 38.4].forEach(z => {
+                    const foot = v(side * 5.5, MOUNT_Y, z), knee = v(side * 6.2, 6.0, z), head = v(side * 7.3, 6.0, z);
+                    structure.push({ ...strut(foot, knee, 0.16), mat: NAVY_HAZE_LT }, { ...strut(knee, head, 0.16), mat: NAVY_HAZE_LT });
+                    structure.push({ ...strut(head, head.clone().setY(4.75), 0.03), mat: INK_MAT, noOutline: true });
+                });
+
+                // Life-raft canisters in pairs along the 01 deck, decoy launchers, illuminators
+                [25.0, 26.3, 27.6, 43.0, 44.3, 45.6].forEach(z =>
+                    structure.push(part(new THREE.CylinderGeometry(0.3, 0.3, 1.0, 12), RADOME_WHITE, at(side * 5.1, MOUNT_Y + 0.32, z, Math.PI / 2))));
+                structure.push(part(UNIT_BOX, CIWS_DARK, at(side * 4.6, MOUNT_Y + 0.3, 8.2, 0, 0, 0, v(0.9, 0.6, 1.1))));
+                [-0.3, 0, 0.3].forEach(dx => structure.push(part(new THREE.CylinderGeometry(0.1, 0.1, 0.7, 8), BOOT_TOP,
+                    at(side * 4.6 + dx, MOUNT_Y + 0.75, 8.2, -0.5, 0, side * 0.4), true)));
+                const dish = v(side * 3.1, 6.6, 45.2);
+                structure.push(part(new THREE.CylinderGeometry(0.28, 0.34, 0.7, 12), NAVY_HAZE_LT, at(dish.x, dish.y + 0.35, dish.z)));
+                structure.push(part(new THREE.CylinderGeometry(0.62, 0.2, 0.3, 16), NAVY_HAZE_LT, at(dish.x + side * 0.15, dish.y + 1.05, dish.z + 0.1, 0.5, 0, -side * 1.0)));
+            });
+
+            // Painted markings: the flight deck aft and the hull number on each bow (a made-up one)
+            const flightY = deckHeightAt(63.6) + 0.015;
+            const flightDeck = new THREE.Mesh(new THREE.PlaneGeometry(14.6, 6.2).rotateX(-Math.PI / 2),
+                decalMat(makeFlightDeckTexture()));
+            flightDeck.position.set(0, flightY, 66.8);
+            flightDeck.receiveShadow = true;
+            flightDeck.userData.noOutline = true;
+            ship.add(flightDeck);
+            const numberMat = decalMat(makeHullNumberTexture('166'), { alphaTest: 0.5 });
+            const [fore, aft] = [HULL_STATIONS[3], HULL_STATIONS[4]].map(hullSection);
+            const number = [-1, 1].map(side => {
+                // On the upper strake between the knuckle (section point 5) and the deck edge (6),
+                // s along it from the forward station and t up it; mirrored to port
+                const corner = (s, t) => {
+                    const knuckle = new THREE.Vector3(...fore[5]).lerp(new THREE.Vector3(...aft[5]), s);
+                    const edge = new THREE.Vector3(...fore[6]).lerp(new THREE.Vector3(...aft[6]), s);
+                    return knuckle.lerp(edge, t).multiply(v(side, 1, 1));
+                };
+                const [s0, s1] = side > 0 ? [0.9, 0.1] : [0.1, 0.9]; // reads left to right from outboard
+                const quad = [corner(s0, 0.15), corner(s1, 0.15), corner(s1, 0.9), corner(s0, 0.9)];
+                const facing = quad[1].clone().sub(quad[0]).cross(quad[3].clone().sub(quad[0]));
+                const outward = facing.x * side > 0;
+                facing.normalize().multiplyScalar(outward ? 0.02 : -0.02);
+                const geo = new THREE.BufferGeometry().setFromPoints(quad.map(p => p.add(facing)));
+                geo.setIndex(outward ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2]);
+                geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+                geo.computeVertexNormals();
+                return { geo, mat: numberMat, noOutline: true };
+            });
+            mergeByMaterial(number, { receiveShadow: true }).forEach(m => ship.add(m));
+
+            // Lifelines round the main deck aft of the bow bulwark, round the CIWS deck, and along
+            // the 01 level's edges aft of the bridge
+            const edge = (side, [z, deckY, half]) => v(side * (half - 0.12), deckY, z);
+            const aftOfBulwark = HULL_STATIONS.filter(([z]) => z >= -30);
+            const railX = deckTop.hx - 0.08, railFront = deckTop.z0 + 0.1;
+            structure.push(
+                ...lifelineParts([...aftOfBulwark.map(s => edge(1, s)), ...aftOfBulwark.slice().reverse().map(s => edge(-1, s))]),
+                ...lifelineParts([v(railX, MOUNT_Y, 9.3), v(railX, MOUNT_Y, railFront), v(-railX, MOUNT_Y, railFront), v(-railX, MOUNT_Y, 9.3)]),
+                ...lifelineParts([v(railX, MOUNT_Y, 24.2), v(railX, MOUNT_Y, deckTop.z1), v(-railX, MOUNT_Y, deckTop.z1), v(-railX, MOUNT_Y, 24.2)])
+            );
+
+            structure.push(...createShipVLS(ship, VLS_ORIGIN));
+            mergeByMaterial(structure, { castShadow: true, receiveShadow: true }).forEach(m => { m.name = 'structure'; ship.add(m); });
 
             addOutlines(ship);
             scene.add(ship);
         }
 
-        // An 8-cell Mk 41 module set into the deck: two rows of four cell hatches either side of
-        // the long uptake hatch the launch exhaust vents through. Lids hinge on their outboard edge.
+        // 8-cell Mk 41 modules set into the deck: two rows of four cell hatches either side of the
+        // long uptake hatch the launch exhaust vents through. Lids hinge on their outboard edge.
+        // One module on the forecastle is live; the rest of the banks are fixed, lids shut.
         let shipVLS = { cells: [] };
         const VLS_PLATE_MAT = toonMat(0x5d656b); // launcher plating, on our ship and the friendlies
-        function createShipVLS(ship) {
-            const z0 = 19;
-            const plate = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.12, 6.8), VLS_PLATE_MAT);
-            plate.position.set(0, 0.06, z0);
-            plate.receiveShadow = true;
-            ship.add(plate);
-            const uptake = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 6.3), toonMat(0x343a3f));
-            uptake.position.set(0, 0.14, z0);
-            uptake.userData.noOutline = true;
-            ship.add(uptake);
-            const lidMat = toonMat(0x8b9397);
-            const wellMat = toonMat(0x1d2124);
-            [-1, 1].forEach(sideX => {
-                for (let row = 0; row < 4; row++) {
-                    const z = z0 - 2.4 + row * 1.6;
-                    const x = sideX * 1.05;
-                    // Dark well that shows when the lid is up
-                    const well = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.02, 1.35), wellMat);
-                    well.position.set(x, 0.125, z);
-                    well.userData.noOutline = true;
-                    ship.add(well);
-                    const hinge = new THREE.Group();
-                    hinge.position.set(sideX * 1.68, 0.15, z);
-                    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.08, 1.4), lidMat);
-                    lid.position.set(-sideX * 0.63, 0.04, 0);
-                    lid.castShadow = true;
-                    hinge.add(lid);
-                    ship.add(hinge);
-                    // side: lid rotation direction that swings it up and outboard
-                    shipVLS.cells.push({ lid: hinge, side: sideX, pos: new THREE.Vector3(x, 0.15, z), open: 0, amount: 0 });
-                }
+        const VLS_LID_MAT = toonMat(0x8b9397);
+        const VLS_DARK_MAT = toonMat(0x262b2f);  // the uptake hatch and the cell wells
+        const VLS_ORIGIN = new THREE.Vector3(0, deckHeightAt(-10.5), -10.5); // the live module, on the forecastle
+
+        // A module's cells, centred on `origin` at deck level: each cell's centre and the side (+-1)
+        // its lid hinges on
+        function vlsCells(origin) {
+            const cells = [];
+            [-1, 1].forEach(side => {
+                for (let row = 0; row < 4; row++) cells.push({ side, x: origin.x + side * 1.05, z: origin.z - 2.4 + row * 1.6 });
             });
+            return cells;
+        }
+
+        // A module's fixed parts (plate, uptake hatch, wells), with the lids shut on every cell but
+        // the `live` ones (indices into vlsCells), whose hinged hatches are built separately
+        function vlsModuleParts(origin, live = []) {
+            const { x, y, z } = origin;
+            const parts = [
+                { geo: UNIT_BOX, mat: VLS_PLATE_MAT, matrix: at(x, y + 0.06, z, 0, 0, 0, new THREE.Vector3(3.8, 0.12, 6.8)) },
+                { geo: UNIT_BOX, mat: VLS_DARK_MAT, matrix: at(x, y + 0.14, z, 0, 0, 0, new THREE.Vector3(0.5, 0.06, 6.3)), noOutline: true }
+            ];
+            vlsCells(origin).forEach((c, i) => {
+                parts.push({ geo: UNIT_BOX, mat: VLS_DARK_MAT, matrix: at(c.x, y + 0.125, c.z, 0, 0, 0, new THREE.Vector3(1.2, 0.02, 1.35)), noOutline: true });
+                if (!live.includes(i)) parts.push({ geo: UNIT_BOX, mat: VLS_LID_MAT, matrix: at(c.x + c.side * 0.05, y + 0.19, c.z, 0, 0, 0, new THREE.Vector3(1.25, 0.08, 1.4)) });
+            });
+            return parts;
+        }
+
+        // Hinged lids over `cells` (from vlsCells(origin)), added to `parent`, each mesh called
+        // `name`. Returns the cells for updateVLS; pos is the cell's top in parent's frame.
+        const VLS_LID_GEO = new THREE.BoxGeometry(1.25, 0.08, 1.4);
+        function vlsHatches(parent, origin, cells, name) {
+            return cells.map(({ side, x, z }) => {
+                const hinge = new THREE.Group();
+                hinge.position.set(origin.x + side * 1.68, origin.y + 0.15, z);
+                const lid = new THREE.Mesh(VLS_LID_GEO, VLS_LID_MAT);
+                lid.position.set(-side * 0.63, 0.04, 0);
+                lid.castShadow = true;
+                lid.name = name;
+                hinge.add(lid);
+                parent.add(hinge);
+                // side: lid rotation direction that swings it up and outboard
+                return { lid: hinge, side, pos: new THREE.Vector3(x, origin.y + 0.15, z), open: 0, amount: 0 };
+            });
+        }
+
+        // The live module: a hinged lid per cell that the launches open. Returns its fixed parts, to
+        // merge with the rest of the ship.
+        function createShipVLS(ship, origin) {
+            const cells = vlsCells(origin);
+            shipVLS.cells = vlsHatches(ship, origin, cells, 'vls');
+            return vlsModuleParts(origin, [...cells.keys()]);
         }
 
         function init() {
@@ -3168,7 +3959,7 @@ Ambient
 
             // Camera
             camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.25, 4000);
-            camera.position.set(-15, 10, 20);
+            camera.position.set(-15, MOUNT_Y + 8.5, -15);
 
             // Renderer
             renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -3181,7 +3972,7 @@ Ambient
 
             // Controls
             controls = new OrbitControls(camera, renderer.domElement);
-            controls.target.set(0, 5, 0); // Rotate around the top of the gun tower
+            controls.target.set(0, MOUNT_Y + 4.5, 2); // Orbit the gun; start off the port bow, the bridge behind it
             controls.enablePan = false;
             controls.maxDistance = 400;
             controls.minDistance = 5;
@@ -3195,15 +3986,18 @@ Ambient
             dirLight.position.copy(SUN_DIRECTION).multiplyScalar(110);
             dirLight.castShadow = true;
             dirLight.shadow.mapSize.set(2048, 2048);
-            dirLight.shadow.camera.left = -45;
-            dirLight.shadow.camera.right = 45;
-            dirLight.shadow.camera.top = 45;
-            dirLight.shadow.camera.bottom = -45;
+            dirLight.shadow.camera.left = -62;
+            dirLight.shadow.camera.right = 62;
+            dirLight.shadow.camera.top = 62;
+            dirLight.shadow.camera.bottom = -62;
             dirLight.shadow.camera.near = 10;
             dirLight.shadow.camera.far = 250;
-            dirLight.shadow.bias = -0.0005;
-            dirLight.shadow.normalBias = 0.03;
-            dirLight.target.position.set(0, 0, 12);
+            // The shadow map holds the back faces of closed solids, so faces turned from the sun
+            // test against themselves. A generous normal offset (about two texels at this frustum
+            // size) keeps those, nearly edge-on to the sun on the ship's inclined walls, from acne.
+            dirLight.shadow.bias = -0.0002;
+            dirLight.shadow.normalBias = 0.12;
+            dirLight.target.position.set(0, 0, 14);
             scene.add(dirLight);
             scene.add(dirLight.target);
 
@@ -3235,7 +4029,9 @@ Ambient
             // Handle for console / screenshot tooling
             window.__ciws = {
                 scene, camera, controls, renderer, createExplosion,
-                // Test hooks for the tools: spawn a given threat, wreck a friendly, fire a VLS round
+                // Where things are, so the tools can pose cameras relative to the ship and mount
+                layout: { mountY: MOUNT_Y, deckHeightAt, shipBounds: SHIP_BOUNDS },
+                // Test hooks for the tools: spawn a given threat, wreck a friendly, fire a VLS round, hit our ship
                 debug: {
                     get missiles() { return missiles; },
                     get friendlies() { return friendlies; },
@@ -3245,6 +4041,7 @@ Ambient
                     get barrelSpeed() { return currentBarrelSpeed; },
                     get stats() { return { score, health, wave, engagementStats }; },
                     holdSpawns() { spawnCooldown = Infinity; },
+                    holdVLS() { vlsCooldown = Infinity; }, // no unprompted launches
                     resumeSpawns() { spawnCooldown = 0; },
                     clearThreats() {
                         missiles.forEach(disposeThreat);
@@ -3267,8 +4064,26 @@ Ambient
                         createExplosion(f.position, 'impact');
                         destroyFriendly(f);
                     },
-                    launchVLS(launcher = 'ship', bearing = null) {
+                    // warn: 'routine' or 'response' runs our ship's launch warning first (returns the
+                    // wait in sim seconds); without it the round goes straight away
+                    launchVLS(launcher = 'ship', bearing = null, warn = null) {
+                        if (launcher === 'ship' && warn) return launchShipVLS(warn === 'routine', bearing);
                         return launchVLS(launcher === 'ship' ? 'ship' : friendlies[launcher], bearing);
+                    },
+                    // A hit on our ship's 'starboard' or 'port' side or 'centerline' (z along the
+                    // hull), of a THREAT_TYPES type: the explosion and the damage-control call, but
+                    // no damage
+                    hitOwnShip(side = 'starboard', type = 'ascm', z = rand(-25, 40)) {
+                        const s = { starboard: 1, port: -1, centerline: 0 }[side];
+                        const p = new THREE.Vector3(s * (hullHalfWidthAt(z) - 1), deckHeightAt(z) + 2, z);
+                        createExplosion(p, 'impact');
+                        callDamageControl(p, type);
+                        return p;
+                    },
+                    get voice() {
+                        const A = AudioController;
+                        return { ...A.debugState.cic, waiting: A.paQueue?.length ?? 0,
+                                 lazy: A.lazyCallouts?.slice() ?? [], busyUntil: A.cicBusyUntil, now: A.ctx?.currentTime };
                     }
                 }
             };
@@ -3284,123 +4099,174 @@ Ambient
             animate();
         }
 
+        // Phalanx Block 1B, at about 1.9 units to the metre (hero scale). +z is the gun's forward
+        // direction and +x its left. The fire control and tools rely on the names and pivots:
+        // turretYaw (y 3 on the mount), turretPitch (0, 2, 0.5) on it, the gun block at z 1.5 on that,
+        // and 'barrels' in the gun block, spinning about the bore axis, its muzzle at (0, 0, 3.5).
+        const CIWS_GRAY = toonMat(0x9aa1a5);
+        const CIWS_DARK = toonMat(0x4a5155);
+        const RADOME_WHITE = toonMat(0xeceae2);
+        const RADOME_PANEL = toonMat(0xd8d6ce);
+        const BARREL_MAT = toonMat(0x3a3f43);
+        const BARREL_RING = 0.2; // radius of the circle the six barrels sit on
+
         function createPhalanxCIWS() {
-            const baseMat = toonMat(0xc4c8c3);
-            const greyMat = toonMat(0x9fa4a0);
-            const darkGreyMat = toonMat(0x6b7174);
-            const whiteMat = toonMat(0xeae8de);
-            const windowMat = toonMat(0x262c31);
-            const barrelMat = toonMat(0x3a3f43);
+            ciwsGroup = new THREE.Group(); // The root anchor
+            ciwsGroup.position.y = MOUNT_Y;
+            scene.add(ciwsGroup);
+            const addMerged = (group, parts) => mergeByMaterial(parts, { castShadow: true }).forEach(m => group.add(m));
+            const gray = (geo, matrix) => ({ geo, mat: CIWS_GRAY, matrix });
+            const dark = (geo, matrix, noOutline = false) => ({ geo, mat: CIWS_DARK, matrix, noOutline });
+            const ink = (geo, matrix) => ({ geo, mat: INK_MAT, matrix, noOutline: true });
+            const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+            // Panel lines: a rectangle of thin ink strips, w x h, on a face whose transform is `face`
+            const panelLines = (w, h, face) => [[0, h / 2, w, 0.035], [0, -h / 2, w, 0.035], [w / 2, 0, 0.035, h], [-w / 2, 0, 0.035, h]]
+                .map(([x, y, bw, bh]) => ink(box(bw, bh, 0.02), face.clone().multiply(at(x, y, 0))));
 
-            // 0. Deck pedestal ring
-            const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(3.1, 3.3, 0.4, 64), baseMat);
-            pedestal.position.y = 0.2;
-            pedestal.castShadow = true;
-            pedestal.receiveShadow = true;
-            scene.add(pedestal);
-            addOutlines(pedestal);
-
-            // 1. Static Base
-            const baseGeo = new THREE.CylinderGeometry(2, 2.5, 3, 64);
-            const base = new THREE.Mesh(baseGeo, baseMat);
-            base.position.y = 1.5;
-            base.castShadow = true;
-            base.receiveShadow = true;
-            scene.add(base);
-            addOutlines(base);
+            // Static barbette: a tapered, chamfered pedestal on a deck flange, the train bearing on top
+            const doorTilt = Math.atan2(0.4, 2.05); // the barbette's face slope
+            addMerged(ciwsGroup, [
+                gray(loftLoops(levelLoop(2.65, 2.65, 0.75, 0), levelLoop(2.55, 2.55, 0.72, 0.15))),
+                gray(loftLoops(levelLoop(2.2, 2.2, 0.5, 0.15), levelLoop(1.8, 1.8, 0.4, 2.2))),
+                dark(new THREE.CylinderGeometry(1.9, 1.9, 0.25, 32), at(0, 2.325, 0)),
+                ...panelLines(1.1, 1.4, at(0, 1.15, 2.01, -doorTilt)),
+                ...panelLines(1.1, 1.4, at(0, 1.15, -2.01, doorTilt, Math.PI))
+            ]);
 
             // 2. Yaw Group (Rotates Left/Right)
-            ciwsGroup = new THREE.Group(); // The root anchor
-            scene.add(ciwsGroup);
-
             turretYaw = new THREE.Group();
             turretYaw.position.y = 3;
+            turretYaw.rotation.y = Math.PI; // rests trained over the bow
             ciwsGroup.add(turretYaw);
 
-            // Body of turret
-            const bodyGeo = new THREE.BoxGeometry(2, 3, 2);
-            const body = new THREE.Mesh(bodyGeo, greyMat);
-            body.position.y = 1.5;
-            body.castShadow = true;
-            body.receiveShadow = true;
-            turretYaw.add(body);
-
-            // Cheek plates either side of the elevation trunnion
-            [-1.18, 1.18].forEach(x => {
-                const cheek = new THREE.Mesh(new THREE.BoxGeometry(0.36, 2.7, 2.3), darkGreyMat);
-                cheek.position.set(x, 1.75, 0.1);
-                cheek.castShadow = true;
-                turretYaw.add(cheek);
+            // Train platform, then the two electronics enclosures that carry the elevation trunnions.
+            // Enclosure side profile (z, y): the lower front cut back, the top front rounded about the
+            // trunnion at (0.5, 2.0).
+            const profile = new THREE.Shape();
+            profile.moveTo(-1.6, -0.25);
+            profile.lineTo(0.75, -0.25);
+            profile.lineTo(1.4, 0.45);
+            profile.lineTo(1.4, 2.0);
+            profile.absarc(0.5, 2.0, 0.9, 0, Math.PI / 2, false);
+            profile.lineTo(-1.6, 2.9);
+            profile.closePath();
+            const enclosureGeo = new THREE.ExtrudeGeometry(profile, { depth: 1, bevelEnabled: false, curveSegments: 5 })
+                .rotateY(-Math.PI / 2); // profile (u, v) -> (z, y), extruded toward -x
+            const handle = (matrix) => [[0, 0, 0.32, 0.06, 0.06], [0.13, -0.05, 0.06, 0.06, 0.1], [-0.13, -0.05, 0.06, 0.06, 0.1]]
+                .map(([u, out, w, h, d]) => dark(box(w, h, d), matrix.clone().multiply(at(u, 0, 0.09 + out)), true));
+            const yawParts = [gray(loftLoops(levelLoop(2.3, 2.15, 0.55, -0.55, 0, 0.1), levelLoop(2.3, 2.15, 0.55, -0.25, 0, 0.1)))];
+            [-1, 1].forEach(side => {
+                const outer = side * 2.0;
+                yawParts.push(gray(enclosureGeo, at(side > 0 ? 2.0 : -1.0, 0, 0)));
+                yawParts.push(dark(new THREE.CylinderGeometry(0.45, 0.45, 0.12, 24), at(side * 2.06, 2.0, 0.5, 0, 0, Math.PI / 2), true));
+                yawParts.push(dark(new THREE.CylinderGeometry(0.2, 0.2, 0.08, 16), at(side * 2.15, 2.0, 0.5, 0, 0, Math.PI / 2), true));
+                // On the outer face (its normal is +-x): a door and a column of grab handles
+                const face = (z, y) => at(outer, y, z, 0, side * Math.PI / 2);
+                yawParts.push(...panelLines(1.3, 1.35, at(outer + side * 0.01, 0.75, 0.25, 0, side * Math.PI / 2)));
+                [0.15, 0.8, 1.45, 2.1].forEach(y => yawParts.push(...handle(face(-1.05, y))));
+                // and two on the front face
+                [0.95, 1.65].forEach(y => yawParts.push(...handle(at(side * 1.5, y, 1.4))));
             });
+            addMerged(turretYaw, yawParts);
 
-            // 3. Pitch Group (The Gun Arms)
+            // 3. Pitch Group: everything that elevates with the gun
             turretPitch = new THREE.Group();
             turretPitch.position.set(0, 2, 0.5); // Pivot point
             turretYaw.add(turretPitch);
 
-            // White Radome (The R2D2 looking top) - Now moves with gun
-            const domeGeo = new THREE.CylinderGeometry(1.2, 1.2, 2.5, 64);
-            const dome = new THREE.Mesh(domeGeo, whiteMat);
-            dome.position.y = 1.5; // Adjusted to be relative to pitch group
-            dome.position.z = -0.5; // Adjusted to account for pitch pivot offset
-            dome.castShadow = true;
-            turretPitch.add(dome);
+            // Ammunition drum under the gun, the feed chute curving up from it into the gun's right
+            // side, the radome collar, and the FLIR on the mount's left
+            const feedPath = new THREE.CatmullRomCurve3([
+                new THREE.Vector3(-0.42, -1.55, 0.62), new THREE.Vector3(-0.78, -1.05, 0.95),
+                new THREE.Vector3(-0.72, -0.45, 1.25), new THREE.Vector3(-0.45, -0.15, 1.35)
+            ]);
+            const flir = new THREE.Vector3(1.32, 2.55, -0.35); // FLIR head centre
+            addMerged(turretPitch, [
+                gray(new THREE.CylinderGeometry(0.75, 0.75, 2.2, 32), at(0, -1.25, -0.4, Math.PI / 2)),
+                dark(new THREE.CylinderGeometry(0.77, 0.77, 0.1, 32, 1, true), at(0, -1.25, 0.66, Math.PI / 2), true),
+                dark(new THREE.CylinderGeometry(0.77, 0.77, 0.1, 32, 1, true), at(0, -1.25, -1.46, Math.PI / 2), true),
+                dark(new THREE.TubeGeometry(feedPath, 16, 0.1, 8, false)),
+                gray(new THREE.CylinderGeometry(1.0, 1.0, 0.35, 32), at(0, 0.75, -0.5)),
+                gray(box(0.45, 0.12, 0.22), at(1.05, flir.y - 0.25, flir.z)),
+                gray(box(0.5, 0.45, 0.55), at(flir.x, flir.y, flir.z)),
+                gray(new THREE.CylinderGeometry(0.17, 0.17, 0.42, 16), at(flir.x, flir.y - 0.38, flir.z + 0.05, 0, 0, Math.PI / 2)),
+                ink(new THREE.CircleGeometry(0.16, 20), at(flir.x, flir.y + 0.04, flir.z + 0.279)),
+                { geo: new THREE.RingGeometry(0.16, 0.21, 20), mat: RADOME_WHITE, matrix: at(flir.x, flir.y + 0.04, flir.z + 0.277), noOutline: true }
+            ]);
 
-            // Radome Cap
-            const capGeo = new THREE.SphereGeometry(1.2, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2);
-            const cap = new THREE.Mesh(capGeo, whiteMat);
-            cap.position.y = 2.75; // Adjusted to be relative to pitch group
-            cap.position.z = -0.5; // Adjusted to account for pitch pivot offset
-            cap.castShadow = true;
-            cap.userData.noOutline = true; // the dome's hull already outlines the cap seam
-            turretPitch.add(cap);
+            // Radome: one lathed profile, a cylinder with a domed top, plus seam lines and the
+            // slightly darker track-antenna window on its front
+            const radomeProfile = [new THREE.Vector2(0, 0.9), new THREE.Vector2(0.95, 0.9)];
+            for (let i = 0; i <= 12; i++) {
+                const t = (i / 12) * Math.PI / 2;
+                radomeProfile.push(new THREE.Vector2(0.95 * Math.cos(t), 3.3 + 0.8 * Math.sin(t)));
+            }
+            const radome = new THREE.Mesh(new THREE.LatheGeometry(radomeProfile, 48), RADOME_WHITE);
+            radome.position.z = -0.5;
+            radome.castShadow = true;
+            turretPitch.add(radome);
+            const seam = y => dark(new THREE.TorusGeometry(0.955, 0.016, 5, 48), at(0, y, 0, Math.PI / 2), true);
+            mergeByMaterial([
+                seam(0.95), seam(2.75),
+                dark(box(0.03, 1.8, 0.03), at(0, 0.95 + 0.9, -0.955), true),
+                { geo: new THREE.CylinderGeometry(0.958, 0.958, 1.4, 16, 1, true, -0.6, 1.2), mat: RADOME_PANEL, matrix: at(0, 1.85, 0), noOutline: true }
+            ]).forEach(m => radome.add(m));
 
-            // Gun Block
-            const gunBlockGeo = new THREE.BoxGeometry(1, 1, 3);
-            const gunBlock = new THREE.Mesh(gunBlockGeo, greyMat);
+            // Gun Block: the gun housing and the lattice frame that carries the barrels
+            const gunBlock = new THREE.Group();
             gunBlock.position.z = 1.5;
-            gunBlock.castShadow = true;
             turretPitch.add(gunBlock);
-
-            // Dark breech window where the barrels emerge
-            const breech = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.9, 0.12), windowMat);
-            breech.position.z = 1.52;
-            gunBlock.add(breech);
+            const ringPlate = (outer, inner, z) => {
+                const hex = r => Array.from({ length: 6 }, (_, i) => new THREE.Vector2(r * Math.cos(i * Math.PI / 3), r * Math.sin(i * Math.PI / 3)));
+                const shape = new THREE.Shape(hex(outer));
+                shape.holes.push(new THREE.Path(hex(inner)));
+                return gray(new THREE.ExtrudeGeometry(shape, { depth: 0.08, bevelEnabled: false }), at(0, 0, z));
+            };
+            const frameRear = 0.5, frameFront = 0.42;
+            const frameParts = [
+                dark(loftLoops(chamferRect(0.5, 0.48, 0.12, 0, -0.02).map(([x, y]) => [x, y, -1.9]),
+                    chamferRect(0.4, 0.38, 0.1, 0, -0.03).map(([x, y]) => [x, y, 0.1]))),
+                ringPlate(frameRear, 0.36, 0.1),
+                ringPlate(frameFront, 0.34, 1.0)
+            ];
+            for (let i = 0; i < 6; i++) {
+                const vertex = (r, k, z) => new THREE.Vector3(r * 0.93 * Math.cos(k * Math.PI / 3), r * 0.93 * Math.sin(k * Math.PI / 3), z);
+                [i, i + 1].forEach(k => {
+                    const { geo, matrix } = strut(vertex(frameRear, i, 0.18), vertex(frameFront, k, 1.0), 0.05);
+                    frameParts.push({ geo, mat: CIWS_GRAY, matrix, noOutline: true });
+                });
+            }
+            addMerged(gunBlock, frameParts);
 
             // Barrels (The Vulcan cannon). The group spins about its axis; the meshes sit in a child
             // cluster that shudders while firing, so the group (and the muzzle point) never moves.
+            // The Block 1B barrels carry a mid brace and a thick muzzle restraint.
             barrels = new THREE.Group();
             barrels.name = 'barrels';
             const cluster = new THREE.Group();
             barrels.add(cluster);
-            const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 3.5, 16);
-            const boreGeo = new THREE.CircleGeometry(0.045, 12);
+            const ring = (r, length, z) => ({ geo: new THREE.CylinderGeometry(r, r, length, 24), mat: BARREL_MAT, matrix: at(0, 0, z, Math.PI / 2) });
+            const barrelParts = [
+                ring(0.33, 0.14, 1.6), // brace
+                ring(0.38, 0.07, 2.955), ring(0.355, 0.44, 3.21), ring(0.38, 0.07, MUZZLE_Z - 0.035) // restraint, lipped
+            ];
+            const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 2.92, 12);
+            const boreGeo = new THREE.CircleGeometry(0.05, 12);
             for (let i = 0; i < 6; i++) {
-                const barrel = new THREE.Mesh(barrelGeo, barrelMat);
                 const angle = (i / 6) * Math.PI * 2;
-                barrel.position.x = Math.cos(angle) * 0.2;
-                barrel.position.y = Math.sin(angle) * 0.2;
-                barrel.position.z = 1.75; // extend out
-                barrel.rotation.x = Math.PI / 2;
-                barrel.castShadow = true;
-                cluster.add(barrel);
-                // Dark bore on the muzzle face, so the cluster's angle reads head-on
-                const bore = new THREE.Mesh(boreGeo, windowMat);
-                bore.position.set(barrel.position.x, barrel.position.y, 3.502);
-                bore.userData.noOutline = true;
-                cluster.add(bore);
+                const x = Math.cos(angle) * BARREL_RING, y = Math.sin(angle) * BARREL_RING;
+                barrelParts.push({ geo: barrelGeo, mat: BARREL_MAT, matrix: at(x, y, 1.46, Math.PI / 2) });
+                // Dark bore on the muzzle face, so the cluster's angle reads head-on, and a vent slot
+                // in the restraint's side between each pair of barrels
+                barrelParts.push(ink(boreGeo, at(x, y, MUZZLE_Z + 0.004)));
+                const slot = angle + Math.PI / 6;
+                barrelParts.push(ink(box(0.07, 0.012, 0.2), at(Math.cos(slot) * 0.357, Math.sin(slot) * 0.357, 3.2, 0, 0, slot + Math.PI / 2)));
             }
-            // Barrel clamps
-            [1.6, 3.35].forEach(z => {
-                const clamp = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.16, 32), barrelMat);
-                clamp.rotation.x = Math.PI / 2;
-                clamp.position.z = z;
-                cluster.add(clamp);
-            });
+            mergeByMaterial(barrelParts, { castShadow: true }).forEach(m => cluster.add(m));
             gunBlock.add(barrels); // Add barrels to gunblock, gunblock is in pitch group
             gunFX = createGunFX(gunBlock, cluster);
 
-            addOutlines(turretYaw);
+            addOutlines(ciwsGroup);
         }
 
         // --- Gun FX: a fast-shutter camera's view of the spinning, firing gun ---
@@ -3573,7 +4439,7 @@ Ambient
             if (flashOn && fx.flashAge === 0) {
                 const a = barrelAngle(Math.round((Math.PI / 2 - barrels.rotation.z) / BARREL_GAP));
                 const size = rand(0.5, 1.2) * (Math.random() < 0.15 ? 1.6 : 1);
-                fx.flash.position.set(Math.cos(a) * 0.2, Math.sin(a) * 0.2, MUZZLE_Z);
+                fx.flash.position.set(Math.cos(a) * BARREL_RING, Math.sin(a) * BARREL_RING, MUZZLE_Z);
                 const su = fx.star.material.uniforms;
                 su.uSize.value = size * rand(0.5, 0.9);
                 su.uSeed.value = rand(0, 6.3);
@@ -3687,146 +4553,569 @@ Ambient
             if (finalFriendliesEl) {
                 finalFriendliesEl.innerText = `${alive}/${total}`;
             }
+            const lost = friendlies.filter(f => !f.alive).map(f => f.name.toUpperCase());
+            document.getElementById('final-lost').innerText = lost.length ? `LOST: ${lost.join(', ')}` : '';
 
             return alive;
         }
 
-        const FRIENDLY_HULL_OUTLINE = [[0, -5], [1.4, -2.6], [1.5, 3.6], [-1.5, 3.6], [-1.4, -2.6]];
+        // --- Friendlies ---
+        // Five frigates in company, each in one of two fits (FRIENDLY_FITS): a Constellation-class
+        // (FFG-62) style with an integrated mast and a 16-cell Mk 41 bank behind a 57 mm gun, and a
+        // light frigate with a lattice mast, a big turning air-search radar and one 8-cell module
+        // behind a 76 mm gun. The hull is our own hull's loft scaled to 46 x 7.5 (and squatter);
+        // the topsides are built at about 0.65 of our deck equipment's scale. That's much more
+        // compressed than our ship, so five fit round her and still read as warships, not as
+        // small craft. Each model is built in world heights inside a group whose origin is her
+        // targeting point, FRIENDLY_Y (about deck height).
+        const FRIENDLY_Y = 0.75;
+        const FRIENDLY_HULL_SCALE = new THREE.Vector3(0.44, 0.55, 0.41);
+        const SHIP_MID_Z = (SHIP_BOUNDS.bow + SHIP_BOUNDS.stern) / 2;
+        // Our hull's frame -> a friendly's: scaled about the waterline and our hull's midpoint
+        const FRIENDLY_HULL_MATRIX = new THREE.Matrix4().makeScale(...FRIENDLY_HULL_SCALE.toArray())
+            .setPosition(0, WATER_LEVEL * (1 - FRIENDLY_HULL_SCALE.y), -SHIP_MID_Z * FRIENDLY_HULL_SCALE.z);
+        const FRIENDLY_HALF_LENGTH = (SHIP_BOUNDS.stern - SHIP_BOUNDS.bow) / 2 * FRIENDLY_HULL_SCALE.z;
+        const FRIENDLY_HALF_BEAM = SHIP_BOUNDS.halfWidth * FRIENDLY_HULL_SCALE.x;
+        const FRIENDLY_VLS_SCALE = 0.65;     // her Mk 41 modules (and the missiles) against ours
+        const FRIENDLY_LIVE_CELLS = [1, 6];  // cells of her first module that open and fire (vlsCells order)
+        const FRIENDLY_BREAK_Z = 0.8;        // where a hit breaks her back, between the bridge and the funnel
+        const toShipZ = z => z / FRIENDLY_HULL_SCALE.z + SHIP_MID_Z;
+        const friendlyDeckY = z => WATER_LEVEL + (deckHeightAt(toShipZ(z)) - WATER_LEVEL) * FRIENDLY_HULL_SCALE.y;
+        const friendlyHalfBeam = z => stationAt(toShipZ(z))[2] * FRIENDLY_HULL_SCALE.x;
+        // A friendly's hull lofted through sections of ours: sides, boot-top and bottom, deck
+        const friendlyHull = sections => buildHull(sections).map(geo => geo.applyMatrix4(FRIENDLY_HULL_MATRIX));
+        const piece = (geo, mat, matrix = null, noOutline = false) => ({ geo, mat, matrix, noOutline });
 
-        function createFriendlyBoat() {
-            // Group origin is the targeting point (0.75 above deck level); the hull sits on the water below it
-            const boat = new THREE.Group();
-            const waterY = WATER_LEVEL - 0.75;
+        // Each friendly's fit (a FRIENDLY_FITS index) and hull number (made up), by FRIENDLY_NAMES key
+        const FRIENDLY_HULLS = {
+            halvorsen: { fit: 0, number: '64' }, cordell: { fit: 0, number: '67' },
+            marsden: { fit: 0, number: '69' }, vanover: { fit: 0, number: '72' },
+            whitcomb: { fit: 1, number: '38' }, pellam: { fit: 1, number: '41' },
+            talbert: { fit: 1, number: '47' }, 'cape-sable': { fit: 1, number: '52' }
+        };
 
-            const hull = new THREE.Mesh(
-                extrudeOutline(FRIENDLY_HULL_OUTLINE, waterY - 0.6, waterY + 0.7),
-                [toonMat(0xa9b0b2), toonMat(0xe9e7df)]
-            );
-            hull.castShadow = true;
-            hull.receiveShadow = true;
-            boat.add(hull);
+        // A friendly's paint, one texture per ship: the hull number (top left quarter), her name
+        // for the transom (below it) and the flight deck markings (right half; canvas up is forward)
+        const makeFriendlyMarkings = (number, name) => canvasTexture(512, 256, ctx => {
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = 'bold 118px Arial, Helvetica, sans-serif';
+            ctx.fillStyle = '#161b20';
+            ctx.fillText(number, 134, 70);
+            ctx.fillStyle = '#f4f3ee';
+            ctx.fillText(number, 128, 64);
+            ctx.font = 'bold 30px Arial, Helvetica, sans-serif';
+            ctx.fillStyle = '#f4f3ee';
+            ctx.fillText(name.toUpperCase(), 128, 153, 236);
+            // Flight deck, drawn in deck units: x across (+-3.1), y aft from its forward edge (0 to 8.4)
+            ctx.setTransform(256 / 6.2, 0, 0, 256 / 8.4, 384, 0);
+            ctx.fillStyle = '#60666a';
+            ctx.fillRect(-3.1, 0, 6.2, 8.4);
+            ctx.strokeStyle = '#f0efe9';
+            ctx.lineWidth = 0.1;
+            ctx.strokeRect(-2.8, 0.25, 5.6, 7.9);
+            ctx.setLineDash([0.45, 0.35]);
+            ctx.beginPath();
+            ctx.moveTo(0, 0.25);
+            ctx.lineTo(0, 8.15);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = '#e2b53a';
+            ctx.lineWidth = 0.13;
+            ctx.beginPath();
+            ctx.arc(0, 3.6, 1.7, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0.22, 0.25);
+            ctx.lineTo(0.22, 8.15);
+            ctx.stroke();
+        });
 
-            const cabin = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.3, 2.6), toonMat(0xe9e7df));
-            cabin.position.set(0, waterY + 1.35, 1.0);
-            cabin.castShadow = true;
-            boat.add(cabin);
-
-            const roof = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.22, 2.9), toonMat(0x1f8fe0));
-            roof.position.set(0, waterY + 2.1, 1.0);
-            boat.add(roof);
-
-            const glass = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.45, 0.08), toonMat(0x2b3a45));
-            glass.position.set(0, waterY + 1.55, -0.32);
-            glass.userData.noOutline = true;
-            boat.add(glass);
-
-            const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.8, 10), toonMat(0x4d555c));
-            mast.position.set(0, waterY + 3.0, 1.6);
-            boat.add(mast);
-
-            // Small two-cell launcher on the foredeck; cosmetic VLS launches leave from its 'vls' anchor
-            const launcher = new THREE.Mesh(BOAT_LAUNCHER_GEO, VLS_PLATE_MAT);
-            launcher.position.set(0, waterY + 0.7, -2.2);
-            boat.add(launcher);
-            const vls = new THREE.Object3D();
-            vls.name = 'vls';
-            vls.position.y = 0.04;
-            launcher.add(vls);
-
-            return addOutlines(boat);
+        // Where the markings go, as quads in a friendly's frame: { points (4 THREE.Vector3s), uvs
+        // (4 [u, v] into makeFriendlyMarkings' texture), facing (the way the paint faces) }. The
+        // hull number wraps over the knuckle on each bow (three strips of our hull's topsides
+        // between stations 2 and 5) and reads from outboard; the name is across the transom.
+        function friendlyMarkingQuads() {
+            const quads = [];
+            const toFriendly = p => new THREE.Vector3(...p).applyMatrix4(FRIENDLY_HULL_MATRIX);
+            const stations = HULL_STATIONS.slice(2, 6);
+            const sections = stations.map(hullSection);
+            const [zFore, zAft] = [stations[0][0], stations[3][0]];
+            // A topsides point: t 0 at the boot-top's upper edge, 1 the knuckle, 2 the deck edge
+            const up = (s, t) => {
+                const k = Math.min(1, Math.floor(t));
+                return new THREE.Vector3(...s[4 + k]).lerp(new THREE.Vector3(...s[5 + k]), t - k);
+            };
+            const mid = sections[1];
+            const lower = up(mid, 0.5).distanceTo(up(mid, 1)), upper = up(mid, 1).distanceTo(up(mid, 1.85));
+            const bands = [[0.5, 1, 0.5, 0.5 + 0.5 * lower / (lower + upper)], [1, 1.85, 0.5 + 0.5 * lower / (lower + upper), 1]];
+            [-1, 1].forEach(side => {
+                const u = z => 0.5 * (side > 0 ? (zAft - z) : (z - zFore)) / (zAft - zFore);
+                for (let k = 1; k < sections.length; k++) {
+                    for (const [t0, t1, v0, v1] of bands) {
+                        const [a, b] = [sections[k - 1], sections[k]];
+                        const points = [up(a, t0), up(b, t0), up(b, t1), up(a, t1)].map(p => toFriendly(p.multiply(new THREE.Vector3(side, 1, 1)).toArray()));
+                        const [ua, ub] = [u(stations[k - 1][0]), u(stations[k][0])];
+                        quads.push({ points, uvs: [[ua, v0], [ub, v0], [ub, v1], [ua, v1]], facing: new THREE.Vector3(side, 0, 0) });
+                    }
+                }
+            });
+            // The name: a band across the transom's upper half, in its raked plane
+            const transom = hullSection(HULL_STATIONS[HULL_STATIONS.length - 1]);
+            const [foot, top] = [transom[4], transom[6]];
+            const onTransom = (x, k) => {
+                const y = foot[1] + (top[1] - foot[1]) * k;
+                return toFriendly([x, y, foot[2] + (top[2] - foot[2]) * k]);
+            };
+            const halfWidth = 0.5 * 5.33 * (0.32 * (top[1] - foot[1])) * FRIENDLY_HULL_SCALE.y / FRIENDLY_HULL_SCALE.x;
+            quads.push({
+                points: [onTransom(-halfWidth, 0.5), onTransom(halfWidth, 0.5), onTransom(halfWidth, 0.82), onTransom(-halfWidth, 0.82)],
+                uvs: [[0, 0.3125], [0.5, 0.3125], [0.5, 0.5], [0, 0.5]], facing: new THREE.Vector3(0, 0, 1)
+            });
+            // The flight deck, following the sheer
+            const deckAt = (x, z) => new THREE.Vector3(x, friendlyDeckY(z) + 0.012, z);
+            quads.push({
+                points: [deckAt(-3.1, 22.4), deckAt(3.1, 22.4), deckAt(3.1, 14.0), deckAt(-3.1, 14.0)],
+                uvs: [[0.5, 0], [1, 0], [1, 1], [0.5, 1]], facing: new THREE.Vector3(0, 1, 0)
+            });
+            return quads;
         }
-        const BOAT_LAUNCHER_GEO = new THREE.BoxGeometry(1.0, 0.12, 1.3);
 
-        // The broken boat swapped in when a friendly is hit: the hull snapped in two with jagged
-        // ends (each half on a hinge at the break so it can tip up), a scorched deck, the cabin
-        // knocked askew and the mast down. Same frame as the intact boat. Built once and cloned.
-        const WRECK_BOW_OUTLINE = [[0, -5], [1.4, -2.6], [1.43, -0.45], [0.9, -0.8], [0.45, -0.3], [-0.1, -0.85],
-            [-0.6, -0.35], [-1.0, -0.9], [-1.43, -0.5], [-1.4, -2.6]];
-        const WRECK_STERN_OUTLINE = [[1.43, -0.1], [1.5, 3.6], [-1.5, 3.6], [-1.43, -0.15], [-0.95, -0.55],
-            [-0.55, -0.05], [-0.05, -0.5], [0.5, 0.05], [0.95, -0.4]];
-        const createFriendlyWreck = cachedTemplate(() => addOutlines(buildFriendlyWreck()));
+        // The quads as one mesh, each pushed a little off its surface and wound to face out. Its
+        // material (a decalMat of makeFriendlyMarkings) is set per ship.
+        function friendlyMarkingsMesh(quads) {
+            const positions = [], uvs = [];
+            for (const { points, uvs: uv, facing } of quads) {
+                const p = points.map(q => q.clone().addScaledVector(facing, 0.015));
+                const normal = _v3a.subVectors(p[1], p[0]).cross(_v3b.subVectors(p[2], p[0]));
+                const order = normal.dot(facing) > 0 ? [0, 1, 2, 0, 2, 3] : [0, 2, 1, 0, 3, 2];
+                for (const i of order) {
+                    positions.push(...p[i].toArray());
+                    uvs.push(...uv[i]);
+                }
+            }
+            const geo = new THREE.BufferGeometry();
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+            geo.computeVertexNormals();
+            const mesh = new THREE.Mesh(geo);
+            mesh.name = 'markings';
+            mesh.userData.noOutline = true;
+            mesh.receiveShadow = true;
+            return mesh;
+        }
 
-        function buildFriendlyWreck() {
+        // One 8-cell module at FRIENDLY_VLS_SCALE centred at (x, deck, z): our module's parts shrunk,
+        // in deck and dark paint, with the lids unlined (they're small at her distances)
+        const FRIENDLY_VLS_MATS = new Map([[VLS_PLATE_MAT, NAVY_DECK], [VLS_DARK_MAT, BOOT_TOP]]);
+        function friendlyVLSParts(x, z, live) {
+            const placed = new THREE.Matrix4().makeScale(FRIENDLY_VLS_SCALE, FRIENDLY_VLS_SCALE, FRIENDLY_VLS_SCALE)
+                .setPosition(x, friendlyDeckY(z), z);
+            return vlsModuleParts(new THREE.Vector3(), live).map(p => ({
+                ...p, mat: FRIENDLY_VLS_MATS.get(p.mat) ?? p.mat, noOutline: true, matrix: placed.clone().multiply(p.matrix)
+            }));
+        }
+
+        // What both fits carry: the bow breakwater, windlass and bollards, and lifelines along the
+        // deck edges aft of the bow bulwark, in two runs that stop either side of the break
+        function friendlyFittings() {
+            const v = (x, y, z) => new THREE.Vector3(x, y, z);
+            const parts = [];
+            const breakwater = [v(-1.8, 0, -15.9), v(0, 0, -16.9), v(1.8, 0, -15.9)].map(p => p.setY(friendlyDeckY(p.z) - 0.05));
+            parts.push(...[0, 1].map(i => piece(UNIT_BOX, NAVY_HAZE_LT, wallMatrix(breakwater[i], breakwater[i + 1], 0.32, 0.06))));
+            const windlassY = friendlyDeckY(-19.6);
+            parts.push(piece(UNIT_BOX, BOOT_TOP, at(0, windlassY + 0.08, -19.6, 0, 0, 0, v(1.2, 0.16, 0.45)), true));
+            [-1, 1].forEach(side => {
+                parts.push(piece(new THREE.CylinderGeometry(0.2, 0.2, 0.26, 12), BOOT_TOP, at(side * 0.5, windlassY + 0.24, -19.6, 0, 0, Math.PI / 2), true));
+                [-12.5, 3.5, 17].forEach(z => [-0.18, 0.18].forEach(dz =>
+                    parts.push(piece(new THREE.CylinderGeometry(0.09, 0.11, 0.22, 10), BOOT_TOP, at(side * (friendlyHalfBeam(z) - 0.35), friendlyDeckY(z + dz) + 0.11, z + dz), true))));
+            });
+            const edge = (side, z) => v(side * (friendlyHalfBeam(z) - 0.06), friendlyDeckY(z), z);
+            const stations = HULL_STATIONS.map(([z]) => (z - SHIP_MID_Z) * FRIENDLY_HULL_SCALE.z);
+            const fore = [-17.2, ...stations.filter(z => z > -17.2 && z < FRIENDLY_BREAK_Z - 0.3), FRIENDLY_BREAK_Z - 0.3];
+            const aft = [FRIENDLY_BREAK_Z + 0.3, ...stations.filter(z => z > FRIENDLY_BREAK_Z + 0.3)];
+            [-1, 1].forEach(side => parts.push(...lifelineParts(fore.map(z => edge(side, z)), FRIENDLY_VLS_SCALE)));
+            parts.push(...lifelineParts([...aft.map(z => edge(1, z)), ...aft.slice().reverse().map(z => edge(-1, z))], FRIENDLY_VLS_SCALE));
+            return parts;
+        }
+
+        // A RHIB on deck at (x, y, z): grey hull, dark tube collar, console
+        function friendlyBoatParts(x, y, z) {
+            const boat = scale => RHIB_PLAN.map(([px, pz]) => [x + px * 0.42 * scale, z + pz * 0.42]);
+            return [
+                piece(extrudeOutline(boat(1), y, y + 0.2), NAVY_HAZE_LT),
+                piece(extrudeOutline(boat(1.08), y + 0.17, y + 0.3), BOOT_TOP, null, true),
+                piece(UNIT_BOX, NAVY_HAZE_LT, at(x, y + 0.36, z + 0.3, 0, 0, 0, new THREE.Vector3(0.3, 0.22, 0.34)), true)
+            ];
+        }
+
+        // A short white-domed close-in weapon on deck at (x, y, z): base, mount, radome
+        function friendlyCIWSParts(x, y, z, launcher) {
+            return [
+                piece(new THREE.CylinderGeometry(0.4, 0.44, 0.3, 14), NAVY_HAZE_LT, at(x, y + 0.15, z)),
+                // SeaRAM: an 11-round launcher box; Phalanx: the gun under the dome
+                launcher
+                    ? piece(UNIT_BOX, NAVY_HAZE_LT, at(x, y + 0.55, z - 0.2, 0, 0, 0, new THREE.Vector3(0.6, 0.5, 0.7)))
+                    : { ...strut(new THREE.Vector3(x, y + 0.6, z - 0.1), new THREE.Vector3(x, y + 0.65, z - 0.95), 0.1, true), mat: BOOT_TOP, noOutline: true },
+                piece(new THREE.CylinderGeometry(0.24, 0.24, 0.55, 14), RADOME_WHITE, at(x, y + 0.75, z + 0.25), true),
+                piece(new THREE.SphereGeometry(0.24, 14, 7, 0, Math.PI * 2, 0, Math.PI / 2), RADOME_WHITE, at(x, y + 1.02, z + 0.25), true)
+            ];
+        }
+
+        // A funnel from the 01 deck at y0 (slopedBlock options) with its dark cap and two exhaust stubs
+        function friendlyFunnelParts(funnel) {
+            const top = { ...funnel, hx: funnel.hx - funnel.side - 0.08, z0: funnel.z0 + funnel.front + funnel.lean + 0.1,
+                z1: funnel.z1 - funnel.back + funnel.lean - 0.1, y0: funnel.y1 - 0.04, y1: funnel.y1 + 0.06, side: 0, front: 0, back: 0, lean: 0 };
+            const stubZ = top.z1 - 0.8;
+            return [
+                piece(slopedBlock(funnel), NAVY_HAZE_LT),
+                piece(slopedBlock(top), BOOT_TOP, null, true),
+                ...[-0.38, 0.38].map(x => piece(new THREE.CylinderGeometry(0.17, 0.17, 0.3, 10), BOOT_TOP, at(x, funnel.y1 + 0.16, stubZ), true))
+            ];
+        }
+
+        // Fit 0, after the Constellation class: Mk 110 57 mm gun, two Mk 41 modules, a long 01
+        // deckhouse with the bridge and the integrated mast (three fixed radar faces) on it, a pole
+        // topmast with a turning navigation radar, one big funnel, NSM launchers, a RHIB, the hangar
+        // with SeaRAM on its roof. Returns the fixed parts, the topmast's parts (they come down on
+        // the wreck) and the radar's, and the two deckhouse blocks either side of the break.
+        function frigateTopside() {
+            const v = (x, y, z) => new THREE.Vector3(x, y, z);
+            const deck = friendlyDeckY(0);
+            const blocks = [
+                { hx: 2.95, z0: -6.4, z1: FRIENDLY_BREAK_Z, y0: deck - 0.05, y1: 1.75, side: 0.14, front: 0.45 },
+                { hx: 2.6, z0: FRIENDLY_BREAK_Z, z1: 8.3, y0: deck - 0.05, y1: 1.6, side: 0.12 }
+            ];
+            const bridgeBase = levelLoop(2.75, 2.55, 0.9, 1.72, 0, -3.25);
+            const bridgeTop = levelLoop(2.3, 2.1, 0.75, 3.05, 0, -3.0);
+            const bridgeFace = i => loftFace(bridgeBase, bridgeTop, i); // 5 the front, 4 and 6 the forward corners
+            const towerBase = levelLoop(1.45, 1.45, 0.85, 3.0, 0, -2.35);
+            const towerTop = levelLoop(1.0, 1.0, 0.59, 6.3, 0, -2.2);
+            const towerFace = i => loftFace(towerBase, towerTop, i);
+            const hangar = slopedLoops({ hx: 3.05, z0: 8.3, z1: 13.7, y0: deck - 0.05, y1: 2.9, side: 0.25, back: 0.12 });
+            const gunZ = -14, gunY = friendlyDeckY(gunZ);
+            const house = (h, plan) => plan.map(([x, dz]) => [x, gunY + h, gunZ + dz]);
+            const gunBase = house(0.22, [[0.45, -1.15], [0.8, -0.5], [0.8, 0.95], [-0.8, 0.95], [-0.8, -0.5], [-0.45, -1.15]]);
+            const gunTop = house(0.95, [[0.28, -0.5], [0.58, -0.22], [0.58, 0.82], [-0.58, 0.82], [-0.58, -0.22], [-0.28, -0.5]]);
+            const breech = v(0, gunY + 0.55, gunZ - 0.75);
+            const muzzle = breech.clone().add(v(0, Math.sin(0.1), -Math.cos(0.1)).multiplyScalar(2.4));
+            const parts = [
+                ...blocks.map(b => piece(slopedBlock(b), NAVY_HAZE_LT)),
+                piece(slopedBlock({ hx: 2.45, z0: FRIENDLY_BREAK_Z + 0.05, z1: 8.25, y0: 1.58, y1: 1.62 }), NAVY_DECK, null, true),
+                piece(loftLoops(bridgeBase, bridgeTop), NAVY_HAZE_LT),
+                // Bridge wings, and windows across the front and the forward corners
+                ...[-1, 1].map(side => piece(slopedBlock({ hx: 0.42, x: side * 2.85, z0: -5.0, z1: -4.15, y0: 2.55, y1: 2.85 }), NAVY_HAZE_LT)),
+                piece(facePanel(bridgeFace(5), 0.04, 0.96, 0.62, 0.86), WINDOW_MAT, null, true),
+                ...[4, 6].map(i => piece(facePanel(bridgeFace(i), 0.1, 0.9, 0.62, 0.86), WINDOW_MAT, null, true)),
+                // The integrated mast: a tapered tower with a radar face forward and on each after corner
+                piece(loftLoops(towerBase, towerTop), NAVY_HAZE_LT),
+                ...[5, 0, 2].flatMap(i => [
+                    piece(facePanel(towerFace(i), 0.06, 0.94, 0.36, 0.92, 0.03), NAVY_DECK, null, true),
+                    piece(facePanel(towerFace(i), 0.13, 0.87, 0.42, 0.86, 0.06), SPY_FACE, null, true)
+                ]),
+                piece(slopedBlock({ hx: 1.15, z0: -3.35, z1: -1.05, y0: 6.26, y1: 6.38 }), NAVY_HAZE_LT),
+                // 57 mm gun on its barbette
+                piece(new THREE.CylinderGeometry(0.66, 0.7, 0.3, 16), NAVY_HAZE_LT, at(0, gunY + 0.08, gunZ)),
+                piece(loftLoops(gunBase, gunTop), NAVY_HAZE_LT),
+                { ...strut(breech, muzzle, 0.11, true), mat: NAVY_HAZE_LT },
+                { ...strut(muzzle.clone().lerp(breech, 0.1), muzzle, 0.17, true), mat: NAVY_HAZE_LT },
+                ...friendlyFunnelParts({ hx: 1.35, z0: 1.9, z1: 5.3, y0: 1.58, y1: 4.5, side: 0.32, front: 0.7, back: 0.15, lean: 0.35 }),
+                // NSM launchers angled out to port, and the RHIB to starboard, on the after 01 deck
+                ...[6.4, 7.5].flatMap(z => [
+                    piece(UNIT_BOX, BOOT_TOP, at(-1.2, 1.75, z, 0, 0, 0, v(0.5, 0.26, 0.4)), true),
+                    { ...strut(v(-0.55, 1.95, z + 0.35), v(-1.95, 2.25, z - 0.25), 0.42), mat: NAVY_HAZE_LT }
+                ]),
+                ...friendlyBoatParts(1.55, 1.62, 6.9),
+                // Life rafts behind the bridge
+                ...[-1, 1].flatMap(side => [-0.25, 0.35].map(z =>
+                    piece(new THREE.CylinderGeometry(0.15, 0.15, 0.5, 10), RADOME_WHITE, at(side * 2.35, 1.9, z, Math.PI / 2), true))),
+                // Hangar, its door, and SeaRAM on the roof
+                piece(loftLoops(...hangar), NAVY_HAZE_LT),
+                piece(facePanel(loftFace(...hangar, 2), 0.18, 0.82, 0, 0.78), WINDOW_MAT, null, true),
+                ...friendlyCIWSParts(0, 2.9, 9.3, true)
+            ];
+            // Topmast: a raked pole from the tower top with a yard, whip aerials, an ESM pod and a
+            // small radome; the navigation radar turns on its head
+            const poleAt = y => v(0, y, -2.2 - (y - 6.3) * 0.08);
+            const mast = [
+                { ...strut(poleAt(6.3), poleAt(10.0), 0.16, true), mat: NAVY_HAZE_LT },
+                piece(UNIT_BOX, NAVY_HAZE_LT, at(0, 7.9, poleAt(7.9).z, 0, 0, 0, v(2.6, 0.08, 0.08)), true),
+                piece(new THREE.CylinderGeometry(0.13, 0.13, 0.35, 10), NAVY_HAZE_LT, at(0, 9.2, poleAt(9.2).z), true),
+                piece(new THREE.SphereGeometry(0.22, 12, 8), RADOME_WHITE, at(0, 8.45, poleAt(8.45).z - 0.3), true),
+                ...[-1.2, 1.2].map(x => ({ ...strut(v(x, 7.9, poleAt(7.9).z), v(x, 9.1, poleAt(7.9).z + 0.15), 0.035), mat: INK_MAT, noOutline: true }))
+            ];
+            const radar = {
+                at: poleAt(10.0),
+                parts: [
+                    piece(UNIT_BOX, NAVY_HAZE_LT, at(0, 0.12, 0, 0, 0, 0, v(1.5, 0.12, 0.08))),
+                    piece(UNIT_BOX, NAVY_HAZE_LT, at(0, 0.04, 0, 0, 0, 0, v(0.18, 0.12, 0.18)))
+                ]
+            };
+            return { parts, mast, mastFoot: poleAt(6.3), radar, blocks };
+        }
+
+        // Fit 1, a light frigate in the MEKO 200 / Anzac mould: 76 mm gun in a faceted cupola, one
+        // Mk 41 module, a traditional bridge with a fire-control director on its roof, a lattice
+        // tripod mast with the big air-search radar turning on top, a raked funnel with a RHIB each
+        // side, Harpoon canisters, a second director aft and a Phalanx on the hangar roof
+        function lightFrigateTopside() {
+            const v = (x, y, z) => new THREE.Vector3(x, y, z);
+            const deck = friendlyDeckY(0);
+            const blocks = [
+                { hx: 2.9, z0: -7.2, z1: FRIENDLY_BREAK_Z, y0: deck - 0.05, y1: 1.7, side: 0.14, front: 0.4 },
+                { hx: 2.55, z0: FRIENDLY_BREAK_Z, z1: 8.9, y0: deck - 0.05, y1: 1.6, side: 0.12 }
+            ];
+            const bridge = slopedLoops({ hx: 2.6, z0: -6.7, z1: -1.4, y0: 1.68, y1: 3.0, side: 0.2, front: 0.55, back: 0.1 });
+            const hangar = slopedLoops({ hx: 2.75, z0: 8.9, z1: 13.3, y0: deck - 0.05, y1: 2.75, side: 0.22, back: 0.12 });
+            const gunZ = -14, gunY = friendlyDeckY(gunZ);
+            const breech = v(0, gunY + 0.52, gunZ - 0.45);
+            const muzzle = breech.clone().add(v(0, Math.sin(0.1), -Math.cos(0.1)).multiplyScalar(2.1));
+            // Lattice tripod: two legs from the bridge roof's after edge, one from its forward part
+            const apex = v(0, 6.65, -2.5);
+            const feet = [v(-0.95, 2.98, -2.0), v(0.95, 2.98, -2.0), v(0, 2.98, -4.3)];
+            const legAt = (foot, k) => foot.clone().lerp(apex, k);
+            const parts = [
+                ...blocks.map(b => piece(slopedBlock(b), NAVY_HAZE_LT)),
+                piece(slopedBlock({ hx: 2.4, z0: FRIENDLY_BREAK_Z + 0.05, z1: 8.85, y0: 1.58, y1: 1.62 }), NAVY_DECK, null, true),
+                piece(loftLoops(...bridge), NAVY_HAZE_LT),
+                // Bridge wings; windows across the front and down the sides' forward ends
+                ...[-1, 1].map(side => piece(slopedBlock({ hx: 0.4, x: side * 2.8, z0: -6.3, z1: -5.45, y0: 2.58, y1: 2.85 }), NAVY_HAZE_LT)),
+                piece(facePanel(loftFace(...bridge, 0), 0.04, 0.96, 0.6, 0.86), WINDOW_MAT, null, true),
+                ...[1, 3].map(i => piece(facePanel(loftFace(...bridge, i), i === 1 ? 0.02 : 0.7, i === 1 ? 0.3 : 0.98, 0.6, 0.86), WINDOW_MAT, null, true)),
+                // Director on the bridge roof
+                piece(new THREE.CylinderGeometry(0.15, 0.18, 0.4, 10), NAVY_HAZE_LT, at(0, 3.2, -5.3), true),
+                piece(new THREE.SphereGeometry(0.36, 14, 9), RADOME_WHITE, at(0, 3.6, -5.3), true),
+                // Tripod legs, braced with ink, and a platform under the apex
+                ...feet.map(foot => ({ ...strut(foot, apex, 0.15, true), mat: NAVY_HAZE_LT })),
+                ...[0.3, 0.62].flatMap(k => feet.map((foot, i) => ({ ...strut(legAt(foot, k), legAt(feet[(i + 1) % 3], k + 0.15), 0.045), mat: INK_MAT, noOutline: true }))),
+                piece(slopedBlock({ hx: 0.8, z0: -3.25, z1: -1.75, y0: 6.55, y1: 6.67 }), NAVY_HAZE_LT),
+                // 76 mm gun: faceted cupola on a barbette, barrel with a muzzle brake
+                piece(new THREE.CylinderGeometry(0.66, 0.7, 0.3, 16), NAVY_HAZE_LT, at(0, gunY + 0.08, gunZ)),
+                piece(loftLoops(levelLoop(0.78, 0.9, 0.34, gunY + 0.2, 0, gunZ + 0.1), levelLoop(0.48, 0.56, 0.22, gunY + 0.88, 0, gunZ + 0.25)), NAVY_HAZE_LT),
+                { ...strut(breech, muzzle, 0.13, true), mat: NAVY_HAZE_LT },
+                { ...strut(muzzle.clone().lerp(breech, 0.09), muzzle, 0.22, true), mat: NAVY_HAZE_LT },
+                ...friendlyFunnelParts({ hx: 1.25, z0: 2.1, z1: 5.7, y0: 1.58, y1: 4.8, side: 0.22, front: 1.0, back: 0.25, lean: 0.55 }),
+                ...[-1, 1].flatMap(side => friendlyBoatParts(side * 1.85, 1.62, 3.6)),
+                // Harpoon canisters angled outboard, two a side, ahead of the funnel
+                ...[-1, 1].flatMap(side => [-0.2, 0.2].map(dz => ({
+                    ...strut(v(side * 0.55, 1.85, 1.45 + dz), v(side * 2.05, 2.15, 1.25 + dz), 0.24, true), mat: NAVY_HAZE_LT
+                }))),
+                // After director on a short tower
+                piece(slopedBlock({ hx: 0.55, z0: 6.7, z1: 7.8, y0: 1.58, y1: 3.2, side: 0.08, front: 0.1, back: 0.1 }), NAVY_HAZE_LT),
+                piece(new THREE.SphereGeometry(0.42, 14, 9), RADOME_WHITE, at(0, 3.55, 7.25), true),
+                // Life rafts behind the bridge
+                ...[-1, 1].flatMap(side => [-0.6, 0.0].map(z =>
+                    piece(new THREE.CylinderGeometry(0.15, 0.15, 0.5, 10), RADOME_WHITE, at(side * 2.3, 1.85, z, Math.PI / 2), true))),
+                // Hangar, its door, and the Phalanx on the roof
+                piece(loftLoops(...hangar), NAVY_HAZE_LT),
+                piece(facePanel(loftFace(...hangar, 2), 0.2, 0.8, 0, 0.78), WINDOW_MAT, null, true),
+                ...friendlyCIWSParts(0, 2.75, 9.8, false)
+            ];
+            // Pole above the platform with a yard, whips and a small radome on top
+            const poleAt = y => v(0, y, -2.5 - (y - 6.65) * 0.08);
+            const mast = [
+                { ...strut(poleAt(6.6), poleAt(9.3), 0.12, true), mat: NAVY_HAZE_LT },
+                piece(UNIT_BOX, NAVY_HAZE_LT, at(0, 7.6, poleAt(7.6).z, 0, 0, 0, v(2.2, 0.07, 0.07)), true),
+                ...[-1.0, 1.0].map(x => ({ ...strut(v(x, 7.6, poleAt(7.6).z), v(x, 8.7, poleAt(7.6).z + 0.15), 0.035), mat: INK_MAT, noOutline: true }))
+            ];
+            const radar = {
+                at: poleAt(9.3),
+                parts: [
+                    piece(UNIT_BOX, NAVY_HAZE_LT, at(0, 0.42, 0, -0.18, 0, 0, v(2.3, 0.6, 0.09))),
+                    piece(UNIT_BOX, NAVY_HAZE_LT, at(0, 0.08, 0, 0, 0, 0, v(0.24, 0.2, 0.24)))
+                ]
+            };
+            return { parts, mast, mastFoot: apex, radar, blocks };
+        }
+
+        // Each fit: its topside builder, its Mk 41 modules' centres (x, z; the first holds the live
+        // cells), and its intact model and wreck, built once and cloned
+        const FRIENDLY_FITS = [
+            [frigateTopside, [[1.24, -9.2], [-1.24, -9.2]]],
+            [lightFrigateTopside, [[0, -9.8]]]
+        ].map(([topside, vls]) => {
+            const fit = { topside, vls };
+            fit.ship = cachedTemplate(() => addOutlines(buildFriendlyShip(fit)));
+            fit.wreck = cachedTemplate(() => addOutlines(buildFriendlyWreck(fit)));
+            return fit;
+        });
+
+        // A friendly as she's spawned. The hull sides don't cast shadows (as on our ship). On top
+        // of the merged parts: the radar (turned in updateWorldFX), the markings mesh, and the
+        // 'vls' anchor on her first module, in our module's units, that createFriendlies hangs the
+        // live cells' hatches on.
+        function buildFriendlyShip(fit) {
+            const ship = new THREE.Group();
+            const body = new THREE.Group();
+            body.position.y = -FRIENDLY_Y;
+            ship.add(body);
+            const { parts, mast, radar } = fit.topside();
+            const [sides, bottom, deck] = friendlyHull(HULL_STATIONS.map(hullSection));
+            mergeByMaterial([piece(sides, NAVY_HAZE)], { receiveShadow: true }).forEach(m => body.add(m));
+            mergeByMaterial([
+                piece(bottom, BOOT_TOP, null, true), piece(deck, NAVY_DECK, null, true), ...parts, ...mast, ...friendlyFittings(),
+                ...fit.vls.flatMap(([x, z], i) => friendlyVLSParts(x, z, i === 0 ? FRIENDLY_LIVE_CELLS : []))
+            ], { castShadow: true, receiveShadow: true }).forEach(m => body.add(m));
+
+            const antenna = new THREE.Group();
+            antenna.name = 'friendly-radar';
+            antenna.position.copy(radar.at);
+            mergeByMaterial(radar.parts).forEach(m => antenna.add(m));
+            body.add(antenna);
+
+            const [x, z] = fit.vls[0];
+            const vls = new THREE.Group();
+            vls.name = 'vls';
+            vls.position.set(x, friendlyDeckY(z), z);
+            vls.scale.setScalar(FRIENDLY_VLS_SCALE);
+            body.add(vls);
+            body.add(friendlyMarkingsMesh(friendlyMarkingQuads()));
+            return ship;
+        }
+
+        // The wreck swapped in when a friendly is hit, in the same frame: her back broken between
+        // the bridge and the funnel, each half on a hinge at the break (at deck level, so the keel
+        // opens underwater as the ends lift) with torn, burnt plating at the break, smoke-stained
+        // paint, the deckhouse ends burnt out and the topmast down over the side. The markings
+        // meshes take the ship's own paint (wreckFriendly).
+        const WRECK_HULL = toonMat(0x6c7174);
+        const WRECK_TOP = toonMat(0x7f8487);
+        const WRECK_DECK = toonMat(0x46423f);
+        const SCORCH = toonMat(0x231f1d);
+        const WRECK_PAINT = new Map([[NAVY_HAZE, WRECK_HULL], [NAVY_HAZE_LT, WRECK_TOP], [NAVY_DECK, WRECK_DECK]]);
+        const WRECK_BAND = 4;  // length of our hull (its units) burnt either side of the break
+        // How far (our hull's units) the torn plating runs past the break, point by section point
+        const WRECK_TEAR = [[1.4, -0.5, 1.1, -1.0, 0.7, -0.2, 1.3, 0.3, -0.4, 0.9], [-0.9, 0.6, -1.3, 0.4, -0.6, 1.0, -0.3, -1.1, 0.5, -0.7]];
+
+        function buildFriendlyWreck(fit) {
             const wreck = new THREE.Group();
-            const waterY = WATER_LEVEL - 0.75;
-            const deckY = waterY + 0.7;
-            const breakZ = -0.45;
-            const deckMat = toonMat(0x4a4440);   // charred
-            const sideMat = toonMat(0xb3aea4);   // smoke-stained white
-            const scorchMat = toonMat(0x231f1d);
+            const { parts, mast, mastFoot, radar, blocks } = fit.topside();
+            const breakY = friendlyDeckY(FRIENDLY_BREAK_Z);
+            const breakAt = toShipZ(FRIENDLY_BREAK_Z);
+            const torn = tear => hullSectionAt(breakAt).map((p, i) => [p[0], p[1], p[2] + tear[i]]);
+            const scorched = ([sides, bottom, deck]) => [piece(sides, SCORCH), piece(bottom, BOOT_TOP, null, true), piece(deck, SCORCH, null, true)];
+            const halves = [
+                {
+                    name: 'wreck-bow',
+                    hull: friendlyHull([...HULL_STATIONS.filter(([z]) => z < breakAt - WRECK_BAND).map(hullSection), hullSectionAt(breakAt - WRECK_BAND)]),
+                    band: scorched(friendlyHull([hullSectionAt(breakAt - WRECK_BAND), torn(WRECK_TEAR[0])]))
+                },
+                {
+                    name: 'wreck-stern',
+                    hull: friendlyHull([hullSectionAt(breakAt + WRECK_BAND), ...HULL_STATIONS.filter(([z]) => z > breakAt + WRECK_BAND).map(hullSection)]),
+                    band: scorched(friendlyHull([torn(WRECK_TEAR[1]), hullSectionAt(breakAt + WRECK_BAND)]))
+                }
+            ];
 
-            // Hinges at deck level on the break, so the keel opens underwater as the ends lift
-            const makeHalf = (name, outline) => {
+            // The topmast and radar fall to starboard about the mast foot
+            const fall = new THREE.Matrix4().makeTranslation(mastFoot.x, mastFoot.y, mastFoot.z)
+                .multiply(at(0, 0, 0, 0.25, 0, -1.25))
+                .multiply(new THREE.Matrix4().makeTranslation(-mastFoot.x, -mastFoot.y, -mastFoot.z));
+            const radarAt = new THREE.Matrix4().makeTranslation(radar.at.x, radar.at.y, radar.at.z);
+            const fallen = [...mast, ...radar.parts.map(p => ({ ...p, matrix: radarAt.clone().multiply(p.matrix) }))]
+                .map(p => ({ ...p, matrix: fall.clone().multiply(p.matrix ?? new THREE.Matrix4()) }));
+            // The deckhouse ends at the break, burnt out
+            const burnt = blocks.map((b, i) => piece(slopedBlock({
+                ...b, hx: b.hx + 0.03, y1: b.y1 + 0.03, front: 0,
+                z0: i === 0 ? FRIENDLY_BREAK_Z - 0.9 : FRIENDLY_BREAK_Z, z1: i === 0 ? FRIENDLY_BREAK_Z : FRIENDLY_BREAK_Z + 0.9
+            }), SCORCH));
+            const loose = [...parts, ...fallen, ...burnt, ...friendlyFittings(), ...fit.vls.flatMap(([x, z]) => friendlyVLSParts(x, z, []))];
+            const centreZ = p => {
+                const box = new THREE.Box3().setFromBufferAttribute(p.geo.getAttribute('position'));
+                if (p.matrix) box.applyMatrix4(p.matrix);
+                return (box.min.z + box.max.z) / 2;
+            };
+            const quads = friendlyMarkingQuads();
+            const quadZ = q => q.points.reduce((sum, p) => sum + p.z, 0) / 4;
+
+            halves.forEach(({ name, hull, band }, i) => {
+                const onThisHalf = z => (z < FRIENDLY_BREAK_Z) === (i === 0);
                 const hinge = new THREE.Group();
                 hinge.name = name;
-                hinge.position.set(0, deckY, breakZ);
-                const hull = new THREE.Mesh(extrudeOutline(outline, waterY - 0.6, deckY), [deckMat, sideMat]);
-                hull.position.set(0, -deckY, -breakZ);
-                hull.castShadow = true;
-                hinge.add(hull);
+                hinge.position.set(0, breakY - FRIENDLY_Y, FRIENDLY_BREAK_Z);
+                const body = new THREE.Group();
+                body.position.set(0, -breakY, -FRIENDLY_BREAK_Z);
+                hinge.add(body);
+                mergeByMaterial([piece(hull[0], WRECK_HULL)], { receiveShadow: true }).forEach(m => body.add(m));
+                mergeByMaterial([
+                    piece(hull[1], BOOT_TOP, null, true), piece(hull[2], WRECK_DECK, null, true), ...band,
+                    ...loose.filter(p => onThisHalf(centreZ(p))).map(p => ({ ...p, mat: WRECK_PAINT.get(p.mat) ?? p.mat }))
+                ], { castShadow: true, receiveShadow: true }).forEach(m => body.add(m));
+                body.add(friendlyMarkingsMesh(quads.filter(q => onThisHalf(quadZ(q)))));
                 wreck.add(hinge);
-                return hinge;
-            };
-            const bow = makeHalf('wreck-bow', WRECK_BOW_OUTLINE);
-            const stern = makeHalf('wreck-stern', WRECK_STERN_OUTLINE);
-            // Positions below are boat-local; children of a half are offset by its hinge
-            const place = (half, mesh, x, y, z) => {
-                mesh.position.set(x, y - deckY, z - breakZ);
-                half.add(mesh);
-                return mesh;
-            };
-
-            // Burn scars down both sides at the break and across the deck
-            [-1, 1].forEach(side => {
-                [[bow, -1.1, 1.2], [stern, 0.5, 1.1]].forEach(([half, z, len]) => {
-                    const scar = place(half, new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.9, len), scorchMat), side * 1.47, deckY - 0.45, z);
-                    scar.userData.noOutline = true;
-                });
             });
-            const deckScar = place(bow, new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.03, 1.1), scorchMat), 0, deckY + 0.02, -1.2);
-            deckScar.userData.noOutline = true;
-            const launcher = place(bow, new THREE.Mesh(BOAT_LAUNCHER_GEO, toonMat(0x3f4448)), 0, deckY + 0.02, -2.4);
-            launcher.rotation.y = 0.15;
-
-            // Cabin shoved aft and tilted, roof half torn off, windows blown out
-            const cabin = place(stern, new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.2, 2.4), toonMat(0x9d988e)), 0.1, deckY + 0.6, 1.25);
-            cabin.rotation.set(-0.12, 0.1, 0.14);
-            const roof = place(stern, new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.22, 2.0), toonMat(0x1b5480)), 0.4, deckY + 1.35, 1.5);
-            roof.rotation.set(-0.2, 0.3, 0.45);
-            const holes = place(stern, new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.55, 0.1), scorchMat), 0.06, deckY + 0.75, 0.05);
-            holes.rotation.set(-0.12, 0.1, 0.14);
-            holes.userData.noOutline = true;
-            const mast = place(stern, new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.8, 10), toonMat(0x3b4045)), -0.9, deckY + 0.35, 2.4);
-            mast.rotation.set(0.3, 0, 1.3);
 
             // Where the fire (and the smoke column) comes from: the break, just above the deck
             const fire = new THREE.Object3D();
             fire.name = 'wreck-fire';
-            fire.position.set(0, deckY + 0.4, breakZ);
+            fire.position.set(0, breakY + 0.4 - FRIENDLY_Y, FRIENDLY_BREAK_Z);
             wreck.add(fire);
             return wreck;
         }
 
+        // A friendly's centreline in plan (bow, quarter points, middle, stern) at (x, z), bow
+        // pointing `heading` (radians from -z, as rotation.y): for keeping her clear of our hull and the others
+        function friendlyFootprint(x, z, heading) {
+            return [-1, -0.5, 0, 0.5, 1].map(k => ({
+                x: x - Math.sin(heading) * k * FRIENDLY_HALF_LENGTH,
+                z: z - Math.cos(heading) * k * FRIENDLY_HALF_LENGTH
+            }));
+        }
+
+        // Over a friendly's (or her wreck's) hull, in plan
+        function overFriendly(position) {
+            return friendlies.some(f => {
+                const local = _v3a.subVectors(position, f.position).applyAxisAngle(_yAxis, -f.mesh.rotation.y);
+                return Math.abs(local.z) < FRIENDLY_HALF_LENGTH && Math.abs(local.x) < FRIENDLY_HALF_BEAM;
+            });
+        }
+
         function createFriendlies() {
             const halfArea = FRIENDLY_AREA;
+            // Each gets a different name (FRIENDLY_NAMES), which the crew and the 1MC use
+            const names = Object.keys(FRIENDLY_NAMES);
+            for (let i = names.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [names[i], names[j]] = [names[j], names[i]];
+            }
 
+            // Anywhere in the area as before (centre at least 15 off our hull), now also with her
+            // whole length clear of our hull and of the others, steering about our course
+            const footprints = [];
+            const tooClose = (a, b) => a.some(p => b.some(q => Math.hypot(p.x - q.x, p.z - q.z) < 18));
             for (let i = 0; i < FRIENDLY_COUNT; i++) {
-                let x, z;
+                let x, z, heading, footprint;
                 do {
                     x = (Math.random() * 2 - 1) * halfArea;
                     z = (Math.random() * 2 - 1) * halfArea;
-                } while (nearShip({ x, z }, 15)); // keep clear of our own ship
+                    heading = rand(-0.45, 0.45);
+                    footprint = friendlyFootprint(x, z, heading);
+                } while (nearShip({ x, z }, 15) || footprint.some(p => nearShip(p, 8)) || footprints.some(other => tooClose(footprint, other)));
+                footprints.push(footprint);
 
-                const mesh = createFriendlyBoat();
-                mesh.position.set(x, 0.75, z);
-                mesh.rotation.y = Math.random() * Math.PI * 2;
+                const key = names[i % names.length];
+                const { fit, number } = FRIENDLY_HULLS[key];
+                const mesh = FRIENDLY_FITS[fit].ship();
+                mesh.position.set(x, FRIENDLY_Y, z);
+                mesh.rotation.y = heading;
+                const markings = decalMat(makeFriendlyMarkings(number, FRIENDLY_NAMES[key]), { alphaTest: 0.5 });
+                mesh.getObjectByName('markings').material = markings;
+                const vls = mesh.getObjectByName('vls');
+                const radar = mesh.getObjectByName('friendly-radar');
+                radar.rotation.y = rand(0, Math.PI * 2);
                 scene.add(mesh);
 
                 friendlies.push({
                     id: i,
+                    key,
+                    name: FRIENDLY_NAMES[key],
+                    fit,
                     mesh,
+                    markings,
+                    radar,
                     position: mesh.position.clone(),
-                    vls: mesh.getObjectByName('vls'),
+                    vls,
+                    vlsCells: vlsHatches(vls, new THREE.Vector3(), FRIENDLY_LIVE_CELLS.map(c => vlsCells(new THREE.Vector3())[c]), 'vls-hatch'),
                     alive: true
                 });
             }
@@ -3842,7 +5131,7 @@ Ambient
 
         // What an incoming threat flies at: friendly `f`, or our ship when f is null
         function targetInfoFor(f) {
-            if (!f) return { type: 'ciws', position: new THREE.Vector3(0, 2, 0) };
+            if (!f) return { type: 'ciws', position: new THREE.Vector3(0, MOUNT_Y + 2, 0) };
             return { type: 'friendly', position: f.position.clone(), friendlyId: f.id };
         }
 
@@ -4131,6 +5420,7 @@ Ambient
             const mesh = createAntiShipMissile();
             mesh.position.set(Math.cos(angle) * ASCM_SPAWN_DISTANCE, rand(12, 20), Math.sin(angle) * ASCM_SPAWN_DISTANCE);
             scene.add(mesh);
+            if (targetInfo.type === 'ciws') targetInfo = { ...targetInfo, position: shipStrikePoint(mesh.position) };
             const m = addThreat(mesh, new THREE.Vector3(), 'ascm', targetInfo);
             m.speed = ASCM_SPEED_BASE + wave * 0.03;
             m.flame = mesh.getObjectByName('flame');
@@ -4140,6 +5430,22 @@ Ambient
             m.trackedVelocity.copy(m.velocity);
             m.trail = spawnTrail(m.exhaustPos, { width: 0.32, life: 1.5, spacing: 2.4, smoke: 0xdedad2, long: true, drift: 0.3, hot: 0.15 });
             return m;
+        }
+
+        // Where a sea-skimmer running in from `from` strikes our ship: just inside where its run toward
+        // the mount first crosses the deck edge, a little above the deck. (Flying on to the mount, one
+        // from ahead or astern would pass through the bow or the whole superstructure first.)
+        function shipStrikePoint(from) {
+            const toMount = new THREE.Vector3(-from.x, 0, -from.z);
+            const range = toMount.length();
+            toMount.divideScalar(range);
+            const p = new THREE.Vector3();
+            for (let d = Math.max(0, range - 150); d < range; d += 0.5) {
+                p.set(from.x, 0, from.z).addScaledVector(toMount, d);
+                if (p.z > SHIP_BOUNDS.bow && p.z < SHIP_BOUNDS.stern && Math.abs(p.x) < hullHalfWidthAt(p.z) - 1) break;
+            }
+            p.addScaledVector(toMount, 4); // it goes off within 5 of its aim point: at the hull
+            return p.setY(deckHeightAt(p.z) + 2);
         }
 
         // Heads straight for the target, holding sea-skimming height until the last stretch, then
@@ -4175,9 +5481,22 @@ Ambient
             return (THREE.MathUtils.radToDeg(Math.atan2(position.x, -position.z)) + 360) % 360;
         }
 
+        // Damage control's 1MC call for a hit on our ship at `point`, by the side and frame it's at.
+        // The ship sits at the origin with its bow at -z and starboard at +x, so world x and z are
+        // its own; hits within a metre or so of the centreline count as on it.
+        const SHIP_FRAMES = 460; // frame numbers bow to stern, as the DC calls use them
+        function callDamageControl(point, type) {
+            const side = Math.abs(point.x) < 1.2 ? 0 : Math.sign(point.x);
+            const frame = (point.z - SHIP_BOUNDS.bow) / (SHIP_BOUNDS.stern - SHIP_BOUNDS.bow) * SHIP_FRAMES;
+            AudioController.announceDamage(side, frame, type === 'ascm');
+        }
+
+        // Only every other detection gets a callout: with one for each, they came too thick to
+        // stay interesting
+        let vampireDetections = 0;
         function onVampireDetected(m) {
             const bearing = bearingFromShip(m.mesh.position);
-            AudioController.announceVampire(bearing);
+            if (vampireDetections++ % 2 === 0) AudioController.announceVampire(bearing);
             requestVLSResponse(bearing);
         }
 
@@ -4885,8 +6204,9 @@ Ambient
             if (falloff > 0) fxShake = Math.min(1.5, fxShake + amount * falloff);
         }
 
+        // Low enough for an impact to throw up water, and not over our hull or a friendly's
         function isOverOpenWater(position) {
-            return !nearShip(position, 1.5) && position.y < 4;
+            return !nearShip(position, 1.5) && !overFriendly(position) && position.y < 4;
         }
 
         // Drone kill: big airburst that blooms, cools into smoke and throws burning debris
@@ -5111,22 +6431,26 @@ Ambient
         const WRECK_SMOKE_BLACK = new THREE.Color(0x36312e);
         const WRECK_SMOKE_GREY = new THREE.Color(0x77726b);
         const _wreckEmitter = new THREE.Vector3();
+        const _wreckSmokeAt = new THREE.Vector3();
         const _wreckSmokeVel = new THREE.Vector3();
         const _wreckSmoke = new THREE.Color();
         // 0 → 1 smoothly as x goes from a to b
         const easeBetween = (a, b, x) => THREE.MathUtils.smoothstep(x, a, b);
 
-        // A friendly is hit: it becomes a wreck, and losing the last one ends the game
+        // A friendly is hit: it becomes a wreck, and losing the last one ends the game. The crew
+        // and the 1MC call it by name; side is which side of our ship she's on (starboard +x).
         function destroyFriendly(f) {
             f.alive = false;
             wreckFriendly(f);
+            AudioController.announceFriendlyHit(f.key, f.position.x >= 0 ? 1 : -1);
             if (updateFriendlyUI() === 0) triggerGameOver('friendlies');
         }
 
         function wreckFriendly(f) {
-            const wreck = createFriendlyWreck();
+            const wreck = FRIENDLY_FITS[f.fit].wreck();
             wreck.position.copy(f.mesh.position);
             wreck.rotation.copy(f.mesh.rotation);
+            wreck.traverse(o => { if (o.name === 'markings') o.material = f.markings; });
             scene.remove(f.mesh);
             scene.add(wreck);
             wrecks.push({
@@ -5149,16 +6473,21 @@ Ambient
                 w.age += dt;
                 const breakK = easeBetween(0, 2.5, w.age);                         // the hull snapping
                 const settleK = 1 - Math.pow(1 - Math.min(1, w.age / WRECK_SINK_SECONDS), 1.6);
-                const plungeK = Math.pow(easeBetween(WRECK_SINK_SECONDS, WRECK_SINK_SECONDS + WRECK_PLUNGE_SECONDS, w.age), 1.5);
+                const plungeK = easeBetween(WRECK_SINK_SECONDS, WRECK_SINK_SECONDS + WRECK_PLUNGE_SECONDS, w.age);
                 if (plungeK >= 1) {
                     scene.remove(w.mesh);
                     wrecks.splice(i, 1);
                     continue;
                 }
-                w.bow.rotation.x = (0.1 * breakK + 0.22 * settleK + 0.35 * plungeK) * w.bowLift;
-                w.stern.rotation.x = -(0.06 * breakK + 0.15 * settleK + 0.25 * plungeK);
-                w.mesh.position.y = w.baseY - 0.45 * breakK - 1.0 * settleK - 6 * plungeK + Math.sin(w.age * 0.9) * 0.05 * (1 - plungeK);
-                w.mesh.rotation.z = w.listSign * (0.06 * breakK + 0.3 * settleK + 0.25 * plungeK);
+                // The break settles until it's awash with the ends lifting; in the plunge both ends
+                // rear up first, then she goes down, deep enough to take the bow under
+                w.bow.rotation.x = (0.07 * breakK + 0.12 * settleK + 0.45 * plungeK) * w.bowLift;
+                w.stern.rotation.x = -(0.045 * breakK + 0.08 * settleK + 0.35 * plungeK);
+                w.mesh.position.y = w.baseY - 0.6 * breakK - 1.9 * settleK - 24 * Math.pow(plungeK, 2.5) + Math.sin(w.age * 0.9) * 0.05 * (1 - plungeK);
+                w.mesh.rotation.z = w.listSign * (0.06 * breakK + 0.3 * settleK + 0.2 * plungeK);
+                // The wreck sits directly in the scene, so its local matrix places the break
+                w.mesh.updateMatrix();
+                _wreckEmitter.copy(w.emitter).applyMatrix4(w.mesh.matrix);
 
                 // Fire and smoke from the break: a thick black billow at first, thinning and
                 // greying as the fire burns down and the water gets to it
@@ -5168,12 +6497,7 @@ Ambient
                     const fierce = w.age < 4;
                     const fade = Math.min(1, w.age / WRECK_SINK_SECONDS);
                     w.nextSmoke += fierce ? 0.1 : 0.2 + 0.25 * fade;
-                    // The wreck sits directly in the scene, so its local matrix places the emitter
-                    w.mesh.updateMatrix();
-                    _wreckEmitter.copy(w.emitter).applyMatrix4(w.mesh.matrix);
-                    _wreckEmitter.x += rand(-0.6, 0.6);
-                    _wreckEmitter.z += rand(-0.6, 0.6);
-                    emitSmokePuff(_wreckEmitter, {
+                    emitSmokePuff(_wreckSmokeAt.copy(_wreckEmitter).add(_wreckSmokeVel.set(rand(-1.2, 1.2), 0, rand(-1.2, 1.2))), {
                         vel: _wreckSmokeVel.set(rand(-0.7, 0.7), rand(4.5, 7), rand(-0.7, 0.7)),
                         s0: rand(0.7, 1.1), s1: rand(3.4, 5.0) * (fierce ? 1.2 : 1 - 0.3 * fade), growRate: 0.22,
                         heat: rand(1.15, 1.4) - 0.3 * fade, heatRate: 2.4,
@@ -5181,11 +6505,11 @@ Ambient
                         smoke: _wreckSmoke.copy(WRECK_SMOKE_BLACK).lerp(WRECK_SMOKE_GREY, fade * 0.8 + rand(0, 0.15))
                     });
                 }
-                // Foam boiling up around the hull
+                // Foam boiling up around the break
                 w.nextFoam -= dt;
                 if (w.nextFoam <= 0) {
                     w.nextFoam = rand(1.6, 3) * (plungeK > 0 ? 0.4 : 1);
-                    spawnFoamRing(w.mesh.position.x + rand(-1, 1), w.mesh.position.z + rand(-1, 1), rand(8, 12), rand(1.6, 2.4));
+                    spawnFoamRing(_wreckEmitter.x + rand(-3, 3), _wreckEmitter.z + rand(-3, 3), rand(12, 18), rand(1.6, 2.4));
                 }
             }
         }
@@ -5203,18 +6527,22 @@ Ambient
         const _vlsPuffOffset = new THREE.Vector3();
         const _vlsPuffVel = new THREE.Vector3();
 
-        // Where a launcher fires from: one of our ship's cells (not already firing), or the small
-        // module on a friendly's foredeck. vent: where the exhaust bursts out (our ship's uptake
-        // hatch beside the cell; the boat's launcher itself)
+        // Where a launcher fires from: one of the live cells (not already firing) in our ship's
+        // forward module or a friendly's (hers in the frame of her 'vls' anchor, at her module's
+        // scale). vent: where the exhaust bursts out, the uptake hatch beside the cell.
         function vlsLaunchPoint(launcher) {
+            const cells = launcher === 'ship' ? shipVLS.cells : launcher.vlsCells;
+            const ready = cells.filter(c => c.open <= 0);
+            if (!ready.length) return null;
+            const cell = pick(ready);
             if (launcher === 'ship') {
-                const ready = shipVLS.cells.filter(c => c.open <= 0);
-                if (!ready.length) return null;
-                const cell = pick(ready);
-                return { pos: cell.pos.clone(), scale: 1, cell, vent: new THREE.Vector3(0, 0.4, cell.pos.z) };
+                return { pos: cell.pos.clone(), scale: 1, cell, vent: new THREE.Vector3(VLS_ORIGIN.x, cell.pos.y + 0.25, cell.pos.z) };
             }
-            const pos = launcher.vls.getWorldPosition(new THREE.Vector3());
-            return { pos, scale: 0.65, cell: null, vent: pos.clone().setY(pos.y + 0.4) };
+            const anchor = launcher.vls;
+            return {
+                pos: anchor.localToWorld(cell.pos.clone()), scale: FRIENDLY_VLS_SCALE, cell,
+                vent: anchor.localToWorld(new THREE.Vector3(0, cell.pos.y + 0.25, cell.pos.z))
+            };
         }
 
         // bearing: degrees clockwise from the bow direction (-z); null picks one at random
@@ -5286,14 +6614,17 @@ Ambient
             return true;
         }
 
+        // A hatch swings open fast and closes slowly once the missile is clear
+        function swingHatch(c, dt) {
+            c.open -= dt;
+            const target = c.open > 0 ? 1 : 0;
+            c.amount += (target - c.amount) * Math.min(1, dt * (target ? 14 : 2.5));
+            c.lid.rotation.z = c.side * 1.9 * c.amount;
+        }
+
         function updateVLS(dt) {
-            for (const c of shipVLS.cells) {
-                c.open -= dt;
-                // Hatch swings open fast and closes slowly once the missile is clear
-                const target = c.open > 0 ? 1 : 0;
-                c.amount += (target - c.amount) * Math.min(1, dt * (target ? 14 : 2.5));
-                c.lid.rotation.z = c.side * 1.9 * c.amount;
-            }
+            for (const c of shipVLS.cells) swingHatch(c, dt);
+            for (const f of friendlies) for (const c of f.vlsCells) swingHatch(c, dt);
 
             for (let i = vlsLaunches.length - 1; i >= 0; i--) {
                 const L = vlsLaunches[i];
@@ -5327,13 +6658,29 @@ Ambient
 
         // Every so often a ship fires (our own about a third of the time). New anti-ship missiles
         // can also draw an answering launch along their bearing; vlsResponse holds one pending.
+        // Our own ship sounds a warning first and vlsHeld holds its launch until that's done.
         // Gameplay scheduling: updateLogic runs it, so launches stop with the game.
         let vlsResponse = null;
+        let vlsHeld = null;
         let lastVLSLaunchAt = -Infinity;
+
+        // Launches from our ship after its warning (AudioController.warnVLSLaunch): about 7 s for
+        // a routine launch with the 1MC call, ~1 s of alarm for one answering a vampire. Returns
+        // the wait (sim seconds; 0 if it went straight away), or false if no cell was free.
+        function launchShipVLS(routine, bearing) {
+            const wait = vlsHeld ? 0 : AudioController.warnVLSLaunch(routine) * timeScale;
+            if (wait <= 0) return launchVLS('ship', bearing) ? 0 : false;
+            vlsHeld = { delay: wait, bearing };
+            return wait;
+        }
 
         function updateVLSSchedule(dt) {
             vlsCooldown -= dt;
             if (vlsResponse) vlsResponse.delay -= dt;
+            if (vlsHeld && (vlsHeld.delay -= dt) <= 0) {
+                launchVLS('ship', vlsHeld.bearing);
+                vlsHeld = null;
+            }
             const due = vlsResponse && vlsResponse.delay <= 0;
             if (!due && vlsCooldown > 0) return;
             const bearing = due ? vlsResponse.bearing + rand(-8, 8) : null;
@@ -5343,10 +6690,13 @@ Ambient
             const alive = friendlies.filter(f => f.alive);
             const launcher = follow && (follow === 'ship' || follow.alive) ? follow
                 : Math.random() < 0.35 || !alive.length ? 'ship' : pick(alive);
-            if (!launchVLS(launcher, bearing)) return;
-            lastVLSLaunchAt = elapsedTime;
+            // Our ship warns before a launch, but not again for a salvo's second round
+            const wait = launcher === 'ship' && !follow ? launchShipVLS(!due, bearing)
+                : launchVLS(launcher, bearing) ? 0 : false;
+            if (wait === false) return;
+            lastVLSLaunchAt = elapsedTime + wait;
             // Sometimes a second round follows from the same launcher
-            if (!follow && Math.random() < 0.4) vlsResponse = { delay: rand(1.2, 2.2), bearing: bearing ?? rand(0, 360), follow: launcher };
+            if (!follow && Math.random() < 0.4) vlsResponse = { delay: wait + rand(1.2, 2.2), bearing: bearing ?? rand(0, 360), follow: launcher };
         }
 
         function requestVLSResponse(bearing) {
@@ -5356,6 +6706,8 @@ Ambient
 
         // World effects that keep running after the game ends: wrecks, smoke, launches in flight
         function updateWorldFX(dt) {
+            shipRadar.rotation.y = (shipRadar.rotation.y + dt * 2.5) % (2 * Math.PI);
+            for (const f of friendlies) f.radar.rotation.y = (f.radar.rotation.y + dt * 2.5) % (2 * Math.PI);
             updateWrecks(dt);
             updateVLS(dt);
             updateSmokeColumns(dt);
@@ -5368,6 +6720,7 @@ Ambient
         const _sparkHot = new THREE.Color(0xfff6c2);
         const _sparkCool = new THREE.Color(0xff8a24);
         const _zAxis = new THREE.Vector3(0, 0, 1);
+        const _yAxis = new THREE.Vector3(0, 1, 0);
         const _tmpDir = new THREE.Vector3();
         const _tangent = new THREE.Vector3();
         const _toCamera = new THREE.Vector3();
@@ -5902,6 +7255,8 @@ Ambient
                         document.getElementById('health-bar').innerText = `${health}%`;
                         if (health <= 0) {
                             triggerGameOver('ciws');
+                        } else {
+                            callDamageControl(m.mesh.position, m.type);
                         }
                     } else if (m.targetInfo.type === 'friendly') {
                         const f = friendlies.find(fr => fr.id === m.targetInfo.friendlyId);
@@ -6210,15 +7565,15 @@ Ambient
                 if (!target) {
                     // Smoothly move to a default overview position?
                     // For now, let's just snap to a "Waiting" view
-                    const defaultPos = new THREE.Vector3(20, 20, 20);
+                    const defaultPos = new THREE.Vector3(20, MOUNT_Y + 20, 20);
                     camera.position.lerp(defaultPos, 0.1);
-                    camera.lookAt(0, 5, 0);
+                    camera.lookAt(0, MOUNT_Y + 5, 0);
                     return;
                 }
 
                 // Target exists - track it
                 const tPos = target.mesh.position.clone();
-                const phalanxPos = new THREE.Vector3(0, 2, 0);
+                const phalanxPos = new THREE.Vector3(0, MOUNT_Y + 2, 0);
 
                 // Calculate direction FROM target TO Phalanx
                 const toPhalanx = new THREE.Vector3().subVectors(phalanxPos, tPos).normalize();

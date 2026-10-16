@@ -20,7 +20,7 @@ from _harness import game_page, report_errors
 runs = int(sys.argv[1]) if len(sys.argv) > 1 else 3
 
 JS = """async ({ threats, oneShots, gun }) => {
-  const { camera } = window.__ciws;
+  const { camera, layout } = window.__ciws;
   const V = camera.position.constructor;
   const sr = 48000, seconds = 10;
   const ctx = new OfflineAudioContext(2, sr * seconds, sr);
@@ -28,10 +28,11 @@ JS = """async ({ threats, oneShots, gun }) => {
   // Sounds are all scheduled up front, so bypass the live-play voice cap (it counts sounds
   // that haven't ended yet, which here would be all of them)
   A.activeOneShots = -1e9;
-  camera.position.set(-15, 10, 20); camera.lookAt(0, 5, 0); camera.updateMatrixWorld();
+  const m = layout.mountY;
+  camera.position.set(-15, m + 10, 20); camera.lookAt(0, m + 5, 0); camera.updateMatrixWorld();
   A.refreshListener();
-  A.updateSpatializer(A.gunSpatial, new V(0, 5, 3.5), 0);
-  A.updateSpatializer(A.mountSpatial, new V(0, 4, 0), 0);
+  A.updateSpatializer(A.gunSpatial, new V(0, m + 5, 3.5), 0);
+  A.updateSpatializer(A.mountSpatial, new V(0, m + 4, 0), 0);
 
   // Incoming threats around the ship
   for (let i = 0; i < (threats ? 19 : 0); i++) {
@@ -55,7 +56,7 @@ JS = """async ({ threats, oneShots, gun }) => {
   }
   if (oneShots) {
     A.announceVampire(270);
-    [2, 6].forEach(t => A.playVLSLaunch(new V(1, 0.2, 19), 1, { at: t }));
+    [2, 6].forEach(t => A.playVLSLaunch(new V(1, layout.deckHeightAt(-10.5) + 0.2, -10.5), 1, { at: t }));
   }
   const scheduled = A.activeOneShots + 1e9;
   const t0 = performance.now();

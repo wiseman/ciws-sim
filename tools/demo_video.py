@@ -41,7 +41,7 @@ OVERVIEW_MIN, OVERVIEW_MAX = 10.5, 14.0  # the overview ends a beat after its la
 LEAD_IN = 5.0  # game time before recording starts, so the first drones are already inbound
 
 DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
-    const { scene, camera, controls, renderer } = window.__ciws;
+    const { scene, camera, controls, renderer, layout } = window.__ciws;
     const d = window.__ciws.debug;
     const T = camera.position.constructor;
 
@@ -79,8 +79,8 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
             const mount = barrels.getWorldPosition(new T());
             const aim = new T(0, 0, 1).transformDirection(barrels.matrixWorld).setY(0).normalize();
             const side = new T(-aim.z, 0, aim.x);
-            const cam = mount.clone().addScaledVector(aim, -11).addScaledVector(side, 9).add(new T(0, 4, 0));
-            const look = mount.clone().addScaledVector(aim, 5).add(new T(0, 1.5, 0));
+            const cam = mount.clone().addScaledVector(aim, -13).addScaledVector(side, 9.5).add(new T(0, 4.5, 0));
+            const look = mount.clone().addScaledVector(aim, 4).add(new T(0, -1.5, 0));
             pose(cam.toArray(), look.toArray());
         }],
         [5.5, () => setCameraMode(1)],
@@ -89,8 +89,8 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
         [12.5, () => { window.__vampire = spawnASCM(VAMPIRE_ANGLE); }],
         [13.5, () => {
             setCameraMode(0);
-            const cam = dir.clone().multiplyScalar(-36).add(new T(-8, 12, 5));
-            const look = dir.clone().multiplyScalar(70).add(new T(0, 6, 0));
+            const cam = dir.clone().multiplyScalar(-36).add(new T(-8, layout.mountY + 12, 5));
+            const look = dir.clone().multiplyScalar(70).add(new T(0, layout.mountY + 6, 0));
             pose(cam.toArray(), look.toArray());
         }],
         [15.3, () => d.launchVLS('ship', bearingOf(VAMPIRE_ANGLE))],
@@ -103,7 +103,7 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
     const sight = new camera.constructor(45, 1, 0.25, 4000);
     const gunBlock = scene.getObjectByName('barrels').parent;
     const SIGHT_EYE = new T(0, 0.95, 0.6), SIGHT_AHEAD = new T(0, 0.95, 200);
-    const SHIP = new T(0, 4, 0);
+    const SHIP = new T(0, layout.mountY + 4, 0);
     const updateSight = () => {
         gunBlock.updateWorldMatrix(true, false);
         sight.position.copy(SIGHT_EYE).applyMatrix4(gunBlock.matrixWorld);

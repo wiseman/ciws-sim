@@ -12,8 +12,9 @@ Scenarios:
   ascm       an anti-ship missile running in at sea-skimming height
   engage     two anti-ship missiles from the west, engaged by the CIWS (tracked through a long lens from beside the gun)
   vls        a VLS launch from our ship
-  vls-boat   a VLS launch from a friendly boat
-Spawning is held so only the staged objects are in view (except in `engage`). Also writes
+  vls-boat   a VLS launch from a friendly
+Spawning is held so only the staged objects are in view (except in `engage`). Poses on our ship are
+relative to the gun's deck height (window.__ciws.layout.mountY, `mountY` in the setups). Also writes
 <out_prefix>-<scenario>-sheet.png, a contact sheet of the frames.
 """
 import sys
@@ -29,14 +30,13 @@ scenario = sys.argv[2]
 # Scenario -> js that stages it; `d` is window.__ciws.debug, `c` window.__ciws
 SETUP = {
     "wreck": """
-        const f = d.friendlies[0];
-        const p = f.position;
-        c.camera.position.set(p.x - 13, 5, p.z + 15); c.controls.target.set(p.x, 4, p.z);
+        // Off her port quarter, in her own frame (she lies about our course)
+        const f = d.friendlies[0].mesh, V = c.camera.position.constructor;
+        c.camera.position.copy(f.localToWorld(new V(-30, 8, 20))); c.controls.target.copy(f.localToWorld(new V(0, 2, 0)));
         d.wreckFriendly(0);""",
     "wreck-late": """
-        const f = d.friendlies[0];
-        const p = f.position;
-        c.camera.position.set(p.x - 48, 14, p.z + 56); c.controls.target.set(p.x + 8, 24, p.z);
+        const f = d.friendlies[0].mesh, V = c.camera.position.constructor;
+        c.camera.position.copy(f.localToWorld(new V(-44, 9, 30))); c.controls.target.copy(f.localToWorld(new V(0, 8, 0)));
         d.wreckFriendly(0);
         d.setTimeScale(4);""",
     "ascm": """
@@ -53,7 +53,7 @@ SETUP = {
         c.camera.fov = 7; c.camera.updateProjectionMatrix();
         window.dispatchEvent(new Event('resize')); // re-derives the ink line width for the new lens
         c.controls.maxDistance = Infinity;
-        c.camera.position.set(14, 9, 10);
+        c.camera.position.set(14, mountY + 9, 10);
         window.__ms = [];
         [[-25, null], [30, 0]].forEach(([z, f], i) => setTimeout(() => {
             const m = d.spawnAntiShipMissile(f);
@@ -63,15 +63,17 @@ SETUP = {
         window.__follow = setInterval(() => {
             const m = window.__ms.find(m => m.mesh.parent);
             if (m) c.controls.target.lerp(m.mesh.position, 0.2);
-            c.camera.position.set(14, 9, 10);
+            c.camera.position.set(14, mountY + 9, 10);
             c.controls.update();
         }, 8);""",
     "vls": """
-        c.camera.position.set(-48, 16, 66); c.controls.target.set(10, 30, 0);
+        c.camera.position.set(-46, mountY + 12, 32); c.controls.target.set(0, mountY + 20, -12);
         d.launchVLS('ship', 300);""",
     "vls-boat": """
-        const p = d.friendlies[1].position;
-        c.camera.position.set(p.x - 30, 10, p.z + 34); c.controls.target.set(p.x, 12, p.z);
+        // Off her port bow quarter (in her own frame), looking up past the forward module
+        const f = d.friendlies[1].mesh;
+        c.camera.position.copy(f.localToWorld(new c.camera.position.constructor(-22, 6, 6)));
+        c.controls.target.copy(f.localToWorld(new c.camera.position.constructor(0, 7, -9)));
         d.launchVLS(1, 45);""",
 }
 # Scenario -> screenshot times (s after the setup runs)
@@ -89,7 +91,7 @@ with game_page(dpr=2, console_levels=("error", "warning")) as (page, errors):
     # Hide the HUD, hold spawning and clear anything already in flight
     page.evaluate("() => { document.getElementById('hud').style.display = 'none'; const d = window.__ciws.debug; d.holdSpawns(); d.clearThreats(); }")
     time.sleep(0.5)
-    page.evaluate(f"() => {{ const c = window.__ciws, d = c.debug; {SETUP[scenario]} c.controls.update(); }}")
+    page.evaluate(f"() => {{ const c = window.__ciws, d = c.debug, mountY = c.layout.mountY; {SETUP[scenario]} c.controls.update(); }}")
     paths = timed_screenshots(page, TIMES[scenario], lambda t: f"{out}-{scenario}-{t:05.2f}.png")
     info = page.evaluate("() => { const d = window.__ciws.debug; return { smoke: d.smokePuffs, wrecks: d.wrecks.length, missiles: d.missiles.length, vls: d.vlsLaunches.length, stats: d.stats }; }")
     print(info)

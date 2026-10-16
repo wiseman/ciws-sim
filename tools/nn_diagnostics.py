@@ -4,19 +4,31 @@
 # ///
 """Let the net learn live, probe its accuracy, and optionally let it fly the gun.
 
-Usage: uv run tools/nn_diagnostics.py [learn_seconds] [drive_seconds]
+Usage: uv run tools/nn_diagnostics.py [learn_seconds] [drive_seconds] [--save FILE | --frozen FILE]
 Reports input ranges, fire-label balance, aim accuracy (degrees and miss distance at the
 target versus a no-lead baseline), fire-call accuracy, and per-controller rounds/hits/kills.
 With drive_seconds > 0 the net then aims the gun (learning stays on) for that long.
+--save FILE writes the net to FILE after learning (its saved-to-localStorage form).
+--frozen FILE starts from that saved net instead of a fresh one and never trains it: the
+learning time only gathers examples from the solver, so the probe measures how the saved net
+does in the current build (say, after a geometry change).
 """
 import json
 import sys
 import time
+from pathlib import Path
 
 from _harness import game_page, report_errors
 
-learn_seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 45
-drive_seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 0
+args, opts = [], {}
+argv = iter(sys.argv[1:])
+for a in argv:
+    if a in ("--save", "--frozen"):
+        opts[a] = Path(next(argv))
+    else:
+        args.append(a)
+learn_seconds = float(args[0]) if args else 45
+drive_seconds = float(args[1]) if len(args) > 1 else 0
 
 PROBE = r"""() => {
   const M = window.__ciwsML, nn = M.NeuralController, C = M.consts;
@@ -69,10 +81,23 @@ PROBE = r"""() => {
 
 with game_page(console_levels=("error", "warning")) as (page, errors):
     time.sleep(2)
-    page.evaluate("() => { localStorage.clear(); window.__ciwsML.NeuralController.reset(); window.trainNeuralImitation(); }")
+    if "--frozen" in opts:
+        page.evaluate("""(state) => {
+            const nn = window.__ciwsML.NeuralController;
+            localStorage.setItem(nn.storageKey, state);
+            if (!nn.load()) throw new Error('saved net did not load');
+            nn.trainFromLiveReplay = () => {}; // keep gathering examples, but never update the weights
+            window.trainNeuralImitation();
+        }""", opts["--frozen"].read_text())
+    else:
+        page.evaluate("() => { localStorage.clear(); window.__ciwsML.NeuralController.reset(); window.trainNeuralImitation(); }")
     time.sleep(learn_seconds)
-    print("== after learning", learn_seconds, "s ==")
+    print("== after", "gathering examples for" if "--frozen" in opts else "learning", learn_seconds, "s ==")
     print(json.dumps(page.evaluate(PROBE), indent=1))
+    if "--save" in opts:
+        opts["--save"].write_text(page.evaluate(
+            "() => { const nn = window.__ciwsML.NeuralController; nn.save(); return localStorage.getItem(nn.storageKey); }"))
+        print("saved the net to", opts["--save"])
     print("game over:", page.evaluate("() => document.getElementById('game-over').style.display === 'block'"),
           "| wave:", page.inner_text("#wave-count"), "| time:", page.inner_text("#time-elapsed"))
     if drive_seconds > 0:
