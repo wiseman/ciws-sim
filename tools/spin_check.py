@@ -6,7 +6,8 @@
 
 Usage: uv run tools/spin_check.py [seconds]
 Prints the per-frame rotation step of each part. A visible spin needs a nonzero step below
-~1/3 of the part's symmetry angle (20 deg for the 6 barrels, 30 deg for the 4-arm prop).
+~1/3 of the part's symmetry angle (20 deg for the 6 barrels, 30 deg for the 4-arm prop). Spun up,
+the barrels deliberately jump 10-50 deg a frame (about 30 on average): the fast-shutter look.
 """
 import json
 import sys
