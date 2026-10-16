@@ -605,7 +605,7 @@
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+        import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 
         // --- CONFIGURATION ---
         const MISSILE_SPEED_BASE = 0.8;
@@ -3243,6 +3243,7 @@ Ambient
                     get smokePuffs() { return smokePuffs.length; },
                     get stats() { return { score, health, wave, engagementStats }; },
                     holdSpawns() { spawnCooldown = Infinity; },
+                    resumeSpawns() { spawnCooldown = 0; },
                     clearThreats() {
                         missiles.forEach(disposeThreat);
                         missiles.length = 0;
@@ -3367,100 +3368,285 @@ Ambient
             // Barrels (The Vulcan cannon)
             barrels = new THREE.Group();
             barrels.name = 'barrels';
-            const barrelGeo = new THREE.CylinderGeometry(0.08, 0.08, 3.5, 16);
+            const barrelGeo = new THREE.CylinderGeometry(BARREL.radius, BARREL.radius, BARREL.muzzle, 16);
+            // Own material: hidden from the colour pass (but still casting shadow) while blurred
+            const tubeMat = barrelMat.clone();
+            const muzzleParts = [];
+            const tinted = (geo, hex) => {
+                const c = new THREE.Color(hex);
+                const n = geo.getAttribute('position').count;
+                geo.setAttribute('color', new THREE.Float32BufferAttribute(Array.from({ length: n }, () => [c.r, c.g, c.b]).flat(), 3));
+                return geo;
+            };
             for (let i = 0; i < 6; i++) {
-                const barrel = new THREE.Mesh(barrelGeo, barrelMat);
+                const barrel = new THREE.Mesh(barrelGeo, tubeMat);
                 const angle = (i / 6) * Math.PI * 2;
-                barrel.position.x = Math.cos(angle) * 0.2;
-                barrel.position.y = Math.sin(angle) * 0.2;
-                barrel.position.z = 1.75; // extend out
+                barrel.position.x = Math.cos(angle) * BARREL.ring;
+                barrel.position.y = Math.sin(angle) * BARREL.ring;
+                barrel.position.z = BARREL.muzzle / 2; // extend out
                 barrel.rotation.x = Math.PI / 2;
                 barrel.castShadow = true;
                 barrels.add(barrel);
+                // Machined muzzle crown around a dark bore
+                muzzleParts.push(
+                    tinted(new THREE.RingGeometry(BARREL.bore, BARREL.crown, 16), BARREL.crownColor).translate(barrel.position.x, barrel.position.y, 0),
+                    tinted(new THREE.CircleGeometry(BARREL.bore, 16), BARREL.boreColor).translate(barrel.position.x, barrel.position.y, 0));
             }
+            const muzzles = new THREE.Mesh(mergeGeometries(muzzleParts), toonMat(0xffffff, { vertexColors: true }));
+            muzzles.position.z = BARREL.muzzle + 0.002;
+            muzzles.userData.noOutline = true;
+            barrels.add(muzzles);
             // Barrel clamps
-            [1.6, 3.35].forEach(z => {
-                const clamp = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.16, 32), barrelMat);
+            BARREL.clamps.forEach(z => {
+                const clamp = new THREE.Mesh(new THREE.CylinderGeometry(BARREL.clampRadius, BARREL.clampRadius, 2 * BARREL.clampHalf, 32), barrelMat);
                 clamp.rotation.x = Math.PI / 2;
                 clamp.position.z = z;
                 barrels.add(clamp);
             });
-            barrelBlur = createBarrelBlur();
-            barrels.add(barrelBlur.shell, barrelBlur.swirl);
             gunBlock.add(barrels); // Add barrels to gunblock, gunblock is in pitch group
 
             addOutlines(turretYaw);
+            barrelBlur = createBarrelBlur(barrelMat.color, barrels.children.filter(c => c.material === tubeMat), muzzles);
+            barrels.add(barrelBlur.mesh);
         }
 
-        // Cel-style smear for the spinning barrels: hard-banded comet streaks on a sleeve around the
-        // cluster and a swirl on the muzzle face. Both are children of the barrels, so the streaks
-        // turn with them; the angle is taken per fragment so there is no seam.
-        function createBarrelBlur() {
+        // Barrel cluster layout, in the barrels' frame (they turn about z; the muzzles are at z = muzzle)
+        const BARREL = {
+            ring: 0.2, radius: 0.08, bore: 0.035, crown: 0.064, muzzle: 3.5,
+            boreColor: 0x15191c, crownColor: 0x7d868b,
+            clamps: [1.6, 3.35], clampRadius: 0.34, clampHalf: 0.08
+        };
+        // Angle the cluster turns while the camera shutter is open, at full speed: 75 rev/s over a
+        // 1/120 s (180 degree) shutter is 225 degrees, nearly four times the 60 degree barrel spacing
+        const BARREL_SHUTTER_SWEEP = 3.9;
+
+        // Motion blur for the spinning barrels, as a film camera sees a Gatling gun: every point of the
+        // cluster smears along its arc for the angle swept while the shutter is open. A proxy cylinder
+        // around the cluster ray-traces the six barrels at evenly spaced instants across that sweep,
+        // each one's edges box-filtered over its slice of the sweep (so a few instants average out
+        // smoothly), and averages the toon-lit results. At rest the sweep is zero and it matches the
+        // real barrels; at full speed they dissolve into a glinting cylinder whose muzzle face is a set
+        // of concentric rings (crowns light, bores dark).
+        function createBarrelBlur(barrelColor, tubes, muzzles) {
+            const hemi = scene.children.find(o => o.isHemisphereLight);
+            const sun = scene.children.find(o => o.isDirectionalLight);
             const mat = new THREE.ShaderMaterial({
-                uniforms: {
-                    uSpin: { value: 0 },
+                uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+                    uSweep: { value: 0 },
                     uPhase: { value: 0 },
-                    uFill: { value: 0 },
-                    uLight: { value: new THREE.Color(0xeef3f6) },
-                    uDark: { value: new THREE.Color(0x1d2226) }
-                },
+                    uCam: { value: new THREE.Vector3() },
+                    uSun: { value: new THREE.Vector3() },
+                    uUp: { value: new THREE.Vector3() },
+                    uInk: { value: 0 },
+                    uSunColor: { value: sun.color.clone().multiplyScalar(sun.intensity) },
+                    uSky: { value: hemi.color.clone().multiplyScalar(hemi.intensity) },
+                    uGround: { value: hemi.groundColor.clone().multiplyScalar(hemi.intensity) },
+                    uAlbedo: { value: barrelColor.clone() },
+                    uGlint: { value: 0 },
+                    uBoreColor: { value: new THREE.Color(BARREL.boreColor) },
+                    uCrownColor: { value: new THREE.Color(BARREL.crownColor) },
+                    uInkColor: { value: new THREE.Color(PALETTE.ink) }
+                }]),
                 vertexShader: `
                     varying vec3 vPos;
+                    varying float vDepth;
+                    #include <fog_pars_vertex>
                     void main() {
                         vPos = position;
-                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+                        vDepth = -mvPosition.z;
+                        gl_Position = projectionMatrix * mvPosition;
+                        #include <fog_vertex>
                     }`,
                 fragmentShader: `
-                    uniform float uSpin;
-                    uniform float uPhase;
-                    uniform float uFill;
-                    uniform vec3 uLight;
-                    uniform vec3 uDark;
+                    #define SAMPLES 16
+                    #define PI 3.14159265
+                    #define SPACING 1.0471976
+                    uniform float uSweep, uPhase, uInk, uGlint;
+                    uniform vec3 uCam, uSun, uUp, uSunColor, uSky, uGround, uAlbedo, uBoreColor, uCrownColor, uInkColor;
                     varying vec3 vPos;
-                    void main() {
-                        // Three streaks around, each a light smear stepping up from a faint tail to an
-                        // ink-edged leading head. Between them, a ghosted fill that thickens at full speed.
-                        float u = atan(vPos.y, vPos.x) / 6.2831853 + 0.5;
-                        float s = fract(u * 3.0 + uPhase) / 0.55;
-                        if (s > 1.0 || s < 0.15) {
-                            if (uFill <= 0.0) discard;
-                            gl_FragColor = vec4(mix(uDark, uLight, 0.75), uFill);
-                            return;
+                    varying float vDepth;
+                    #include <fog_pars_fragment>
+
+                    const float RING = ${BARREL.ring.toFixed(4)}, RADIUS = ${BARREL.radius.toFixed(4)};
+                    const float BORE = ${BARREL.bore.toFixed(4)}, CROWN = ${BARREL.crown.toFixed(4)};
+                    const float MUZZLE = ${BARREL.muzzle.toFixed(4)}, CLAMP_R = ${BARREL.clampRadius.toFixed(4)};
+                    const float FRONT_CLAMP_Z0 = ${(BARREL.clamps[1] - BARREL.clampHalf).toFixed(4)};
+                    const float FRONT_CLAMP_Z1 = ${(BARREL.clamps[1] + BARREL.clampHalf).toFixed(4)};
+                    const float BACK_CLAMP_Z1 = ${(BARREL.clamps[0] + BARREL.clampHalf).toFixed(4)};
+
+                    vec2 rot(vec2 v, float a) {
+                        float c = cos(a), s = sin(a);
+                        return vec2(c * v.x - s * v.y, s * v.x + c * v.y);
+                    }
+
+                    vec3 view; // towards the camera, in the cluster's current frame
+
+                    // The same toon lighting the barrels' MeshToonMaterial gets: hemisphere fill plus a
+                    // three-step sun band
+                    vec3 toon(vec3 n, vec3 albedo) {
+                        float l = dot(n, uSun) * 0.5 + 0.5;
+                        float band = l < 1.0 / 3.0 ? 105.0 / 255.0 : (l < 2.0 / 3.0 ? 185.0 / 255.0 : 1.0);
+                        vec3 fill = mix(uGround, uSky, dot(n, uUp) * 0.5 + 0.5);
+                        return albedo * (fill + uSunColor * band) / PI;
+                    }
+
+                    // Barrel side: toon shading plus a hard sun glint that only shows once blurred, where
+                    // the glints of the passing barrels add up into bright lines along the cluster
+                    vec3 tube(vec3 n) {
+                        // A cylinder's highlight runs along it: compare with the half vector across the axis
+                        vec3 h = normalize(uSun + view);
+                        float across = length(h.xy);
+                        float glint = smoothstep(0.95, 0.97, dot(n.xy, h.xy / max(across, 1e-4))) * smoothstep(0.2, 0.5, across);
+                        return toon(n, uAlbedo) + glint * uGlint * uSunColor * 0.05;
+                    }
+
+                    // Coverage of an edge at signed distance e (positive inside), box-filtered over the
+                    // sample's slice of the sweep (e changes at rate de per radian) and over a pixel
+                    float cover(float e, float de, float slice, float pix) {
+                        return clamp(e / (abs(de) * slice + pix) + 0.5, 0.0, 1.0);
+                    }
+
+                    // One barrel (axis at c) seen along the ray o + t d, as premultiplied colour and coverage
+                    // with an ink rim; returns the distance to it. The cluster frame is turned by ang.
+                    float barrel(vec3 o, vec3 d, vec2 c, float ang, float slice, float pix, float ink, out vec4 col) {
+                        col = vec4(0.0);
+                        vec2 v = c - o.xy, move = vec2(-c.y, c.x); // how the axis moves per radian of turn
+                        float len = length(d.xy);
+                        float t = 1e9, zIn = 1e9;
+                        if (len > 1e-4) {
+                            vec2 dn = d.xy / len;
+                            float m = dn.x * v.y - dn.y * v.x;          // axis offset from the ray
+                            float dm = dn.x * move.y - dn.y * move.x;
+                            float tIn = (dot(v, dn) - sqrt(max(RADIUS * RADIUS - m * m, 0.0))) / len;
+                            zIn = o.z + tIn * d.z;
+                            if (zIn <= MUZZLE && tIn > 0.0) {
+                                float along = clamp((MUZZLE - zIn) / pix + 0.5, 0.0, 1.0);
+                                float core = cover(RADIUS - abs(m), dm, slice, pix) * along;
+                                float rim = cover(RADIUS + ink - abs(m), dm, slice, pix) * along;
+                                vec3 n = vec3(rot(normalize(o.xy + tIn * d.xy - c), -ang), 0.0);
+                                col = vec4(core * tube(n) + (rim - core) * uInkColor, rim);
+                                t = tIn;
+                            }
                         }
-                        vec3 col = s > 0.9 ? uDark : uLight;
-                        float alpha = s > 0.9 ? 0.9 : (s > 0.5 ? 0.8 : 0.4);
-                        gl_FragColor = vec4(col, uSpin * alpha);
+                        // Muzzle face, when the ray meets the barrel past its end
+                        if (zIn > MUZZLE && o.z > MUZZLE && d.z < 0.0) {
+                            float tc = (MUZZLE - o.z) / d.z;
+                            vec2 p = o.xy + tc * d.xy - c;
+                            float r = length(p), dr = dot(p, move) / max(r, 1e-5);
+                            float core = cover(RADIUS - r, dr, slice, pix);
+                            float rim = cover(RADIUS + ink - r, dr, slice, pix);
+                            float crown = cover(CROWN - r, dr, slice, pix), bore = cover(BORE - r, dr, slice, pix);
+                            vec3 face = toon(vec3(0.0, 0.0, 1.0), mix(mix(uAlbedo, uCrownColor, crown), uBoreColor, bore));
+                            col = vec4(core * face + (rim - core) * uInkColor, rim);
+                            t = tc;
+                        }
+                        return col.a > 0.0 ? t : 1e9;
+                    }
+
+                    void main() {
+                        float pix = length(fwidth(vPos)) * 0.7; // local units per pixel, near the barrels
+                        float ink = uInk * vDepth;
+                        vec3 dir = normalize(vPos - uCam);
+                        view = -dir;
+                        // Sample one barrel spacing at most: past that the view repeats, so whole laps of
+                        // the sweep weigh every instant equally and only the remainder adds a ripple
+                        float span = min(uSweep, SPACING), slice = span / float(SAMPLES);
+                        float laps = floor(uSweep / SPACING), rest = uSweep - laps * SPACING;
+                        vec3 sum = vec3(0.0);
+                        float alpha = 0.0, weights = 0.0;
+                        for (int j = 0; j < SAMPLES; j++) {
+                            float a = (float(j) + 0.5) * slice;
+                            float w = uSweep < SPACING ? 1.0 : laps + (a < rest ? 1.0 : 0.0);
+                            // Turning the ray forward is turning the barrels back to an earlier instant
+                            float ang = a + uPhase * SPACING;
+                            vec3 o = vec3(rot(uCam.xy, ang), uCam.z), d = vec3(rot(dir.xy, ang), dir.z);
+
+                            // Stop at the clamps and the gun block: those are drawn by their own meshes
+                            float stop = 1e9;
+                            if (d.z < 0.0) stop = (BACK_CLAMP_Z1 - o.z) / d.z;
+                            float lc = length(d.xy);
+                            if (lc > 1e-4) {
+                                vec2 dn = d.xy / lc;
+                                float m = dn.x * o.y - dn.y * o.x;
+                                float tIn = (-dot(o.xy, dn) - sqrt(max(CLAMP_R * CLAMP_R - m * m, 0.0))) / lc;
+                                float z = o.z + tIn * d.z;
+                                if (abs(m) < CLAMP_R && tIn > 0.0 && z > FRONT_CLAMP_Z0 && z < FRONT_CLAMP_Z1) stop = min(stop, tIn);
+                            }
+                            if (o.z > FRONT_CLAMP_Z1 && d.z < 0.0) {
+                                float tc = (FRONT_CLAMP_Z1 - o.z) / d.z;
+                                if (length(o.xy + tc * d.xy) < CLAMP_R) stop = min(stop, tc);
+                            }
+
+                            // Composite the barrels front to back
+                            float dist[6];
+                            vec4 layer[6];
+                            for (int b = 0; b < 6; b++) {
+                                vec2 c = RING * vec2(cos(float(b) * SPACING), sin(float(b) * SPACING));
+                                dist[b] = barrel(o, d, c, ang, slice, pix, ink, layer[b]);
+                            }
+                            vec4 acc = vec4(0.0);
+                            for (int k = 0; k < 6; k++) {
+                                int near = 0;
+                                for (int b = 1; b < 6; b++) if (dist[b] < dist[near]) near = b;
+                                if (dist[near] >= stop || acc.a > 0.995) break;
+                                acc += (1.0 - acc.a) * layer[near];
+                                dist[near] = 1e9;
+                            }
+                            sum += w * acc.rgb;
+                            alpha += w * acc.a;
+                            weights += w;
+                        }
+                        if (alpha <= 0.0) discard;
+                        gl_FragColor = vec4(sum / alpha, alpha / weights);
+                        #include <colorspace_fragment>
+                        #include <fog_fragment>
                     }`,
                 transparent: true,
-                depthWrite: false
+                depthWrite: false,
+                fog: true
             });
 
-            // Sleeve over the exposed length of the barrels (breech face to muzzle)
-            const shellGeo = new THREE.CylinderGeometry(0.3, 0.3, 1.95, 36, 1, true);
-            shellGeo.rotateX(Math.PI / 2);
-            const shell = new THREE.Mesh(shellGeo, mat);
-            shell.position.z = 2.53;
+            // Bounding cylinder over the exposed barrels, from the rear clamp to the muzzle face
+            const z0 = BARREL.clamps[0] + BARREL.clampHalf, z1 = BARREL.muzzle + 0.02;
+            const r = BARREL.ring + BARREL.radius + 0.04;
+            const geo = new THREE.CylinderGeometry(r, r, z1 - z0, 32);
+            geo.rotateX(Math.PI / 2).translate(0, 0, (z0 + z1) / 2);
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.visible = false;
 
-            const swirl = new THREE.Mesh(new THREE.RingGeometry(0.06, 0.32, 36), mat);
-            swirl.position.z = 3.52;
-
-            [shell, swirl].forEach(m => {
-                m.userData.noOutline = true;
-                m.visible = false;
-            });
-            return { shell, swirl, uniforms: mat.uniforms };
+            // Camera, sun and up direction in the barrels' frame, per camera (split screens render twice)
+            const toLocal = new THREE.Matrix4(), sunDir = new THREE.Vector3();
+            const u = mat.uniforms;
+            mesh.onBeforeRender = (r, s, cam) => {
+                toLocal.copy(mesh.matrixWorld).invert();
+                u.uCam.value.setFromMatrixPosition(cam.matrixWorld).applyMatrix4(toLocal);
+                sunDir.subVectors(sun.position, sun.target.position);
+                u.uSun.value.copy(sunDir).transformDirection(toLocal);
+                u.uUp.value.set(0, 1, 0).transformDirection(toLocal);
+                u.uInk.value = outlineMaterial.uniforms.thickness.value;
+            };
+            const outlines = tubes.map(t => t.children.find(c => c.userData.isOutline));
+            return { mesh, tubes, outlines, muzzles, uniforms: u };
         }
 
-        // The streaks jump by a golden-ratio fraction of their spacing each frame (scaled down in slow
-        // motion), so they land somewhere new every frame and the eye reads a spin too fast to follow
-        // instead of tracking a slow rotation
+        // Sweep grows with the square of spin speed, so spin-up first shows the barrels turning, then
+        // short smears, then the full blur. While blurred, the real barrels only cast the shadow.
         function setBarrelBlur(speed, simSteps) {
-            const amount = THREE.MathUtils.smoothstep(speed, 0.25, 0.9);
+            const sweep = BARREL_SHUTTER_SWEEP * speed * speed;
+            const blurred = sweep > 0.01;
             const u = barrelBlur.uniforms;
-            u.uSpin.value = amount;
-            u.uFill.value = 0.4 * THREE.MathUtils.smoothstep(speed, 0.7, 1.0);
-            u.uPhase.value = (u.uPhase.value + 0.618 * amount * Math.min(1, simSteps)) % 1;
-            barrelBlur.shell.visible = barrelBlur.swirl.visible = amount > 0.01;
+            u.uSweep.value = sweep;
+            // Near full speed the sweep isn't a whole number of barrel spacings, so a faint ripple is
+            // left; where the shutter opens is random each frame, so the ripple shimmers like video
+            const shimmer = THREE.MathUtils.smoothstep(speed, 0.6, 0.9);
+            if (simSteps > 0) u.uPhase.value = shimmer * Math.random();
+            barrelBlur.mesh.visible = blurred;
+            barrelBlur.muzzles.visible = !blurred;
+            u.uGlint.value = THREE.MathUtils.smoothstep(sweep, 0.3, 1.5);
+            barrelBlur.outlines.forEach(o => { o.visible = !blurred; });
+            const tubeMat = barrelBlur.tubes[0].material;
+            tubeMat.colorWrite = tubeMat.depthWrite = !blurred;
         }
 
         function createClouds() {
