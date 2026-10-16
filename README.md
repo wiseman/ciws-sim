@@ -19,7 +19,7 @@ A vibecoded web-based simulation of the Phalanx CIWS (Close-In Weapon System) de
 To deploy to caprover:
 
 ```sh
-tar cf deploy.tar captain-definition index.html
+tar cf deploy.tar captain-definition index.html sounds/*.mp3
 ```
 
 Then upload the tar file to the caprover instance.

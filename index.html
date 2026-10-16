@@ -652,6 +652,20 @@
         const NN_LR_START = 0.003;
         const NN_LR_MIN = 0.0002;
         const NN_LR_DECAY_STEPS = 3000;
+        // Anti-ship cruise missiles: appear over the horizon, drop to sea-skimming height and run
+        // in fast and flat, rising to the target's height only for the last stretch
+        const ASCM_SPEED_BASE = 2.6;          // units/step (~155 m/s)
+        const ASCM_SPAWN_DISTANCE = 1150;
+        const ASCM_CRUISE_Y = 1.8;            // ~3 m above the water
+        const ASCM_TERMINAL_RANGE = 45;       // where it climbs/dives to the target's height
+        const ASCM_DETECT_RANGE = 950;        // radar picks it up as it clears the horizon
+        const ASCM_HEALTH = 3;
+        const ASCM_DAMAGE = 35;               // integrity lost when one hits our ship
+        const ASCM_FIRST_WAVE = 3;            // wave 2 starts on the first frame, so this is ~17 s in
+        const ASCM_CHANCE = 0.2;
+        // Damaged friendlies break, list and settle over this many (sim) seconds, then go under
+        const WRECK_SINK_SECONDS = 95;
+        const WRECK_PLUNGE_SECONDS = 20;
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -677,6 +691,9 @@
         let turretYawRate = 0;
         let turretPitchRate = 0;
         let controllerMode = 'classic';
+        let wrecks = [];        // friendlies that have been hit: breaking up and sinking
+        let vlsLaunches = [];   // cosmetic VLS missiles in flight
+        let vlsCooldown = 30;   // sim seconds until the next unprompted launch
 
         // Time Control
         let timeScale = 1.0;
@@ -710,6 +727,28 @@
         const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, 4, 0);
         const AUDIBLE_FLOOR = 0.006; // ≈ -44 dB: one-shot parts quieter than this aren't played
         const MAX_ONE_SHOTS = 32;    // concurrent one-shot sounds; more are dropped
+        // US Navy general alarm: a 400 Hz triangle-wave "bong" that decays over 520 ms, repeated
+        // (on ship it runs ~15 s; ~100 per minute measured from a public-domain USS Nimitz recording).
+        // pitch (Hz), spacing, decay time constant and tone length (s), total length (s)
+        const GQ_ALARM = { pitch: 400, interval: 0.6, decay: 0.15, tone: 0.52, seconds: 5.4 };
+        // Callout pacing (s). cooldown: how soon it can go out again; lead: from the event to the
+        // voice (alarm: from the alarm's first bong; gq: from the end of the vampire callout)
+        const CIC_TIMING = {
+            vampire: { cooldown: 6, lead: 0.05 },
+            alarm: { cooldown: 40, lead: 1.5 },
+            gq: { cooldown: 180, lead: 0.5 },
+            splash: { cooldown: 8, lead: 0.3 },
+            'birds-away': { cooldown: 30, lead: 0.4 }
+        };
+        // The recorded "vampire" callout for a bearing (degrees): one every 30°, named by the
+        // three-digit bearing, e.g. vampire-030
+        const vampireCallout = deg => `vampire-${String((Math.round(deg / 30) * 30) % 360).padStart(3, '0')}`;
+        // Recorded voice callouts in sounds/: ElevenLabs text-to-speech (voices "Adam" for the CIC
+        // net, "Bill" for the 1MC), radio-processed by tools/make_cic_audio.py
+        const CIC_CALLOUTS = [
+            ...Array.from({ length: 12 }, (_, i) => vampireCallout(i * 30)),
+            'splash', 'birds-away', 'general-quarters'
+        ];
 
         // Small offline DSP toolkit for building buffers
         const DSP = {
@@ -772,6 +811,14 @@
                 for (let i = 0; i < data.length; i++) max = Math.max(max, Math.abs(data[i]));
                 if (max > 0) for (let i = 0; i < data.length; i++) data[i] *= peak / max;
             },
+            // Raised-cosine fade over the last `seconds`, so a tail that hasn't fully decayed
+            // doesn't end in a click
+            fadeOut(data, sr, seconds = 0.015) {
+                const start = data.length - Math.floor(sr * seconds);
+                for (let i = start; i < data.length; i++) {
+                    data[i] *= 0.5 + 0.5 * Math.cos(Math.PI * (i - start) / (data.length - start));
+                }
+            },
             // Unity gain up to `knee`, then a smooth bend that never exceeds ±1
             safetyCurve(knee, size = 2048) {
                 const curve = new Float32Array(size);
@@ -817,7 +864,8 @@
                 gun: { firing: false, shots: 0 },
                 drive: { spin: 0, freq: 0 },
                 traverse: { level: 0, freq: 0 },
-                threats: { drones: 0, mortars: 0, nearMisses: 0 },
+                threats: { drones: 0, mortars: 0, ascms: 0, nearMisses: 0 },
+                cic: { last: '-', loaded: 0 },
                 explosions: { lastKind: '-', lastDistance: 0 },
                 ambient: { sea: 0, wind: 0 }
             },
@@ -828,11 +876,31 @@
                 this.buildGraph(new AudioContext());
                 this.masterGain.gain.value = this.isMuted ? 0 : 1;
                 this.isInit = true;
+                this.loadCallouts();
+                // The VLS roar isn't needed until the first launch, 30+ s in; build it once things settle
+                const buildRoar = () => this.buildVLSRoar();
+                if (window.requestIdleCallback) requestIdleCallback(buildRoar, { timeout: 5000 });
+                else setTimeout(buildRoar, 1000);
                 console.log("Audio Initialized");
             },
 
-            // Builds the whole audio graph on a context. The game uses a live AudioContext;
-            // tools/audio_lab.py renders the same graph into an OfflineAudioContext.
+            // A private copy of the controller driving an offline context, for rendering the game's
+            // own sounds to a buffer (tools/audio_lab.py, tools/audio_stress.py)
+            makeOffline: async function (ctx, spatialMode = this.spatialMode) {
+                const A = Object.create(this);
+                Object.assign(A, {
+                    isMuted: false, isInit: true, spatialMode, slowPitch: 1, activeOneShots: 0,
+                    lastFlakTime: -Infinity, soundArrivals: [], threatVoices: new Map(), buffers: {},
+                    debugState: JSON.parse(JSON.stringify(this.debugState))
+                });
+                A.buildGraph(ctx);
+                A.buildVLSRoar();
+                await A.loadCallouts();
+                return A;
+            },
+
+            // Builds the whole audio graph on a context. The game uses a live AudioContext; the
+            // audio tools render the same graph into an OfflineAudioContext (see makeOffline).
             buildGraph: function (ctx) {
                 this.ctx = ctx;
 
@@ -880,6 +948,7 @@
                 this.buildGun();
                 this.buildMount();
                 this.buildAmbient();
+                this.buildCIC();
             },
 
             gain: function (value) {
@@ -908,6 +977,32 @@
                     o.start();
                     return o;
                 });
+            },
+
+            // A band of the shared noise loop at `level` into dest, started at a random point in
+            // the loop; returns the source and its band filter
+            noiseBand: function (frequency, q, level, dest) {
+                const src = this.loopSource(this.noiseLoop);
+                const filter = this.filter('bandpass', frequency, q);
+                const g = this.gain(level);
+                src.connect(filter);
+                filter.connect(g);
+                g.connect(dest);
+                src.start(0, Math.random() * (this.noiseLoop.duration - 0.1));
+                return { src, filter };
+            },
+
+            // Plays a buffer once at an audio-clock time, through its own gain into dest
+            playBuffer: function (buffer, when, level, dest, rate = 1) {
+                const src = this.ctx.createBufferSource();
+                src.buffer = buffer;
+                src.playbackRate.value = rate;
+                const g = this.gain(level);
+                src.connect(g);
+                g.connect(dest);
+                src.start(when);
+                src.onended = () => { src.disconnect(); g.disconnect(); };
+                return { src, g, end: when + buffer.duration };
             },
 
             // Moves a parameter smoothly, but only when its value really changes, so steady
@@ -1094,13 +1189,12 @@
                 const sideScale = sideEnergy > 0 ? midScale * Math.sqrt(midEnergy / sideEnergy) : 0;
                 const buf = this.ctx.createBuffer(2, len, sr);
                 const m = buf.getChannelData(0), sd = buf.getChannelData(1);
-                // Fade the last 15 ms so a tail that hasn't fully decayed doesn't end in a click
-                const fadeStart = len - Math.floor(sr * 0.015);
                 for (let i = 0; i < len; i++) {
-                    const fade = i < fadeStart ? 1 : 0.5 + 0.5 * Math.cos(Math.PI * (i - fadeStart) / (len - fadeStart));
-                    m[i] = mid[i] * midScale * fade;
-                    sd[i] = side[i] * sideScale * fade;
+                    m[i] = mid[i] * midScale;
+                    sd[i] = side[i] * sideScale;
                 }
+                DSP.fadeOut(m, sr);
+                DSP.fadeOut(sd, sr);
                 return buf;
             },
 
@@ -1237,6 +1331,59 @@
                         d[i] = bp(n) * env * 1.5 + lp(n) * env * 2;
                     }
                 }, 0.6));
+
+                // General alarm (GQ): a run of electronic "bongs", each a decaying triangle wave
+                // (odd harmonics). Mono; it plays inside the ship rather than in the scene.
+                const sr = this.ctx.sampleRate;
+                const bong = new Float32Array(Math.floor(GQ_ALARM.tone * sr));
+                const partials = [1, 3, 5, 7, 9].map((h, i) => [h, (i % 2 ? -1 : 1) / (h * h)]);
+                for (let i = 0; i < bong.length; i++) {
+                    const t = i / sr;
+                    const env = Math.min(1, t / 0.002) * Math.exp(-t / GQ_ALARM.decay) * Math.min(1, (GQ_ALARM.tone - t) / 0.01);
+                    let s = 0;
+                    for (let p = 0; p < partials.length; p++) s += Math.sin(2 * Math.PI * GQ_ALARM.pitch * partials[p][0] * t) * partials[p][1];
+                    bong[i] = s * env;
+                }
+                const alarm = this.ctx.createBuffer(1, Math.floor(sr * GQ_ALARM.seconds), sr);
+                const ad = alarm.getChannelData(0);
+                for (let k = 0; k * GQ_ALARM.interval < GQ_ALARM.seconds - GQ_ALARM.tone; k++) {
+                    ad.set(bong, Math.floor(k * GQ_ALARM.interval * sr));
+                }
+                DSP.normalize(ad, 0.9);
+                DSP.fadeOut(ad, sr);
+                B.alarm = alarm;
+            },
+
+            // VLS launch: ignition slam, then a crackling rocket roar that darkens and fades as
+            // the missile climbs away. Slow to synthesize and not needed until the first launch,
+            // so the live game builds it after start-up (see init).
+            buildVLSRoar: function () {
+                this.buffers.vlsRoar = Array.from({ length: 2 }, () => this.makeStereoBufferFrom(7, (d, sr) => {
+                    const slam = DSP.biquad('lowpass', 120, 0.9, sr);
+                    const crackHP = DSP.biquad('highpass', 1200, 0.7, sr);
+                    const roarBP = DSP.biquad('bandpass', 520, 0.45, sr);
+                    const rumbleLP = DSP.biquad('lowpass', 180, 0.7, sr);
+                    const crackleBP = DSP.biquad('bandpass', 2600, 1.2, sr);
+                    const brown = DSP.brown();
+                    const wander = DSP.wander(9, sr);
+                    let lp = 0;
+                    for (let i = 0; i < d.length; i++) {
+                        const t = i / sr;
+                        const n = Math.random() * 2 - 1;
+                        const burn = Math.min(1, t / 0.06) * (t < 1.2 ? 1 : Math.exp(-(t - 1.2) / 1.6));
+                        const crackle = Math.random() < 0.02 * burn ? (Math.random() * 2 - 1) * 5 : 0;
+                        const s = slam(n) * 7 * Math.min(1, t / 0.004) * Math.exp(-t / 0.12)
+                            + crackHP(n) * 1.6 * Math.exp(-t / 0.01)
+                            + roarBP(n) * 2.6 * burn * (0.75 + 0.25 * wander())
+                            + rumbleLP(brown()) * 4 * burn
+                            + crackleBP(crackle) * 0.9;
+                        // Receding: the treble goes first
+                        const cutoff = 7000 * Math.exp(-Math.max(0, t - 0.8) / 1.8) + 500;
+                        const a = Math.exp(-2 * Math.PI * cutoff / sr);
+                        lp = s * (1 - a) + lp * a;
+                        d[i] = Math.tanh(lp * 1.2);
+                    }
+                }));
             },
 
             buildGun: function () {
@@ -1346,6 +1493,93 @@
                 this.nextSwell = 0;
                 this.nextGust = 0;
                 this.nextSlap = 2;
+            },
+
+            // Inside the ship: the general alarm, the CIC net and the 1MC. Not positioned, and it
+            // skips the mix bus so ducking the battle under a callout leaves the voice alone.
+            buildCIC: function () {
+                this.cicBus = this.gain(0.8);
+                this.cicBus.connect(this.masterGain);
+                this.callouts = {};
+                this.cicBusyUntil = 0;
+                this.lastAt = {}; // CIC_TIMING key -> when it last went out
+            },
+
+            // Voice callouts are recorded assets (sounds/*.mp3, see tools/make_cic_audio.py);
+            // the game plays on silently without them
+            loadCallouts: async function () {
+                const ctx = this.ctx;
+                await Promise.all(CIC_CALLOUTS.map(async name => {
+                    try {
+                        const res = await fetch(`sounds/${name}.mp3`);
+                        if (!res.ok) throw new Error(res.status);
+                        this.callouts[name] = await ctx.decodeAudioData(await res.arrayBuffer());
+                        this.debugState.cic.loaded++;
+                    } catch (err) {
+                        console.info(`CIC callout ${name} unavailable`, err.message);
+                    }
+                }));
+            },
+
+            // Pull the battle down under a voice from `from` to `to`
+            duckFor: function (from, to) {
+                const g = this.mixBus.gain;
+                g.cancelScheduledValues(from);
+                g.setTargetAtTime(0.5, from, 0.04);
+                g.setTargetAtTime(1, to, 0.35);
+            },
+
+            // Plays a callout on the net when nothing else is being said; returns its end time
+            say: function (name, when) {
+                const buffer = this.callouts[name];
+                if (!buffer) return null;
+                const { end } = this.playBuffer(buffer, when, 1, this.cicBus);
+                this.duckFor(when, end);
+                this.cicBusyUntil = end;
+                this.debugState.cic.last = name;
+                return end;
+            },
+
+            // True if CIC_TIMING[key]'s cooldown has run out at time t, and restarts it
+            ready: function (key, t) {
+                if (t - (this.lastAt[key] ?? -Infinity) < CIC_TIMING[key].cooldown) return false;
+                this.lastAt[key] = t;
+                return true;
+            },
+
+            // A callout (a CIC_TIMING key) that goes out if the net is free and it hasn't lately
+            announce: function (name) {
+                if (!this.isInit || this.isMuted) return;
+                const t = this.ctx.currentTime;
+                if (t >= this.cicBusyUntil && this.ready(name, t)) this.say(name, t + CIC_TIMING[name].lead);
+            },
+
+            // New anti-ship missile on radar: the general alarm (if it hasn't sounded lately),
+            // "Vampire, vampire, vampire, bearing ...", and every few minutes the 1MC's
+            // "General quarters". `at` schedules it on the audio clock (default: now).
+            announceVampire: function (bearing, at) {
+                if (!this.isInit || this.isMuted) return;
+                const t = at ?? this.ctx.currentTime;
+                if (t < this.cicBusyUntil || !this.ready('vampire', t)) return;
+                let voiceAt = t + CIC_TIMING.vampire.lead;
+                if (this.ready('alarm', t)) {
+                    const alarm = this.playBuffer(this.buffers.alarm, t, 0.32, this.cicBus);
+                    voiceAt = t + CIC_TIMING.alarm.lead;
+                    // The alarm keeps ringing under the voice, quieter
+                    alarm.g.gain.setTargetAtTime(0.12, voiceAt - 0.05, 0.08);
+                }
+                const end = this.say(vampireCallout(bearing), voiceAt);
+                if (end !== null && this.ready('gq', t)) this.say('general-quarters', end + CIC_TIMING.gq.lead);
+            },
+
+            // `at` delays the launch itself, like playExplosion's; the speed-of-sound delay is added on top
+            playVLSLaunch: function (position, scale = 1, { at = 0 } = {}) {
+                if (!this.isInit || this.isMuted || this.activeOneShots >= MAX_ONE_SHOTS) return;
+                if (!this.buffers.vlsRoar) return; // still being built just after start-up
+                const delay = at + (position.distanceTo(camera.position) / SPEED_OF_SOUND) / timeScale;
+                this.playAt(pick(this.buffers.vlsRoar), position, {
+                    gain: 0.7 * scale, refDistance: 40, rate: 0.95 + Math.random() * 0.1, wet: 0.3, delay, spread: 0.45
+                });
             },
 
             toggleMute: function () {
@@ -1518,26 +1752,39 @@
 
             createThreatVoice: function (missile) {
                 const ctx = this.ctx;
+                const { type } = missile;
+                const spec = THREAT_TYPES[type].voice;
                 const out = this.gain(0);
                 const air = this.filter('lowpass', 2000);
-                const spatial = this.makeSpatializer(missile.isMortar ? 40 : 28);
+                const spatial = this.makeSpatializer(spec.refDistance);
                 out.connect(air);
                 air.connect(spatial.input);
                 spatial.output.connect(this.mixBus);
-                const voice = { out, air, spatial, oscs: [], isMortar: missile.isMortar };
+                // airMax: brightest the distance filter opens up to; level: its steady level (a
+                // mortar's varies); dopplerFilter: a noise band that follows the Doppler shift
+                // like the oscillators do
+                const voice = { out, air, spatial, oscs: [], type, airMax: spec.airMax, level: spec.level, dopplerFilter: null };
 
-                if (missile.isMortar) {
+                if (type === 'ascm') {
+                    // Anti-ship missile: a turbojet's screaming turbine whine over a tearing
+                    // exhaust roar and a low combustion rumble
+                    voice.base = 1700 + Math.random() * 300;
+                    const whine = [[1, 'sine', 0.3], [1.007, 'sine', 0.18], [2.01, 'sine', 0.07], [0.5, 'triangle', 0.08]];
+                    this.oscBank(whine.map(([mult, shape, g]) => [voice.base * mult, shape, g]), out)
+                        .forEach((osc, i) => voice.oscs.push({ osc, mult: whine[i][0] }));
+                    const rumble = this.filter('lowpass', 380);
+                    const [burner] = this.oscBank([[voice.base * 0.065, 'sawtooth', 0.35]], rumble);
+                    voice.oscs.push({ osc: burner, mult: 0.065 });
+                    rumble.connect(out);
+                    const roar = this.noiseBand(1100, 0.55, 0.75, out);
+                    voice.oscs.push({ osc: roar.src, isNoise: true });
+                    voice.dopplerFilter = { filter: roar.filter, base: 1100 };
+                } else if (type === 'mortar') {
                     // Incoming shell: a falling whistle over rushing air
                     voice.base = 1250 + Math.random() * 250;
                     const [whistle, whistle2] = this.oscBank([[voice.base, 'sine', 1], [voice.base * 1.004, 'triangle', 0.25]], out);
-                    const rush = this.loopSource(this.noiseLoop);
-                    const rushBP = this.filter('bandpass', 1800, 1.5);
-                    const rushG = this.gain(0.5);
-                    rush.connect(rushBP);
-                    rushBP.connect(rushG);
-                    rushG.connect(out);
-                    rush.start(0, Math.random() * (this.noiseLoop.duration - 0.1));
-                    voice.oscs.push({ osc: whistle, mult: 1 }, { osc: whistle2, mult: 1.004 }, { osc: rush, isNoise: true });
+                    const rush = this.noiseBand(1800, 1.5, 0.5, out);
+                    voice.oscs.push({ osc: whistle, mult: 1 }, { osc: whistle2, mult: 1.004 }, { osc: rush.src, isNoise: true });
                 } else {
                     // Delta-wing drone: a two-stroke engine buzz with a pusher prop
                     voice.base = 95 + Math.random() * 25;
@@ -1545,7 +1792,7 @@
                     shaper.curve = DSP.softClipCurve(3, 512);
                     const tone = this.filter('lowpass', 1800);
                     const engine = [[1, 'sawtooth', 0.6], [2.003, 'square', 0.25], [0.5, 'sawtooth', 0.3]];
-                    this.oscBank(engine.map(([mult, type, g]) => [voice.base * mult, type, g]), shaper)
+                    this.oscBank(engine.map(([mult, shape, g]) => [voice.base * mult, shape, g]), shaper)
                         .forEach((osc, i) => voice.oscs.push({ osc, mult: engine[i][0] }));
                     // Firing-stroke flutter: amplitude-modulate the engine at half its rate
                     const flutter = this.gain(0.75);
@@ -1566,7 +1813,7 @@
             },
 
             updateThreats: function (missileList) {
-                let drones = 0, mortars = 0;
+                const counts = { drone: 0, mortar: 0, ascm: 0 };
                 const listener = camera.position;
                 const toListener = this._toListener;
                 for (const m of missileList) {
@@ -1576,7 +1823,7 @@
                         this.threatVoices.set(m, voice);
                     }
                     voice.seenFrame = this.frameId;
-                    if (voice.isMortar) mortars++; else drones++;
+                    counts[voice.type]++;
                     const pos = m.mesh.position;
                     const distance = pos.distanceTo(listener);
                     // Doppler from the closing speed (velocity is per sim step)
@@ -1586,20 +1833,20 @@
                     const exaggerated = closing * SPATIAL_PROFILES[this.spatialMode].doppler;
                     const doppler = THREE.MathUtils.clamp(SPEED_OF_SOUND / Math.max(60, SPEED_OF_SOUND - exaggerated), 0.45, 2.4);
                     let freq = voice.base * doppler * this.slowPitch;
-                    let level;
-                    if (voice.isMortar) {
+                    let level = voice.level;
+                    if (voice.type === 'mortar') {
                         // Whistle only on the way down, falling in pitch as it drops
                         const falling = THREE.MathUtils.clamp(-m.velocity.y / 2.5, 0, 1);
                         freq *= 1 - 0.35 * falling;
                         level = 0.35 * falling;
-                    } else {
-                        level = 0.45;
                     }
                     for (const o of voice.oscs) {
                         if (!o.isNoise) this.setParam(o.osc.frequency, freq * o.mult, 0.05);
                     }
+                    const band = voice.dopplerFilter;
+                    if (band) this.setParam(band.filter.frequency, band.base * doppler * this.slowPitch, 0.05);
                     this.setParam(voice.out.gain, level, 0.1);
-                    this.setParam(voice.air.frequency, Math.min(2400, this.airCutoff(distance)), 0.1);
+                    this.setParam(voice.air.frequency, Math.min(voice.airMax, this.airCutoff(distance)), 0.1);
                     this.updateSpatializer(voice.spatial, pos, 0.02);
                 }
                 for (const [m, voice] of this.threatVoices) {
@@ -1608,8 +1855,7 @@
                         this.threatVoices.delete(m);
                     }
                 }
-                this.debugState.threats.drones = drones;
-                this.debugState.threats.mortars = mortars;
+                Object.assign(this.debugState.threats, counts);
             },
 
             updateAmbient: function () {
@@ -1751,7 +1997,12 @@ Traverse
 Threats
   drones: ${s.threats.drones}
   mortars: ${s.threats.mortars}
+  anti-ship missiles: ${s.threats.ascms}
   near-miss whizzes: ${s.threats.nearMisses}
+
+CIC
+  callouts loaded: ${s.cic.loaded}/${CIC_CALLOUTS.length}
+  last: ${s.cic.last}
 
 Explosions
   in flight (sound): ${A.soundArrivals.length}
@@ -2829,6 +3080,7 @@ Ambient
             hatch.position.set(0, 0.175, 11);
             hatch.receiveShadow = true;
             ship.add(hatch);
+            createShipVLS(ship);
 
             // Low deckhouse and mast aft
             const houseMat = toonMat(0xd9dad3);
@@ -2850,6 +3102,44 @@ Ambient
 
             addOutlines(ship);
             scene.add(ship);
+        }
+
+        // An 8-cell Mk 41 module set into the deck: two rows of four cell hatches either side of
+        // the long uptake hatch the launch exhaust vents through. Lids hinge on their outboard edge.
+        let shipVLS = { cells: [] };
+        const VLS_PLATE_MAT = toonMat(0x5d656b); // launcher plating, on our ship and the friendlies
+        function createShipVLS(ship) {
+            const z0 = 19;
+            const plate = new THREE.Mesh(new THREE.BoxGeometry(3.8, 0.12, 6.8), VLS_PLATE_MAT);
+            plate.position.set(0, 0.06, z0);
+            plate.receiveShadow = true;
+            ship.add(plate);
+            const uptake = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.06, 6.3), toonMat(0x343a3f));
+            uptake.position.set(0, 0.14, z0);
+            uptake.userData.noOutline = true;
+            ship.add(uptake);
+            const lidMat = toonMat(0x8b9397);
+            const wellMat = toonMat(0x1d2124);
+            [-1, 1].forEach(sideX => {
+                for (let row = 0; row < 4; row++) {
+                    const z = z0 - 2.4 + row * 1.6;
+                    const x = sideX * 1.05;
+                    // Dark well that shows when the lid is up
+                    const well = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.02, 1.35), wellMat);
+                    well.position.set(x, 0.125, z);
+                    well.userData.noOutline = true;
+                    ship.add(well);
+                    const hinge = new THREE.Group();
+                    hinge.position.set(sideX * 1.68, 0.15, z);
+                    const lid = new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.08, 1.4), lidMat);
+                    lid.position.set(-sideX * 0.63, 0.04, 0);
+                    lid.castShadow = true;
+                    hinge.add(lid);
+                    ship.add(hinge);
+                    // side: lid rotation direction that swings it up and outboard
+                    shipVLS.cells.push({ lid: hinge, side: sideX, pos: new THREE.Vector3(x, 0.15, z), open: 0, amount: 0 });
+                }
+            });
         }
 
         function init() {
@@ -2942,7 +3232,43 @@ Ambient
             document.addEventListener('keydown', startAudio);
 
             // Handle for console / screenshot tooling
-            window.__ciws = { scene, camera, controls, renderer, createExplosion };
+            window.__ciws = {
+                scene, camera, controls, renderer, createExplosion,
+                // Test hooks for the tools: spawn a given threat, wreck a friendly, fire a VLS round
+                debug: {
+                    get missiles() { return missiles; },
+                    get friendlies() { return friendlies; },
+                    get wrecks() { return wrecks; },
+                    get vlsLaunches() { return vlsLaunches; },
+                    get smokePuffs() { return smokePuffs.length; },
+                    get stats() { return { score, health, wave, engagementStats }; },
+                    holdSpawns() { spawnCooldown = Infinity; },
+                    clearThreats() {
+                        missiles.forEach(disposeThreat);
+                        missiles.length = 0;
+                    },
+                    setWave(n) {
+                        wave = n;
+                        missileSpawnRate = Math.max(20, 120 - (wave * 5)); // as the wave ramp would leave it
+                        difficultyCooldown = Infinity;
+                        document.getElementById('wave-count').innerText = wave;
+                    },
+                    setTimeScale(k) { timeScale = k; }, // for fast-forwarding long effects in tests
+                    // targetIndex: a friendly to aim at (default: our ship)
+                    spawnAntiShipMissile(targetIndex = null) {
+                        return spawnAntiShipMissile(targetInfoFor(targetIndex === null ? null : friendlies[targetIndex]));
+                    },
+                    wreckFriendly(index) {
+                        const f = friendlies[index];
+                        if (!f.alive) return;
+                        createExplosion(f.position, 'impact');
+                        destroyFriendly(f);
+                    },
+                    launchVLS(launcher = 'ship', bearing = null) {
+                        return launchVLS(launcher === 'ship' ? 'ship' : friendlies[launcher], bearing);
+                    }
+                }
+            };
             window.__ciwsAudio = AudioController;
             window.__ciwsML = {
                 NeuralController, computeAimSolution, computeSightAngles, makeControllerInputs,
@@ -3272,7 +3598,87 @@ Ambient
             mast.position.set(0, waterY + 3.0, 1.6);
             boat.add(mast);
 
+            // Small two-cell launcher on the foredeck; cosmetic VLS launches leave from its 'vls' anchor
+            const launcher = new THREE.Mesh(BOAT_LAUNCHER_GEO, VLS_PLATE_MAT);
+            launcher.position.set(0, waterY + 0.7, -2.2);
+            boat.add(launcher);
+            const vls = new THREE.Object3D();
+            vls.name = 'vls';
+            vls.position.y = 0.04;
+            launcher.add(vls);
+
             return addOutlines(boat);
+        }
+        const BOAT_LAUNCHER_GEO = new THREE.BoxGeometry(1.0, 0.12, 1.3);
+
+        // The broken boat swapped in when a friendly is hit: the hull snapped in two with jagged
+        // ends (each half on a hinge at the break so it can tip up), a scorched deck, the cabin
+        // knocked askew and the mast down. Same frame as the intact boat. Built once and cloned.
+        const WRECK_BOW_OUTLINE = [[0, -5], [1.4, -2.6], [1.43, -0.45], [0.9, -0.8], [0.45, -0.3], [-0.1, -0.85],
+            [-0.6, -0.35], [-1.0, -0.9], [-1.43, -0.5], [-1.4, -2.6]];
+        const WRECK_STERN_OUTLINE = [[1.43, -0.1], [1.5, 3.6], [-1.5, 3.6], [-1.43, -0.15], [-0.95, -0.55],
+            [-0.55, -0.05], [-0.05, -0.5], [0.5, 0.05], [0.95, -0.4]];
+        const createFriendlyWreck = cachedTemplate(() => addOutlines(buildFriendlyWreck()));
+
+        function buildFriendlyWreck() {
+            const wreck = new THREE.Group();
+            const waterY = WATER_LEVEL - 0.75;
+            const deckY = waterY + 0.7;
+            const breakZ = -0.45;
+            const deckMat = toonMat(0x4a4440);   // charred
+            const sideMat = toonMat(0xb3aea4);   // smoke-stained white
+            const scorchMat = toonMat(0x231f1d);
+
+            // Hinges at deck level on the break, so the keel opens underwater as the ends lift
+            const makeHalf = (name, outline) => {
+                const hinge = new THREE.Group();
+                hinge.name = name;
+                hinge.position.set(0, deckY, breakZ);
+                const hull = new THREE.Mesh(extrudeOutline(outline, waterY - 0.6, deckY), [deckMat, sideMat]);
+                hull.position.set(0, -deckY, -breakZ);
+                hull.castShadow = true;
+                hinge.add(hull);
+                wreck.add(hinge);
+                return hinge;
+            };
+            const bow = makeHalf('wreck-bow', WRECK_BOW_OUTLINE);
+            const stern = makeHalf('wreck-stern', WRECK_STERN_OUTLINE);
+            // Positions below are boat-local; children of a half are offset by its hinge
+            const place = (half, mesh, x, y, z) => {
+                mesh.position.set(x, y - deckY, z - breakZ);
+                half.add(mesh);
+                return mesh;
+            };
+
+            // Burn scars down both sides at the break and across the deck
+            [-1, 1].forEach(side => {
+                [[bow, -1.1, 1.2], [stern, 0.5, 1.1]].forEach(([half, z, len]) => {
+                    const scar = place(half, new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.9, len), scorchMat), side * 1.47, deckY - 0.45, z);
+                    scar.userData.noOutline = true;
+                });
+            });
+            const deckScar = place(bow, new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.03, 1.1), scorchMat), 0, deckY + 0.02, -1.2);
+            deckScar.userData.noOutline = true;
+            const launcher = place(bow, new THREE.Mesh(BOAT_LAUNCHER_GEO, toonMat(0x3f4448)), 0, deckY + 0.02, -2.4);
+            launcher.rotation.y = 0.15;
+
+            // Cabin shoved aft and tilted, roof half torn off, windows blown out
+            const cabin = place(stern, new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.2, 2.4), toonMat(0x9d988e)), 0.1, deckY + 0.6, 1.25);
+            cabin.rotation.set(-0.12, 0.1, 0.14);
+            const roof = place(stern, new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.22, 2.0), toonMat(0x1b5480)), 0.4, deckY + 1.35, 1.5);
+            roof.rotation.set(-0.2, 0.3, 0.45);
+            const holes = place(stern, new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.55, 0.1), scorchMat), 0.06, deckY + 0.75, 0.05);
+            holes.rotation.set(-0.12, 0.1, 0.14);
+            holes.userData.noOutline = true;
+            const mast = place(stern, new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.8, 10), toonMat(0x3b4045)), -0.9, deckY + 0.35, 2.4);
+            mast.rotation.set(0.3, 0, 1.3);
+
+            // Where the fire (and the smoke column) comes from: the break, just above the deck
+            const fire = new THREE.Object3D();
+            fire.name = 'wreck-fire';
+            fire.position.set(0, deckY + 0.4, breakZ);
+            wreck.add(fire);
+            return wreck;
         }
 
         function createFriendlies() {
@@ -3294,6 +3700,7 @@ Ambient
                     id: i,
                     mesh,
                     position: mesh.position.clone(),
+                    vls: mesh.getObjectByName('vls'),
                     alive: true
                 });
             }
@@ -3304,25 +3711,25 @@ Ambient
         function pickTargetForIncoming() {
             const aliveFriendlies = friendlies.filter(f => f.alive);
             const targetCiws = Math.random() < 0.5 || aliveFriendlies.length === 0;
-
-            if (targetCiws) {
-                return { type: 'ciws', position: new THREE.Vector3(0, 2, 0) };
-            }
-
-            const choice = aliveFriendlies[Math.floor(Math.random() * aliveFriendlies.length)];
-            return {
-                type: 'friendly',
-                position: choice.position.clone(),
-                friendlyId: choice.id
-            };
+            return targetInfoFor(targetCiws ? null : aliveFriendlies[Math.floor(Math.random() * aliveFriendlies.length)]);
         }
 
-        let droneTemplate = null;
-        function createDeltaWingDrone() {
-            // Build once; spawns share geometry and materials
-            if (!droneTemplate) droneTemplate = addOutlines(buildDeltaWingDrone());
-            return droneTemplate.clone();
+        // What an incoming threat flies at: friendly `f`, or our ship when f is null
+        function targetInfoFor(f) {
+            if (!f) return { type: 'ciws', position: new THREE.Vector3(0, 2, 0) };
+            return { type: 'friendly', position: f.position.clone(), friendlyId: f.id };
         }
+
+        // Models are built once on first use; later spawns are clones sharing geometry and materials
+        function cachedTemplate(build) {
+            let template = null;
+            return () => (template ??= build()).clone();
+        }
+
+        // Turns a geometry built along y to lie along +z (nose forward)
+        const alongZ = geo => geo.rotateX(Math.PI / 2);
+
+        const createDeltaWingDrone = cachedTemplate(() => addOutlines(buildDeltaWingDrone()));
 
         function buildDeltaWingDrone() {
             const drone = new THREE.Group();
@@ -3351,16 +3758,12 @@ Ambient
             wing.receiveShadow = true;
             drone.add(wing);
 
-            const fuselageGeo = new THREE.CapsuleGeometry(0.45, 3.6, 5, 12);
-            fuselageGeo.rotateX(Math.PI / 2);
-            const fuselage = new THREE.Mesh(fuselageGeo, bodyMat);
+            const fuselage = new THREE.Mesh(alongZ(new THREE.CapsuleGeometry(0.45, 3.6, 5, 12)), bodyMat);
             fuselage.position.set(0, 0.12, 1.45);
             fuselage.castShadow = true;
             drone.add(fuselage);
 
-            const noseBandGeo = new THREE.CylinderGeometry(0.47, 0.47, 0.16, 14);
-            noseBandGeo.rotateX(Math.PI / 2);
-            const noseBand = new THREE.Mesh(noseBandGeo, detailMat);
+            const noseBand = new THREE.Mesh(alongZ(new THREE.CylinderGeometry(0.47, 0.47, 0.16, 14)), detailMat);
             noseBand.userData.noOutline = true;
             noseBand.position.set(0, 0.15, 3.15);
             drone.add(noseBand);
@@ -3411,23 +3814,253 @@ Ambient
             return drone;
         }
 
-        let mortarTemplate = null;
-        function createMortarShell() {
-            if (!mortarTemplate) {
-                const geo = new THREE.CylinderGeometry(0.4, 0.8, 6, 24);
-                geo.rotateX(Math.PI / 2); // Point forward
-                mortarTemplate = new THREE.Mesh(geo, toonMat(0x8a5a2b));
-                addOutlines(mortarTemplate);
+        const createMortarShell = cachedTemplate(() => {
+            const shell = addOutlines(new THREE.Mesh(alongZ(new THREE.CylinderGeometry(0.4, 0.8, 6, 24)), toonMat(0x8a5a2b)));
+            const glow = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffb347 }));
+            glow.position.z = -1.5;
+            shell.add(glow);
+            return shell;
+        });
 
-                const glow = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffb347 }));
-                glow.position.z = -1.5;
-                mortarTemplate.add(glow);
+        // Exhaust flame: a hard-edged orange cone around a pale core, pointing back along -z from
+        // the origin. Flickered by scaling the group.
+        function makeExhaustFlame(length, radius) {
+            const flame = new THREE.Group();
+            flame.name = 'flame';
+            [[radius, length, 0xff8a24], [radius * 0.55, length * 0.6, 0xfff1a8]].forEach(([r, l, color]) => {
+                const geo = new THREE.ConeGeometry(r, l, 10, 1, true);
+                geo.rotateX(-Math.PI / 2);
+                geo.translate(0, 0, -l / 2);
+                const cone = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide }));
+                cone.userData.noOutline = true;
+                flame.add(cone);
+            });
+            return flame;
+        }
+
+        // Per-frame flicker: jitters the flame's width, and its length around lengthScale
+        function flickerFlame(flame, lengthScale = 1) {
+            const w = 0.8 + Math.random() * 0.4;
+            flame.scale.set(w, w, lengthScale * (0.7 + Math.random() * 0.6));
+        }
+
+        // A missile's round body along +z with its nose cone, and a painted band (no ink line)
+        // standing just proud of the body
+        function addMissileBody(missile, { radius, length, sides, noseLength, bandZ, bandLength }, [bodyMat, noseMat, bandMat]) {
+            missile.add(new THREE.Mesh(alongZ(new THREE.CylinderGeometry(radius, radius, length, sides)), bodyMat));
+            const nose = new THREE.Mesh(alongZ(new THREE.ConeGeometry(radius, noseLength, sides)), noseMat);
+            nose.position.z = (length + noseLength) / 2;
+            missile.add(nose);
+            const band = new THREE.Mesh(alongZ(new THREE.CylinderGeometry(radius + 0.01, radius + 0.01, bandLength, sides)), bandMat);
+            band.position.z = bandZ;
+            band.userData.noOutline = true;
+            missile.add(band);
+        }
+
+        // Anti-ship cruise missile: slim slate-grey body, dark radome, a red warning band, cruciform
+        // wings mid-body and tail fins, a belly intake, and a turbojet flame at the tail. Nose is +z.
+        const createAntiShipMissile = cachedTemplate(() => {
+            const missile = new THREE.Group();
+            const bodyMat = toonMat(0x6e7a81);
+            const darkMat = toonMat(0x2a2d30);
+            addMissileBody(missile, { radius: 0.3, length: 4.4, sides: 16, noseLength: 1.1, bandZ: 1.6, bandLength: 0.3 },
+                [bodyMat, darkMat, toonMat(0xc8452e)]);
+            const intake = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.24, 1.2), darkMat);
+            intake.position.set(0, -0.3, -0.9);
+            missile.add(intake);
+            // Swept wings mid-body and tail fins, both in an X
+            const finShape = (root, tip, span, sweep) => {
+                const sh = new THREE.Shape();
+                sh.moveTo(0, 0);
+                sh.lineTo(span, -sweep);
+                sh.lineTo(span, -sweep - tip);
+                sh.lineTo(0, -root);
+                sh.closePath();
+                const g = new THREE.ExtrudeGeometry(sh, { depth: 0.06, bevelEnabled: false });
+                g.translate(0, 0, -0.03);
+                return alongZ(g); // span along +x, swept back along -z
+            };
+            const wingGeo = finShape(1.1, 0.4, 0.95, 0.55);
+            const tailGeo = finShape(0.7, 0.3, 0.6, 0.35);
+            for (let k = 0; k < 4; k++) {
+                const roll = Math.PI / 4 + k * Math.PI / 2;
+                [[wingGeo, 0.5], [tailGeo, -1.6]].forEach(([g, z]) => {
+                    const fin = new THREE.Mesh(g, bodyMat);
+                    const holder = new THREE.Group();
+                    holder.rotation.z = roll;
+                    fin.position.set(0.25, 0, z);
+                    holder.add(fin);
+                    missile.add(holder);
+                });
             }
-            return mortarTemplate.clone();
+            const nozzle = new THREE.Mesh(alongZ(new THREE.CylinderGeometry(0.22, 0.27, 0.3, 14, 1, true)), darkMat);
+            nozzle.position.z = -2.3;
+            missile.add(nozzle);
+            missile.scale.setScalar(1.15);
+            addOutlines(missile);
+            const flame = makeExhaustFlame(1.6, 0.2);
+            flame.position.z = -2.45;
+            missile.add(flame);
+            return missile;
+        });
+
+        // Standard-missile-like round for the cosmetic VLS launches: white body, grey radome, black
+        // band, small tail fins and long strakes, and a booster flame. Nose is +z.
+        const createVLSMissile = cachedTemplate(() => {
+            const missile = new THREE.Group();
+            const whiteMat = toonMat(0xeceae3);
+            const darkMat = toonMat(0x2b2f33);
+            addMissileBody(missile, { radius: 0.2, length: 4.0, sides: 14, noseLength: 0.9, bandZ: 1.75, bandLength: 0.18 },
+                [whiteMat, toonMat(0xa9adad), darkMat]);
+            for (let k = 0; k < 4; k++) {
+                const holder = new THREE.Group();
+                holder.rotation.z = k * Math.PI / 2;
+                const fin = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, 0.5), darkMat);
+                fin.position.set(0.38, 0, -1.7);
+                const strake = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.04, 2.0), whiteMat);
+                strake.position.set(0.27, 0, 0.1);
+                holder.add(fin, strake);
+                missile.add(holder);
+            }
+            addOutlines(missile);
+            const flame = makeExhaustFlame(3.2, 0.32);
+            flame.position.z = -2.0;
+            missile.add(flame);
+            return missile;
+        });
+
+        // Radar blips, added to the current path (each pass fills one colour)
+        const RADAR_DOT = (ctx, x, y) => {
+            ctx.moveTo(x + 2, y);
+            ctx.arc(x, y, 2, 0, Math.PI * 2);
+        };
+        const RADAR_DIAMOND = (ctx, x, y) => {
+            ctx.moveTo(x, y - 3.5);
+            ctx.lineTo(x + 3.5, y);
+            ctx.lineTo(x, y + 3.5);
+            ctx.lineTo(x - 3.5, y);
+        };
+
+        // Per-type threat data. health: hits to kill; damage: integrity lost when one reaches our
+        // ship; voice: its spatializer's reference distance, the brightest its distance filter
+        // opens up to and its level (a mortar's varies in flight); radar: blip colour and shape
+        // (vampires: a larger amber diamond); steer: points (and for sea-skimmers, flies) it each
+        // step; killCallout: what the CIC net calls when one is shot down
+        const THREAT_TYPES = {
+            drone: {
+                health: 2, damage: 25,
+                voice: { refDistance: 28, airMax: 2400, level: 0.45 },
+                radar: { color: '#f00', blip: RADAR_DOT },
+                steer: m => m.mesh.lookAt(m.targetInfo.position) // at its assigned target
+            },
+            mortar: {
+                health: 2, damage: 25,
+                voice: { refDistance: 40, airMax: 2400 },
+                radar: { color: '#f00', blip: RADAR_DOT },
+                steer: m => m.mesh.lookAt(m.mesh.position.clone().add(m.velocity.clone().normalize())) // along its arc
+            },
+            ascm: {
+                health: ASCM_HEALTH, damage: ASCM_DAMAGE,
+                voice: { refDistance: 36, airMax: 7000, level: 0.32 },
+                radar: { color: '#ffb000', blip: RADAR_DIAMOND },
+                steer: updateSeaSkimmer,
+                killCallout: 'splash'
+            }
+        };
+
+        // type: a THREAT_TYPES key
+        function addThreat(mesh, velocity, type, targetInfo) {
+            const threat = {
+                mesh,
+                velocity,
+                health: THREAT_TYPES[type].health,
+                type,
+                trackedPosition: mesh.position.clone(),
+                trackedVelocity: velocity.clone(),
+                radarTrack: {
+                    posError: new THREE.Vector3(),
+                    posTarget: new THREE.Vector3(),
+                    velError: new THREE.Vector3(),
+                    velTarget: new THREE.Vector3(),
+                    retuneIn: 0
+                },
+                targetInfo,
+                eta: null,
+                prop: mesh.getObjectByName('prop') || null
+            };
+            missiles.push(threat);
+            return threat;
+        }
+
+        // Removes a threat from the scene (the caller takes it out of `missiles`)
+        function disposeThreat(m) {
+            scene.remove(m.mesh);
+            if (m.trail) m.trail.head = null; // its exhaust trail lingers and fades
+        }
+
+        // Anti-ship missile, appearing at the radar horizon a little above the sea and descending to
+        // sea-skimming height as it runs in
+        function spawnAntiShipMissile(targetInfo) {
+            const angle = Math.random() * Math.PI * 2;
+            const mesh = createAntiShipMissile();
+            mesh.position.set(Math.cos(angle) * ASCM_SPAWN_DISTANCE, rand(12, 20), Math.sin(angle) * ASCM_SPAWN_DISTANCE);
+            scene.add(mesh);
+            const m = addThreat(mesh, new THREE.Vector3(), 'ascm', targetInfo);
+            m.speed = ASCM_SPEED_BASE + wave * 0.03;
+            m.flame = mesh.getObjectByName('flame');
+            m.exhaustPos = new THREE.Vector3();
+            m.detected = false;
+            steerSeaSkimmer(m);
+            m.trackedVelocity.copy(m.velocity);
+            m.trail = spawnTrail(m.exhaustPos, { width: 0.32, life: 1.5, spacing: 2.4, smoke: 0xdedad2, long: true, drift: 0.3, hot: 0.15 });
+            return m;
+        }
+
+        // Heads straight for the target, holding sea-skimming height until the last stretch, then
+        // levels at the target's height. Changes direction gradually, so the radar track can follow.
+        function steerSeaSkimmer(m) {
+            const pos = m.mesh.position, target = m.targetInfo.position;
+            const dx = target.x - pos.x, dz = target.z - pos.z;
+            const horizontal = Math.max(1e-3, Math.hypot(dx, dz));
+            const k = Math.min(1, horizontal / ASCM_TERMINAL_RANGE);
+            const desiredY = target.y + (ASCM_CRUISE_Y - target.y) * k;
+            const vy = THREE.MathUtils.clamp((desiredY - pos.y) * 0.05, -0.3 * m.speed, 0.3 * m.speed);
+            const h = Math.sqrt(m.speed * m.speed - vy * vy);
+            m.velocity.set(dx / horizontal * h, vy, dz / horizontal * h);
+            const dir = _tmpDir.copy(m.velocity).normalize();
+            m.mesh.lookAt(_ascmLook.copy(pos).add(dir));
+            m.exhaustPos.copy(pos).addScaledVector(dir, -2.9);
+        }
+        const _ascmLook = new THREE.Vector3();
+
+        // Each step: fly the sea-skimming path, flicker the turbojet flame, and raise the alarm
+        // once it clears the radar horizon
+        function updateSeaSkimmer(m) {
+            steerSeaSkimmer(m);
+            flickerFlame(m.flame);
+            if (!m.detected && m.mesh.position.length() < ASCM_DETECT_RANGE) {
+                m.detected = true;
+                onVampireDetected(m);
+            }
+        }
+
+        // Bearing of a world position from our ship, degrees clockwise from the bow (-z)
+        function bearingFromShip(position) {
+            return (THREE.MathUtils.radToDeg(Math.atan2(position.x, -position.z)) + 360) % 360;
+        }
+
+        function onVampireDetected(m) {
+            const bearing = bearingFromShip(m.mesh.position);
+            AudioController.announceVampire(bearing);
+            requestVLSResponse(bearing);
         }
 
         function spawnMissile() {
             const targetInfo = pickTargetForIncoming();
+            if (wave >= ASCM_FIRST_WAVE && Math.random() < ASCM_CHANCE) {
+                spawnAntiShipMissile(targetInfo);
+                return;
+            }
             const targetPos = targetInfo.position.clone();
 
             // Spawn randomly in the sky
@@ -3502,25 +4135,7 @@ Ambient
             }
 
             scene.add(missile);
-
-            missiles.push({
-                mesh: missile,
-                velocity: velocity,
-                health: 2,
-                isMortar: isMortar,
-                trackedPosition: missile.position.clone(),
-                trackedVelocity: velocity.clone(),
-                radarTrack: {
-                    posError: new THREE.Vector3(),
-                    posTarget: new THREE.Vector3(),
-                    velError: new THREE.Vector3(),
-                    velTarget: new THREE.Vector3(),
-                    retuneIn: 0
-                },
-                targetInfo,
-                eta: null,
-                prop: missile.getObjectByName('prop') || null
-            });
+            addThreat(missile, velocity, isMortar ? 'mortar' : 'drone', targetInfo);
         }
 
         // --- Explosion FX ---
@@ -3529,6 +4144,7 @@ Ambient
         // Everything runs on sim time, so slow motion slows the explosions down too.
         const SUN_DIRECTION = new THREE.Vector3(-40, 90, 55).normalize();
         const FX_GRAVITY = 22; // units/s², visual only
+        const FX_WIND = new THREE.Vector3(2.4, 0, -1.1); // units/s; drifts lingering smoke
 
         // Ashima simplex noise (MIT)
         const NOISE_GLSL = `
@@ -3592,7 +4208,8 @@ Ambient
             uSunDir: { value: SUN_DIRECTION }
         };
 
-        // Fire/smoke puff: a noise-displaced sphere shaded in hard heat bands
+        // Fire/smoke puff: a noise-displaced sphere shaded in hard heat bands. With INSTANCED the
+        // per-puff values come from instance attributes instead of uniforms (the smoke columns)
         const PUFF_VERTEX = `
             uniform float uSeed;
             uniform float uDisplace;
@@ -3601,14 +4218,32 @@ Ambient
             varying vec3 vObj;
             varying vec3 vWorldNormal;
             varying vec3 vWorldPos;
+            #ifdef INSTANCED
+                attribute vec4 aPuff; // seed, boil, heat, dissolve
+                attribute vec3 aSmoke;
+                varying vec4 vPuff;
+                varying vec3 vSmoke;
+                #define PUFF_SEED aPuff.x
+                #define PUFF_BOIL aPuff.y
+            #else
+                #define PUFF_SEED uSeed
+                #define PUFF_BOIL uBoil
+            #endif
             #include <fog_pars_vertex>
             ${NOISE_GLSL}
             vec3 puffShape(vec3 dir) {
-                float n = snoise(dir * 1.7 + vec3(uSeed * 7.13, uSeed * 3.71 + uBoil, uSeed * 5.29));
-                float n2 = snoise(dir * 3.9 + vec3(uSeed * 1.9 - uBoil * 0.6, uSeed * 8.3, uBoil * 0.4));
+                float n = snoise(dir * 1.7 + vec3(PUFF_SEED * 7.13, PUFF_SEED * 3.71 + PUFF_BOIL, PUFF_SEED * 5.29));
+                float n2 = snoise(dir * 3.9 + vec3(PUFF_SEED * 1.9 - PUFF_BOIL * 0.6, PUFF_SEED * 8.3, PUFF_BOIL * 0.4));
                 return dir * (1.0 + uDisplace * (n * 0.7 + n2 * 0.3));
             }
             void main() {
+                #ifdef INSTANCED
+                    mat4 model = modelMatrix * instanceMatrix;
+                    vPuff = aPuff;
+                    vSmoke = aSmoke;
+                #else
+                    mat4 model = modelMatrix;
+                #endif
                 vec3 dir = normalize(position);
                 vec3 p = puffShape(dir);
                 // Surface normal from finite differences around the sphere
@@ -3619,8 +4254,8 @@ Ambient
                 vec3 n = normalize(cross(pa - p, pb - p));
                 if (dot(n, dir) < 0.0) n = -n;
                 vObj = dir;
-                vWorldNormal = normalize(mat3(modelMatrix) * n);
-                vec4 world = modelMatrix * vec4(p, 1.0);
+                vWorldNormal = normalize(mat3(model) * n);
+                vec4 world = model * vec4(p, 1.0);
                 vWorldPos = world.xyz;
                 vec4 mvPosition = viewMatrix * world;
                 #ifdef OUTLINE
@@ -3640,27 +4275,40 @@ Ambient
             varying vec3 vObj;
             varying vec3 vWorldNormal;
             varying vec3 vWorldPos;
+            #ifdef INSTANCED
+                varying vec4 vPuff;
+                varying vec3 vSmoke;
+                #define PUFF_SEED vPuff.x
+                #define PUFF_HEAT vPuff.z
+                #define PUFF_DISSOLVE vPuff.w
+                #define PUFF_SMOKE vSmoke
+            #else
+                #define PUFF_SEED uSeed
+                #define PUFF_HEAT uHeat
+                #define PUFF_DISSOLVE uDissolve
+                #define PUFF_SMOKE uSmoke
+            #endif
             #include <fog_pars_fragment>
             ${NOISE_GLSL}
             void main() {
-                float grain = snoise(vObj * 2.6 + uSeed * 13.7);
-                if (grain * 0.5 + 0.5 < uDissolve) discard; // crisp break-up instead of fading
+                float grain = snoise(vObj * 2.6 + PUFF_SEED * 13.7);
+                if (grain * 0.5 + 0.5 < PUFF_DISSOLVE) discard; // crisp break-up instead of fading
                 vec3 N = normalize(vWorldNormal);
                 float light = dot(N, uSunDir);
                 #ifdef OUTLINE
-                    vec3 col = uHeat > 0.45 ? uFireInk : uSmokeInk;
+                    vec3 col = PUFF_HEAT > 0.45 ? uFireInk : uSmokeInk;
                 #else
                     vec3 V = normalize(cameraPosition - vWorldPos);
                     float facing = clamp(dot(N, V), 0.0, 1.0);
                     // Hotter at the core facing us, cooler at the limbs
-                    float t = uHeat + (facing - 0.6) * 0.6 + grain * 0.12 + light * 0.06;
+                    float t = PUFF_HEAT + (facing - 0.6) * 0.6 + grain * 0.12 + light * 0.06;
                     vec3 col;
                     if (t > 1.0) col = uWhite;
                     else if (t > 0.78) col = uYellow;
                     else if (t > 0.56) col = uOrange;
                     else if (t > 0.38) col = uRed;
                     else if (t > 0.29) col = uScorch;
-                    else col = uSmoke * (light > 0.55 ? 1.22 : (light > 0.1 ? 1.0 : (light > -0.35 ? 0.74 : 0.55)));
+                    else col = PUFF_SMOKE * (light > 0.55 ? 1.22 : (light > 0.1 ? 1.0 : (light > -0.35 ? 0.74 : 0.55)));
                     if (t > 0.29 && light < -0.4) col *= 0.82;
                 #endif
                 gl_FragColor = vec4(col, 1.0);
@@ -3756,6 +4404,7 @@ Ambient
         `;
         const TRAIL_FRAGMENT = `
             uniform float uSeed;
+            uniform float uHot; // scales how much of the trail (as a fraction of its life) is still burning
             uniform vec3 uSunDir;
             uniform vec3 uSmoke, uYellow, uOrange, uFireInk, uSmokeInk;
             varying vec3 vWorld;
@@ -3775,10 +4424,10 @@ Ambient
                 float sv = clamp(vSide / edge, -1.0, 1.0);
                 vec3 N = normalize(vSideDir * sv + V * sqrt(max(0.0, 1.0 - sv * sv)));
                 float light = dot(N, uSunDir);
-                bool hot = vAge < 0.1;
+                bool hot = vAge < 0.1 * uHot;
                 vec3 col;
                 if (s > edge - 0.17) col = hot ? uFireInk : uSmokeInk;
-                else if (vAge < 0.045) col = uYellow;
+                else if (vAge < 0.045 * uHot) col = uYellow;
                 else if (hot) col = uOrange;
                 else col = uSmoke * (light > 0.15 ? 1.0 : (light > -0.35 ? 0.78 : 0.6));
                 gl_FragColor = vec4(col, 1.0);
@@ -3799,10 +4448,13 @@ Ambient
         const TRACER_GEO = new THREE.BoxGeometry(0.14, 0.14, 2.2);
         const TRACER_MAT = new THREE.MeshBasicMaterial({ color: 0xffe45c });
         const TRAIL_MAX_POINTS = 40;
+        const ROCKET_TRAIL_POINTS = 160; // missile exhaust trails run much longer than debris trails
         const SPARK_MAX = 800;
+        const SMOKE_MAX = 640;           // instanced smoke-column puffs, all burning wrecks together
 
         const fxPuffs = [], fxBillboards = [], fxDebris = [], fxTrails = [], fxSparks = [], fxLights = [];
         const puffPool = [], flashPool = [], ringPool = [], flatRingPool = [], trailPool = [], debrisPool = [];
+        const rocketTrailPool = [];
         let sparkMesh = null;
         let fxShake = 0;
         let debrisTemplate = null;
@@ -3811,30 +4463,39 @@ Ambient
             return THREE.UniformsUtils.clone(THREE.UniformsLib.fog);
         }
 
+        // Uniforms every puff material has; the rest are per puff (makePuff) or per instance
+        // (the smoke columns)
+        function puffUniforms() {
+            return { ...fogUniforms(), ...FIRE_RAMP, uOutlineWidth: outlineMaterial.uniforms.thickness };
+        }
+
+        // A puff's two passes, its surface and its ink outline, over one set of uniforms;
+        // `defines` go to both
+        function makePuffMaterials(uniforms, defines = {}) {
+            const shader = { uniforms, vertexShader: PUFF_VERTEX, fragmentShader: PUFF_FRAGMENT, fog: true };
+            return {
+                surface: new THREE.ShaderMaterial({ ...shader, defines }),
+                ink: new THREE.ShaderMaterial({ ...shader, defines: { ...defines, OUTLINE: '' }, side: THREE.BackSide })
+            };
+        }
+
         function makePuff() {
             const uniforms = {
-                ...fogUniforms(),
-                ...FIRE_RAMP,
+                ...puffUniforms(),
                 uHeat: { value: 1 },
                 uDissolve: { value: 0 },
                 uSeed: { value: 0 },
                 uDisplace: { value: 0.32 },
                 uBoil: { value: 0 },
-                uSmoke: { value: new THREE.Color() },
-                uOutlineWidth: outlineMaterial.uniforms.thickness
+                uSmoke: { value: new THREE.Color() }
             };
-            const surface = new THREE.ShaderMaterial({
-                uniforms, vertexShader: PUFF_VERTEX, fragmentShader: PUFF_FRAGMENT, fog: true
-            });
-            const ink = new THREE.ShaderMaterial({
-                uniforms, vertexShader: PUFF_VERTEX, fragmentShader: PUFF_FRAGMENT, fog: true,
-                defines: { OUTLINE: '' }, side: THREE.BackSide
-            });
+            const { surface, ink } = makePuffMaterials(uniforms);
             const mesh = new THREE.Mesh(PUFF_GEO_HI, surface);
             const outline = new THREE.Mesh(PUFF_GEO_HI, ink);
             outline.frustumCulled = false;
             mesh.add(outline);
-            return { mesh, outline, uniforms, vel: new THREE.Vector3() };
+            // pos and smoke are the mesh's position and the shader's smoke colour, for initPuff/stepPuff
+            return { mesh, outline, uniforms, pos: mesh.position, vel: new THREE.Vector3(), smoke: uniforms.uSmoke.value };
         }
 
         function makeBillboard(fragmentShader, uniforms, flat = false) {
@@ -3863,8 +4524,8 @@ Ambient
             uColor: { value: new THREE.Color(0xffffff) }
         }, flat);
 
-        function makeTrail() {
-            const vertCount = TRAIL_MAX_POINTS * 2;
+        function makeTrail(maxPoints = TRAIL_MAX_POINTS) {
+            const vertCount = maxPoints * 2;
             const geo = new THREE.BufferGeometry();
             geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3).setUsage(THREE.DynamicDrawUsage));
             geo.setAttribute('aSideDir', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3).setUsage(THREE.DynamicDrawUsage));
@@ -3872,10 +4533,10 @@ Ambient
             geo.setAttribute('aAge', new THREE.BufferAttribute(new Float32Array(vertCount), 1).setUsage(THREE.DynamicDrawUsage));
             const side = geo.getAttribute('aSide');
             const index = [];
-            for (let i = 0; i < TRAIL_MAX_POINTS; i++) {
+            for (let i = 0; i < maxPoints; i++) {
                 side.setX(i * 2, -1);
                 side.setX(i * 2 + 1, 1);
-                if (i < TRAIL_MAX_POINTS - 1) {
+                if (i < maxPoints - 1) {
                     const a = i * 2;
                     index.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
                 }
@@ -3886,6 +4547,7 @@ Ambient
                 ...fogUniforms(),
                 ...FIRE_RAMP,
                 uSeed: { value: 0 },
+                uHot: { value: 1 },
                 uSmoke: { value: new THREE.Color(0xc9c5bd) }
             };
             const mat = new THREE.ShaderMaterial({
@@ -3893,7 +4555,19 @@ Ambient
             });
             const mesh = new THREE.Mesh(geo, mat);
             mesh.frustumCulled = false;
-            return { mesh, geo, uniforms, points: [] };
+            // Points live in a fixed ring, oldest at `first`, so a long trail allocates nothing as it grows
+            const ring = Array.from({ length: maxPoints }, () => ({ pos: new THREE.Vector3(), age: 0, wobble: 1 }));
+            return { mesh, geo, uniforms, ring, first: 0, count: 0, maxPoints };
+        }
+
+        // The trail's i-th point, oldest first
+        function trailPoint(t, i) {
+            return t.ring[(t.first + i) % t.maxPoints];
+        }
+
+        function dropOldestTrailPoint(t) {
+            t.first = (t.first + 1) % t.maxPoints;
+            t.count--;
         }
 
         function makeDebris() {
@@ -3917,6 +4591,8 @@ Ambient
                 scene.add(light);
                 fxLights.push({ light, age: 1, duration: 1, peak: 0 });
             }
+
+            initSmokeColumns();
 
             // Compile every FX shader now so the first explosion doesn't hitch
             const warm = [
@@ -3942,19 +4618,12 @@ Ambient
             return out.set(r * Math.cos(theta), u, r * Math.sin(theta));
         }
 
-        function spawnPuff(position, o) {
-            const p = puffPool.pop() || makePuff();
-            const geo = o.lowDetail ? PUFF_GEO_LO : PUFF_GEO_HI;
-            p.mesh.geometry = geo;
-            p.outline.geometry = geo;
-            p.outline.visible = o.outline !== false;
-            p.mesh.position.copy(position);
-            p.mesh.rotation.set(rand(0, 6.3), rand(0, 6.3), rand(0, 6.3));
-            p.mesh.scale.setScalar(o.s0);
-            p.mesh.visible = !(o.delay > 0);
-            p.vel.copy(o.vel || new THREE.Vector3());
+        // Starts a puff's simulation at `position` from spawn options; vel, smoke and the rates are
+        // optional. Shared by the pooled puffs (spawnPuff) and the smoke columns (emitSmokePuff).
+        function initPuff(p, position, o) {
+            p.pos.copy(position);
+            if (o.vel) p.vel.copy(o.vel); else p.vel.set(0, 0, 0);
             p.age = 0;
-            p.delay = o.delay || 0;
             p.life = o.life;
             p.s0 = o.s0;
             p.s1 = o.s1;
@@ -3965,10 +4634,40 @@ Ambient
             p.drag = o.drag ?? 2.5;
             p.buoyancy = o.buoyancy ?? 2;
             p.gravity = o.gravity ?? 0;
+            p.wind = o.wind ?? 0;
+            p.smoke.set(o.smoke ?? 0x67615b);
+            p.seed = rand(0, 10);
+        }
+
+        // Advances a puff whose age already includes dt: drag, buoyancy against gravity, wind
+        // drift, growth from s0 towards s1, and the heat, boil and break-up its shader shows.
+        // Expand fast then slow, cool through the heat bands, then break apart.
+        function stepPuff(p, dt) {
+            p.vel.multiplyScalar(Math.exp(-p.drag * dt));
+            p.vel.y += (p.buoyancy - p.gravity) * dt;
+            p.pos.addScaledVector(p.vel, dt);
+            if (p.wind) p.pos.addScaledVector(FX_WIND, p.wind * dt);
+            const k = p.age / p.life;
+            p.scale = p.s1 + (p.s0 - p.s1) * Math.exp(-p.growRate * p.age);
+            p.heat = p.heat0 - p.heatRate * p.age;
+            p.boil = p.age * 0.35;
+            p.dissolve = k < p.dissolveStart ? 0 : 0.1 + 0.85 * (k - p.dissolveStart) / (1 - p.dissolveStart);
+        }
+
+        function spawnPuff(position, o) {
+            const p = puffPool.pop() || makePuff();
+            const geo = o.lowDetail ? PUFF_GEO_LO : PUFF_GEO_HI;
+            p.mesh.geometry = geo;
+            p.outline.geometry = geo;
+            p.outline.visible = o.outline !== false;
+            initPuff(p, position, o);
+            p.mesh.rotation.set(rand(0, 6.3), rand(0, 6.3), rand(0, 6.3));
+            p.mesh.scale.setScalar(o.s0);
+            p.mesh.visible = !(o.delay > 0);
+            p.delay = o.delay || 0;
             p.spin = rand(-0.4, 0.4);
-            p.uniforms.uSeed.value = rand(0, 10);
+            p.uniforms.uSeed.value = p.seed;
             p.uniforms.uDisplace.value = o.displace ?? 0.32;
-            p.uniforms.uSmoke.value.set(o.smoke ?? 0x67615b);
             p.uniforms.uHeat.value = p.heat0;
             p.uniforms.uDissolve.value = 0;
             p.uniforms.uBoil.value = 0;
@@ -4018,21 +4717,33 @@ Ambient
             d.age = 0;
             d.life = life;
             scene.add(d.mesh);
+            d.trail = spawnTrail(d.mesh.position, { width: trailWidth, life: trailLife, spacing: Math.max(0.35, trailWidth * 1.2), smoke });
+            fxDebris.push(d);
+        }
 
-            const t = trailPool.pop() || makeTrail();
-            t.points.length = 0;
-            t.source = d;
-            t.width = trailWidth;
-            t.life = trailLife;
-            t.spacing = Math.max(0.35, trailWidth * 1.2);
+        // A smoke ribbon that follows `head` (a Vector3 its owner keeps moving) until the owner sets
+        // trail.head = null; then it lingers until its last point has aged out.
+        // long: a rocket trail (more points); drift: how much the wind carries it; hot: fraction of
+        // a debris trail's burning section to keep (rocket trails live longer, so less of each point's life burns)
+        function spawnTrail(head, { width, life, spacing, smoke, long = false, drift = 0, hot = 1 }) {
+            const pool = long ? rocketTrailPool : trailPool;
+            const t = pool.pop() || makeTrail(long ? ROCKET_TRAIL_POINTS : TRAIL_MAX_POINTS);
+            t.pool = pool;
+            t.first = 0;
+            t.count = 0;
+            t.head = head;
+            t.width = width;
+            t.life = life;
+            t.spacing = spacing;
+            t.drift = drift;
+            t.smooth = long; // long trails vary their width gently instead of point to point
             t.uniforms.uSeed.value = rand(0, 10);
+            t.uniforms.uHot.value = hot;
             t.uniforms.uSmoke.value.set(smoke);
             t.geo.setDrawRange(0, 0);
             scene.add(t.mesh);
             fxTrails.push(t);
-
-            d.trail = t;
-            fxDebris.push(d);
+            return t;
         }
 
         function flashLight(position, peak, duration) {
@@ -4193,6 +4904,337 @@ Ambient
             else spawnHit(pos);
         }
 
+        // --- Smoke columns ---
+        // Burning wrecks trail tall, wind-bent columns of the same inked puffs as the explosions,
+        // but drawn as one instanced mesh (plus its outline) for every column together: two draw
+        // calls however many ships are burning. Puffs leave the fire hot and cool to smoke as they rise.
+        let smokeColumn = null;
+        const smokePuffs = [], smokePuffPool = [];
+
+        function initSmokeColumns() {
+            const geo = PUFF_GEO_LO.clone();
+            const params = new THREE.InstancedBufferAttribute(new Float32Array(SMOKE_MAX * 4), 4).setUsage(THREE.DynamicDrawUsage);
+            const colors = new THREE.InstancedBufferAttribute(new Float32Array(SMOKE_MAX * 3), 3).setUsage(THREE.DynamicDrawUsage);
+            geo.setAttribute('aPuff', params);
+            geo.setAttribute('aSmoke', colors);
+            const { surface, ink } = makePuffMaterials({ ...puffUniforms(), uDisplace: { value: 0.34 } }, { INSTANCED: '' });
+            const mesh = new THREE.InstancedMesh(geo, surface, SMOKE_MAX);
+            const outline = new THREE.InstancedMesh(geo, ink, SMOKE_MAX);
+            mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+            outline.instanceMatrix = mesh.instanceMatrix; // one set of transforms for both passes
+            [mesh, outline].forEach(m => {
+                m.frustumCulled = false;
+                m.count = 0;
+                m.visible = false;
+                scene.add(m);
+            });
+            // Per-instance attributes and floats per instance, uploaded only as far as the live puffs
+            const uploads = [[mesh.instanceMatrix, 16], [params, 4], [colors, 3]];
+            smokeColumn = { mesh, outline, params, colors, uploads };
+        }
+
+        // o: spawnPuff's options (no delay, outline or detail level)
+        function emitSmokePuff(position, o) {
+            if (smokePuffs.length >= SMOKE_MAX) return;
+            const p = smokePuffPool.pop() || { pos: new THREE.Vector3(), vel: new THREE.Vector3(), smoke: new THREE.Color() };
+            initPuff(p, position, o);
+            smokePuffs.push(p);
+        }
+
+        function updateSmokeColumns(dt) {
+            if (!smokePuffs.length) return;
+            const { mesh, outline, params, colors, uploads } = smokeColumn;
+            const m = mesh.instanceMatrix.array, pa = params.array, ca = colors.array;
+            let live = 0;
+            for (const p of smokePuffs) {
+                p.age += dt;
+                if (p.age >= p.life) {
+                    smokePuffPool.push(p);
+                    continue;
+                }
+                stepPuff(p, dt);
+                const o = live * 16, s = p.scale;
+                m[o] = s; m[o + 1] = 0; m[o + 2] = 0; m[o + 3] = 0;
+                m[o + 4] = 0; m[o + 5] = s; m[o + 6] = 0; m[o + 7] = 0;
+                m[o + 8] = 0; m[o + 9] = 0; m[o + 10] = s; m[o + 11] = 0;
+                m[o + 12] = p.pos.x; m[o + 13] = p.pos.y; m[o + 14] = p.pos.z; m[o + 15] = 1;
+                pa[live * 4] = p.seed;
+                pa[live * 4 + 1] = p.boil;
+                pa[live * 4 + 2] = p.heat;
+                pa[live * 4 + 3] = p.dissolve;
+                ca[live * 3] = p.smoke.r;
+                ca[live * 3 + 1] = p.smoke.g;
+                ca[live * 3 + 2] = p.smoke.b;
+                smokePuffs[live++] = p;
+            }
+            smokePuffs.length = live;
+            mesh.count = outline.count = live;
+            mesh.visible = outline.visible = live > 0;
+            if (!live) return;
+            for (const [attribute, size] of uploads) {
+                attribute.clearUpdateRanges();
+                attribute.addUpdateRange(0, live * size);
+                attribute.needsUpdate = true;
+            }
+        }
+
+        // --- Wrecks ---
+        // A friendly that's been hit breaks its back: bow and stern hinge up about the break while
+        // the middle settles, it takes on a growing list, burns under a tall smoke column and,
+        // after WRECK_SINK_SECONDS, slides under.
+        const WRECK_SMOKE_BLACK = new THREE.Color(0x36312e);
+        const WRECK_SMOKE_GREY = new THREE.Color(0x77726b);
+        const _wreckEmitter = new THREE.Vector3();
+        const _wreckSmokeVel = new THREE.Vector3();
+        const _wreckSmoke = new THREE.Color();
+        // 0 → 1 smoothly as x goes from a to b
+        const easeBetween = (a, b, x) => THREE.MathUtils.smoothstep(x, a, b);
+
+        // A friendly is hit: it becomes a wreck, and losing the last one ends the game
+        function destroyFriendly(f) {
+            f.alive = false;
+            wreckFriendly(f);
+            if (updateFriendlyUI() === 0) triggerGameOver('friendlies');
+        }
+
+        function wreckFriendly(f) {
+            const wreck = createFriendlyWreck();
+            wreck.position.copy(f.mesh.position);
+            wreck.rotation.copy(f.mesh.rotation);
+            scene.remove(f.mesh);
+            scene.add(wreck);
+            wrecks.push({
+                mesh: wreck,
+                bow: wreck.getObjectByName('wreck-bow'),
+                stern: wreck.getObjectByName('wreck-stern'),
+                emitter: wreck.getObjectByName('wreck-fire').position, // the wreck's own frame
+                baseY: wreck.position.y,
+                listSign: Math.random() < 0.5 ? -1 : 1,
+                bowLift: rand(0.75, 1.25),
+                age: 0,
+                nextSmoke: 0,
+                nextFoam: 0.5
+            });
+        }
+
+        function updateWrecks(dt) {
+            for (let i = wrecks.length - 1; i >= 0; i--) {
+                const w = wrecks[i];
+                w.age += dt;
+                const breakK = easeBetween(0, 2.5, w.age);                         // the hull snapping
+                const settleK = 1 - Math.pow(1 - Math.min(1, w.age / WRECK_SINK_SECONDS), 1.6);
+                const plungeK = Math.pow(easeBetween(WRECK_SINK_SECONDS, WRECK_SINK_SECONDS + WRECK_PLUNGE_SECONDS, w.age), 1.5);
+                if (plungeK >= 1) {
+                    scene.remove(w.mesh);
+                    wrecks.splice(i, 1);
+                    continue;
+                }
+                w.bow.rotation.x = (0.1 * breakK + 0.22 * settleK + 0.35 * plungeK) * w.bowLift;
+                w.stern.rotation.x = -(0.06 * breakK + 0.15 * settleK + 0.25 * plungeK);
+                w.mesh.position.y = w.baseY - 0.45 * breakK - 1.0 * settleK - 6 * plungeK + Math.sin(w.age * 0.9) * 0.05 * (1 - plungeK);
+                w.mesh.rotation.z = w.listSign * (0.06 * breakK + 0.3 * settleK + 0.25 * plungeK);
+
+                // Fire and smoke from the break: a thick black billow at first, thinning and
+                // greying as the fire burns down and the water gets to it
+                const burning = w.age < WRECK_SINK_SECONDS * 0.92;
+                w.nextSmoke -= dt;
+                if (burning && w.nextSmoke <= 0) {
+                    const fierce = w.age < 4;
+                    const fade = Math.min(1, w.age / WRECK_SINK_SECONDS);
+                    w.nextSmoke += fierce ? 0.1 : 0.2 + 0.25 * fade;
+                    // The wreck sits directly in the scene, so its local matrix places the emitter
+                    w.mesh.updateMatrix();
+                    _wreckEmitter.copy(w.emitter).applyMatrix4(w.mesh.matrix);
+                    _wreckEmitter.x += rand(-0.6, 0.6);
+                    _wreckEmitter.z += rand(-0.6, 0.6);
+                    emitSmokePuff(_wreckEmitter, {
+                        vel: _wreckSmokeVel.set(rand(-0.7, 0.7), rand(4.5, 7), rand(-0.7, 0.7)),
+                        s0: rand(0.7, 1.1), s1: rand(3.4, 5.0) * (fierce ? 1.2 : 1 - 0.3 * fade), growRate: 0.22,
+                        heat: rand(1.15, 1.4) - 0.3 * fade, heatRate: 2.4,
+                        life: rand(12, 15), dissolveStart: 0.6, drag: 0.35, buoyancy: 1.6, wind: 1,
+                        smoke: _wreckSmoke.copy(WRECK_SMOKE_BLACK).lerp(WRECK_SMOKE_GREY, fade * 0.8 + rand(0, 0.15))
+                    });
+                }
+                // Foam boiling up around the hull
+                w.nextFoam -= dt;
+                if (w.nextFoam <= 0) {
+                    w.nextFoam = rand(1.6, 3) * (plungeK > 0 ? 0.4 : 1);
+                    spawnFoamRing(w.mesh.position.x + rand(-1, 1), w.mesh.position.z + rand(-1, 1), rand(8, 12), rand(1.6, 2.4));
+                }
+            }
+        }
+
+        // --- VLS launches (cosmetic) ---
+        // Mk 41 style: the cell and uptake hatches open, the booster lights in the cell and the
+        // exhaust bursts out of the uptake beside it as the missile comes out on a tail of flame.
+        // It rises straight up for about a second, pitches over and climbs away on a thick white
+        // trail; the cloud it leaves hangs over the deck and drifts downwind for 10+ seconds.
+        // Nothing here touches the threats, scoring or fire control.
+        const VLS_UP = new THREE.Vector3(0, 1, 0);
+        const VLS_SMOKE = 0xebe7de;
+        const _vlsHorizontal = new THREE.Vector3();
+        const _vlsPuffAt = new THREE.Vector3();
+        const _vlsPuffOffset = new THREE.Vector3();
+        const _vlsPuffVel = new THREE.Vector3();
+
+        // Where a launcher fires from: one of our ship's cells (not already firing), or the small
+        // module on a friendly's foredeck. vent: where the exhaust bursts out (our ship's uptake
+        // hatch beside the cell; the boat's launcher itself)
+        function vlsLaunchPoint(launcher) {
+            if (launcher === 'ship') {
+                const ready = shipVLS.cells.filter(c => c.open <= 0);
+                if (!ready.length) return null;
+                const cell = pick(ready);
+                return { pos: cell.pos.clone(), scale: 1, cell, vent: new THREE.Vector3(0, 0.4, cell.pos.z) };
+            }
+            const pos = launcher.vls.getWorldPosition(new THREE.Vector3());
+            return { pos, scale: 0.65, cell: null, vent: pos.clone().setY(pos.y + 0.4) };
+        }
+
+        // bearing: degrees clockwise from the bow direction (-z); null picks one at random
+        function launchVLS(launcher, bearing = null) {
+            const at = vlsLaunchPoint(launcher);
+            if (!at) return false;
+            const { pos, scale, cell, vent } = at;
+            const b = THREE.MathUtils.degToRad(bearing ?? rand(0, 360));
+            const heading = new THREE.Vector3(Math.sin(b), 0, -Math.cos(b));
+            const mesh = createVLSMissile();
+            mesh.scale.setScalar(scale);
+            mesh.position.copy(pos).addScaledVector(VLS_UP, -2.6 * scale); // starts down in the cell
+            mesh.quaternion.setFromUnitVectors(_zAxis, VLS_UP);
+            scene.add(mesh);
+            if (cell) cell.open = 4.5;
+
+            const L = {
+                mesh, scale, heading,
+                flame: mesh.getObjectByName('flame'),
+                dir: VLS_UP.clone(),
+                tail: new THREE.Vector3(),
+                speed: 6,
+                age: 0,
+                pitchStart: rand(0.5, 0.8),
+                climb: rand(0.3, 0.6),     // elevation it settles on after pitching over (rad)
+                burn: rand(4, 5.5),
+                life: 9
+            };
+            L.tail.copy(mesh.position).addScaledVector(L.dir, -2.4 * scale);
+            L.trail = spawnTrail(L.tail, {
+                width: 1.4 * scale, life: 20, spacing: 0.5, smoke: 0xf3f0ea, long: true, drift: 0.45, hot: 0.05
+            });
+            vlsLaunches.push(L);
+
+            // Ignition: hatch flash and the uptake's jet of flame and smoke
+            spawnFlash(vent, 4 * scale, 0.25, 12);
+            flashLight(vent, 350 * scale, 0.7);
+            addShake(vent, 0.25 * scale, 60);
+            // One puff of the launch cloud, `offset` from `from` (offset and size scale with the launcher)
+            const vlsPuff = (from, offset, o) => spawnPuff(_vlsPuffAt.copy(from).addScaledVector(offset, scale), {
+                ...o, s0: o.s0 * scale, s1: o.s1 * scale, dissolveStart: 0.55, smoke: VLS_SMOKE, lowDetail: true
+            });
+            for (let i = 0; i < 7; i++) {
+                vlsPuff(vent, _vlsPuffOffset.set(rand(-0.6, 0.6), rand(0, 1.5), rand(-1.2, 1.2)), {
+                    vel: _vlsPuffVel.set(rand(-3, 3), rand(9, 18), rand(-3, 3)).multiplyScalar(scale),
+                    s0: 0.6, s1: rand(2.2, 3.6), growRate: 2.2, heat: rand(1.0, 1.3), heatRate: rand(1.2, 1.6),
+                    life: rand(9, 13), drag: 1.6, buoyancy: 0.9, wind: 0.7, delay: i * 0.03
+                });
+            }
+            // Exhaust spilling across the deck
+            for (let i = 0; i < 5; i++) {
+                const a = rand(0, Math.PI * 2);
+                vlsPuff(vent, _vlsPuffOffset.set(0, 0, 0), {
+                    vel: _vlsPuffVel.set(Math.cos(a) * rand(6, 11), rand(0.5, 2.5), Math.sin(a) * rand(6, 11)).multiplyScalar(scale),
+                    s0: 0.7, s1: rand(1.8, 2.8), growRate: 1.8, heat: 0.7, heatRate: 0.9,
+                    life: rand(7, 10), drag: 1.4, buoyancy: 0.35, wind: 0.9, delay: 0.05 + i * 0.04
+                });
+            }
+            // Billows the motor leaves as it climbs out of the cloud
+            [3, 7, 12, 18].forEach((h, i) => {
+                vlsPuff(pos, _vlsPuffOffset.set(rand(-0.5, 0.5), h, rand(-0.5, 0.5)), {
+                    vel: _vlsPuffVel.set(rand(-1.5, 1.5), rand(1, 3), rand(-1.5, 1.5)),
+                    s0: 0.5, s1: rand(1.6, 2.4), growRate: 2.0, heat: 1.05, heatRate: 1.8,
+                    life: rand(8, 11), drag: 1.2, buoyancy: 0.4, wind: 0.8, delay: 0.3 + i * 0.12
+                });
+            });
+            AudioController.playVLSLaunch(pos, scale);
+            if (launcher === 'ship') AudioController.announce('birds-away');
+            return true;
+        }
+
+        function updateVLS(dt) {
+            for (const c of shipVLS.cells) {
+                c.open -= dt;
+                // Hatch swings open fast and closes slowly once the missile is clear
+                const target = c.open > 0 ? 1 : 0;
+                c.amount += (target - c.amount) * Math.min(1, dt * (target ? 14 : 2.5));
+                c.lid.rotation.z = c.side * 1.9 * c.amount;
+            }
+
+            for (let i = vlsLaunches.length - 1; i >= 0; i--) {
+                const L = vlsLaunches[i];
+                L.age += dt;
+                if (L.age >= L.life) {
+                    scene.remove(L.mesh);
+                    L.trail.head = null;
+                    vlsLaunches.splice(i, 1);
+                    continue;
+                }
+                const burning = L.age < L.burn;
+                // Slow off the mark while it clears the cell, then hard acceleration on the booster
+                if (burning) L.speed = Math.min(420, L.speed + (L.age < 0.25 ? 25 : 120) * dt);
+                const pitch = THREE.MathUtils.smoothstep(L.age, L.pitchStart, L.pitchStart + 1.0) * (Math.PI / 2 - L.climb);
+                _vlsHorizontal.copy(L.heading).multiplyScalar(Math.sin(pitch));
+                L.dir.copy(VLS_UP).multiplyScalar(Math.cos(pitch)).add(_vlsHorizontal).normalize();
+                L.mesh.position.addScaledVector(L.dir, L.speed * dt);
+                L.mesh.quaternion.setFromUnitVectors(_zAxis, L.dir);
+                L.tail.copy(L.mesh.position).addScaledVector(L.dir, -2.4 * L.scale);
+                // Fewer, longer trail segments once it's fast and far away
+                L.trail.spacing = THREE.MathUtils.clamp(L.speed * 0.045, 0.5, 18);
+                if (burning) {
+                    flickerFlame(L.flame, L.age < 1.2 ? 1.7 : 1.15); // a longer flame off the rail
+                } else if (L.trail.head) {
+                    // Burnout: the flame goes out and the trail stops
+                    L.flame.visible = false;
+                    L.trail.head = null;
+                }
+            }
+        }
+
+        // Every so often a ship fires (our own about a third of the time). New anti-ship missiles
+        // can also draw an answering launch along their bearing; vlsResponse holds one pending.
+        // Gameplay scheduling: updateLogic runs it, so launches stop with the game.
+        let vlsResponse = null;
+        let lastVLSLaunchAt = -Infinity;
+
+        function updateVLSSchedule(dt) {
+            vlsCooldown -= dt;
+            if (vlsResponse) vlsResponse.delay -= dt;
+            const due = vlsResponse && vlsResponse.delay <= 0;
+            if (!due && vlsCooldown > 0) return;
+            const bearing = due ? vlsResponse.bearing + rand(-8, 8) : null;
+            const follow = due ? vlsResponse.follow : null;
+            vlsResponse = null;
+            vlsCooldown = rand(35, 75);
+            const alive = friendlies.filter(f => f.alive);
+            const launcher = follow && (follow === 'ship' || follow.alive) ? follow
+                : Math.random() < 0.35 || !alive.length ? 'ship' : pick(alive);
+            if (!launchVLS(launcher, bearing)) return;
+            lastVLSLaunchAt = elapsedTime;
+            // Sometimes a second round follows from the same launcher
+            if (!follow && Math.random() < 0.4) vlsResponse = { delay: rand(1.2, 2.2), bearing: bearing ?? rand(0, 360), follow: launcher };
+        }
+
+        function requestVLSResponse(bearing) {
+            if (vlsResponse || elapsedTime - lastVLSLaunchAt < 10 || Math.random() > 0.55) return;
+            vlsResponse = { delay: rand(2.5, 4.5), bearing };
+        }
+
+        // World effects that keep running after the game ends: wrecks, smoke, launches in flight
+        function updateWorldFX(dt) {
+            updateWrecks(dt);
+            updateVLS(dt);
+            updateSmokeColumns(dt);
+        }
+
         const _sparkQuat = new THREE.Quaternion();
         const _sparkScale = new THREE.Vector3();
         const _sparkMatrix = new THREE.Matrix4();
@@ -4212,14 +5254,13 @@ Ambient
         }
 
         function updateTrail(t) {
-            const pts = t.points;
-            const n = pts.length;
+            const n = t.count;
             const pos = t.geo.getAttribute('position');
             const sideDir = t.geo.getAttribute('aSideDir');
             const age = t.geo.getAttribute('aAge');
             for (let i = 0; i < n; i++) {
-                const pt = pts[i];
-                _tangent.subVectors(pts[Math.min(i + 1, n - 1)].pos, pts[Math.max(i - 1, 0)].pos);
+                const pt = trailPoint(t, i);
+                _tangent.subVectors(trailPoint(t, Math.min(i + 1, n - 1)).pos, trailPoint(t, Math.max(i - 1, 0)).pos);
                 _toCamera.subVectors(camera.position, pt.pos);
                 _side.crossVectors(_tangent, _toCamera);
                 if (_side.lengthSq() < 1e-8) _side.set(1, 0, 0);
@@ -4240,7 +5281,6 @@ Ambient
         }
 
         function updateExplosionFX(dt, realDt) {
-            // Puffs: expand fast then slow, cool through the heat bands, then break apart
             for (let i = fxPuffs.length - 1; i >= 0; i--) {
                 const p = fxPuffs[i];
                 if (p.delay > 0) {
@@ -4249,20 +5289,17 @@ Ambient
                     p.mesh.visible = true;
                 }
                 p.age += dt;
-                const k = p.age / p.life;
-                if (k >= 1) {
+                if (p.age >= p.life) {
                     releaseFrom(fxPuffs, i, puffPool, p);
                     continue;
                 }
-                p.vel.multiplyScalar(Math.exp(-p.drag * dt));
-                p.vel.y += (p.buoyancy - p.gravity) * dt;
-                p.mesh.position.addScaledVector(p.vel, dt);
+                stepPuff(p, dt);
                 p.mesh.rotation.y += p.spin * dt;
-                p.mesh.scale.setScalar(p.s1 + (p.s0 - p.s1) * Math.exp(-p.growRate * p.age));
+                p.mesh.scale.setScalar(p.scale);
                 const u = p.uniforms;
-                u.uHeat.value = p.heat0 - p.heatRate * p.age;
-                u.uBoil.value = p.age * 0.35;
-                u.uDissolve.value = k < p.dissolveStart ? 0 : 0.1 + 0.85 * (k - p.dissolveStart) / (1 - p.dissolveStart);
+                u.uHeat.value = p.heat;
+                u.uBoil.value = p.boil;
+                u.uDissolve.value = p.dissolve;
             }
 
             for (let i = fxBillboards.length - 1; i >= 0; i--) {
@@ -4298,30 +5335,37 @@ Ambient
                             gravity: 20, smoke: 0xeef5f8, lowDetail: true
                         });
                     }
-                    d.trail.source = null;
+                    d.trail.head = null;
                     releaseFrom(fxDebris, i, debrisPool, d);
                 }
             }
 
             for (let i = fxTrails.length - 1; i >= 0; i--) {
                 const t = fxTrails[i];
-                const pts = t.points;
-                for (const pt of pts) pt.age += dt;
-                while (pts.length && pts[0].age > t.life) pts.shift();
-                if (t.source) {
-                    // The last point rides on the debris; drop a fixed point once it has moved far enough
-                    const head = t.source.mesh.position;
-                    const last = pts[pts.length - 1];
-                    const prev = pts[pts.length - 2];
+                for (let j = 0; j < t.count; j++) {
+                    const pt = trailPoint(t, j);
+                    pt.age += dt;
+                    if (t.drift) pt.pos.addScaledVector(FX_WIND, t.drift * dt);
+                }
+                while (t.count && trailPoint(t, 0).age > t.life) dropOldestTrailPoint(t);
+                if (t.head) {
+                    // The last point rides on the head; drop a fixed point once it has moved far enough
+                    const head = t.head;
+                    const last = t.count > 0 ? trailPoint(t, t.count - 1) : null;
+                    const prev = t.count > 1 ? trailPoint(t, t.count - 2) : null;
                     if (!last || !prev || prev.pos.distanceTo(head) > t.spacing) {
-                        if (pts.length >= TRAIL_MAX_POINTS) pts.shift();
-                        pts.push({ pos: head.clone(), age: 0, wobble: rand(0.75, 1.3) });
+                        if (t.count >= t.maxPoints) dropOldestTrailPoint(t);
+                        const wobble = t.smooth && last ? THREE.MathUtils.lerp(last.wobble, rand(0.75, 1.3), 0.35) : rand(0.75, 1.3);
+                        const pt = trailPoint(t, t.count++);
+                        pt.pos.copy(head);
+                        pt.age = 0;
+                        pt.wobble = wobble;
                     } else {
                         last.pos.copy(head);
                         last.age = 0;
                     }
-                } else if (pts.length === 0) {
-                    releaseFrom(fxTrails, i, trailPool, t);
+                } else if (t.count === 0) {
+                    releaseFrom(fxTrails, i, t.pool, t);
                     continue;
                 }
                 updateTrail(t);
@@ -4422,20 +5466,22 @@ Ambient
                 }
             });
 
-            radarCtx.fillStyle = '#f00';
-            missiles.forEach(m => {
-                const radarPos = m.trackedPosition || m.mesh.position;
-                const x = center + (radarPos.x * scale);
-                const y = center + (radarPos.z * scale);
+            // One pass per threat type: its blips go into one path, filled in its colour
+            for (const [type, { radar }] of Object.entries(THREAT_TYPES)) {
+                radarCtx.fillStyle = radar.color;
+                radarCtx.beginPath();
+                for (const m of missiles) {
+                    if (m.type !== type) continue;
+                    const radarPos = m.trackedPosition || m.mesh.position;
+                    const x = center + (radarPos.x * scale);
+                    const y = center + (radarPos.z * scale);
 
-                // Only draw if inside circle
-                const d = Math.sqrt(Math.pow(x - center, 2) + Math.pow(y - center, 2));
-                if (d < 75) {
-                    radarCtx.beginPath();
-                    radarCtx.arc(x, y, 2, 0, Math.PI * 2);
-                    radarCtx.fill();
+                    // Only draw if inside circle
+                    const d = Math.sqrt(Math.pow(x - center, 2) + Math.pow(y - center, 2));
+                    if (d < 75) radar.blip(radarCtx, x, y);
                 }
-            });
+                radarCtx.fill();
+            }
         }
 
         function formatTime(seconds) {
@@ -4682,6 +5728,9 @@ Ambient
                 difficultyCooldown = 1000; // Reset for next wave
             }
 
+            // Cosmetic VLS launches from our ship and the friendlies
+            updateVLSSchedule(simSteps / SIM_STEPS_PER_SECOND);
+
 
 
             // Find target (choose earliest impact; break ties toward friendlies)
@@ -4695,19 +5744,12 @@ Ambient
                 m.mesh.position.addScaledVector(m.velocity, simSteps);
 
                 // Then apply gravity to mortar rounds for next frame
-                if (m.isMortar) {
+                if (m.type === 'mortar') {
                     m.velocity.y -= GRAVITY * simSteps;
                 }
 
-                // Update orientation based on type
-                if (m.isMortar) {
-                    // Mortars point along their velocity vector (ballistic arc)
-                    const lookTarget = m.mesh.position.clone().add(m.velocity.clone().normalize());
-                    m.mesh.lookAt(lookTarget);
-                } else {
-                    // Regular missiles point toward their assigned target
-                    m.mesh.lookAt(m.targetInfo.position);
-                }
+                // Update orientation based on type (sea-skimmers also steer their own path)
+                THREAT_TYPES[m.type].steer(m);
                 if (m.prop) spinVisual(m.prop, PROP_SPIN_RATE * simSteps, 4);
 
                 updateRadarTrack(m, simSteps);
@@ -4720,32 +5762,24 @@ Ambient
                     Math.pow(m.mesh.position.x - m.targetInfo.position.x, 2) +
                     Math.pow(m.mesh.position.z - m.targetInfo.position.z, 2)
                 );
-                const passedThroughTarget = m.isMortar && 
+                const passedThroughTarget = m.type === 'mortar' &&
                     horizontalDist < 8 && 
                     m.mesh.position.y < m.targetInfo.position.y + 2;
 
                 // Impact Check
                 if (distToTarget < 5 || passedThroughTarget) {
                     createExplosion(m.mesh.position, 'impact');
-                    scene.remove(m.mesh);
+                    disposeThreat(m);
                     missiles.splice(i, 1);
                     if (m.targetInfo.type === 'ciws') {
-                        health = Math.max(0, health - 25);
+                        health = Math.max(0, health - THREAT_TYPES[m.type].damage);
                         document.getElementById('health-bar').innerText = `${health}%`;
                         if (health <= 0) {
                             triggerGameOver('ciws');
                         }
                     } else if (m.targetInfo.type === 'friendly') {
                         const f = friendlies.find(fr => fr.id === m.targetInfo.friendlyId);
-                        if (f && f.alive) {
-                            f.alive = false;
-                            scene.remove(f.mesh);
-
-                            const remainingFriendlies = updateFriendlyUI();
-                            if (remainingFriendlies === 0) {
-                                triggerGameOver('friendlies');
-                            }
-                        }
+                        if (f && f.alive) destroyFriendly(f);
                     }
                     continue;
                 }
@@ -4772,8 +5806,8 @@ Ambient
                 const muzzlePos = getMuzzlePosition();
                 // The classic solver always runs: it aims the gun in classic mode and is the
                 // teacher the net imitates while learning
-                const teacherDecision = computeAimSolution(targetPos, targetVelocity, target.isMortar, muzzlePos);
-                const netInputs = makeControllerInputs(targetPos.clone().sub(muzzlePos), targetVelocity, target.isMortar);
+                const teacherDecision = computeAimSolution(targetPos, targetVelocity, target.type === 'mortar', muzzlePos);
+                const netInputs = makeControllerInputs(targetPos.clone().sub(muzzlePos), targetVelocity, target.type === 'mortar');
                 const sight = computeSightAngles(targetPos, muzzlePos);
 
                 if (NeuralController.isTraining) {
@@ -4918,8 +5952,10 @@ Ambient
 
                             if (m.health <= 0) {
                                 createExplosion(mPos, 'airburst');
-                                scene.remove(m.mesh);
+                                disposeThreat(m);
                                 missiles.splice(j, 1);
+                                const { killCallout } = THREAT_TYPES[m.type];
+                                if (killCallout) AudioController.announce(killCallout);
                                 engagementStats[p.firedBy].kills++;
                                 score++;
                                 document.getElementById('kill-count').innerText = score;
@@ -5105,6 +6141,7 @@ Ambient
             }
 
             updateExplosionFX(simSteps / SIM_STEPS_PER_SECOND, realDt);
+            updateWorldFX(simSteps / SIM_STEPS_PER_SECOND);
             AudioController.frame(missiles);
 
             waterMaterial.uniforms.time.value = clock.elapsedTime;

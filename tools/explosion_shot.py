@@ -10,7 +10,7 @@ Scenarios: airburst (default), water, deck, flak
 import sys
 import time
 
-from _harness import game_page, report_errors
+from _harness import game_page, report_errors, timed_screenshots
 
 out = sys.argv[1]
 scenario = sys.argv[2] if len(sys.argv) > 2 else "airburst"
@@ -36,8 +36,5 @@ with game_page(dpr=2, console_levels=("error", "warning")) as (page, errors):
     time.sleep(0.3)
     start = time.time()
     page.evaluate(f"() => {{ const c = window.__ciws; const V = c.camera.position.constructor; {boom_js} }}")
-    for t in (0.05, 0.15, 0.35, 0.7, 1.3, 2.5):
-        time.sleep(max(0, t - (time.time() - start)))
-        page.screenshot(path=f"{out}-{scenario}-{t:.2f}.png")
-        print("wrote", f"{out}-{scenario}-{t:.2f}.png")
+    timed_screenshots(page, (0.05, 0.15, 0.35, 0.7, 1.3, 2.5), lambda t: f"{out}-{scenario}-{t:.2f}.png", start)
 report_errors(errors)

@@ -16,7 +16,7 @@ import time
 
 from PIL import Image
 
-from _harness import game_page, report_errors
+from _harness import contact_sheet, game_page, report_errors
 
 prefix = sys.argv[1]
 view = sys.argv[2] if len(sys.argv) > 2 else "front"
@@ -82,11 +82,6 @@ report_errors(errors)
 
 w, h = frames[0].size
 thumb = 220
-cols = 8
-rows = (len(frames) + cols - 1) // cols
-strip = Image.new("RGB", (cols * thumb, rows * thumb), "white")
-for i, f in enumerate(frames):
-    strip.paste(f.resize((thumb, thumb)), ((i % cols) * thumb, (i // cols) * thumb))
-strip.save(f"{prefix}-strip.png")
+contact_sheet([f.resize((thumb, thumb)) for f in frames], 8).save(f"{prefix}-strip.png")
 frames[0].save(f"{prefix}.gif", save_all=True, append_images=frames[1:], duration=20, loop=0)
 print("wrote", f"{prefix}-strip.png", f"{prefix}.gif", f"({len(frames)} frames, {w}x{h})")

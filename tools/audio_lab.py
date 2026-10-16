@@ -5,12 +5,15 @@
 """Render a fixed sequence of game sounds offline (OfflineAudioContext) for listening/analysis.
 
 Usage: uv run tools/audio_lab.py <out.wav> [natural|wide|extreme]
-Builds the game's own audio graph (AudioController.buildGraph) on an offline context, so the
+Builds the game's own audio graph (AudioController.makeOffline) on an offline context, so the
 render matches what the game plays. Timeline (listener at the default orbit camera, ~25 m from the gun):
   0.0 s  2 s gun burst (ahead)        3.0 s  three hits, left, ~140 m
   4.0 s  airburst, right, ~250 m      8.0 s  flak pops far ahead
   9.5 s  water impact, left, ~50 m    13.0 s deck impact at the gun
   15.5 s three hits behind the camera
+  18.5 s VLS launch from our ship's module   25.5 s anti-ship missile (turbojet voice), ~200 m, 3 s
+  29.0 s general alarm, then at 30.5 s the "vampire" callout on the CIC net, with the gun
+         firing under it from 31.0 s (the battle ducks under the voice)
 """
 import base64
 import sys
@@ -24,20 +27,11 @@ mode = sys.argv[2] if len(sys.argv) > 2 else "extreme"
 
 JS = """async (mode) => {
   %s
-  const A0 = window.__ciwsAudio;
   const { camera } = window.__ciws;
   const V = camera.position.constructor;
-  const sr = 48000, seconds = 18;
-
-  // A private copy of the controller driving an offline context
-  const A = Object.create(A0);
-  Object.assign(A, {
-    isMuted: false, isInit: true, spatialMode: mode, slowPitch: 1, activeOneShots: 0,
-    lastFlakTime: -Infinity, soundArrivals: [], threatVoices: new Map(),
-    debugState: JSON.parse(JSON.stringify(A0.debugState))
-  });
+  const sr = 48000, seconds = 36;
   const ctx = new OfflineAudioContext(2, sr * seconds, sr);
-  A.buildGraph(ctx);
+  const A = await window.__ciwsAudio.makeOffline(ctx, mode);
 
   camera.position.set(-15, 10, 20); camera.lookAt(0, 5, 0); camera.updateMatrixWorld();
   A.refreshListener();
@@ -61,6 +55,28 @@ JS = """async (mode) => {
   boom(9.5, place(25, -45, 0.75), 'impact', true);
   boom(13.0, new V(0, 2, 0), 'impact');
   [0, 0.12, 0.2].forEach(dt => boom(15.5 + dt, place(-60, 0, 12), 'hit'));
+
+  // VLS launch from the cell module on our foredeck-aft
+  A.playVLSLaunch(new V(1, 0.2, 19), 1, { at: 18.5 });
+
+  // A held anti-ship missile voice: built by the game's own update, then gated on and off
+  const ascm = { type: 'ascm', mesh: { position: place(150, 120, 4) }, velocity: new V(-1.5, 0, -1.4) };
+  A.updateThreats.call(A, [ascm]);
+  const voice = A.threatVoices.get(ascm);
+  A.threatVoices.clear();
+  voice.out.gain.cancelScheduledValues(0);
+  voice.out.gain.setValueAtTime(0, 0);
+  voice.out.gain.setValueAtTime(0, 25.5);
+  voice.out.gain.linearRampToValueAtTime(0.32, 25.7);
+  voice.out.gain.setValueAtTime(0.32, 28.3);
+  voice.out.gain.linearRampToValueAtTime(0, 28.5);
+
+  // General alarm, the callout ducking the battle, and a burst under it. (GQ is marked as
+  // recently called so the 1MC's "General quarters" doesn't follow.)
+  A.lastAt.gq = 0;
+  A.announceVampire(270, 29.0);
+  const g0 = 31.0;
+  for (let t = g0; t < 34.0; t += A.shotSpacing(t - g0, 1 / 60)) A.queueShot(t);
 
   const buf = await ctx.startRendering();
   // Encode 16-bit stereo WAV
