@@ -13,7 +13,7 @@ The clips are made by `tools/make_cic_audio.py`. Its `process` command also writ
 | Field | Meaning |
 |---|---|
 | `clips` | Clip names. `{ship}`, `{side}` and `{bearing}` are filled from `play`'s params. |
-| `channel` | `net`: the radio, at once (the CIC net, and the 1MC's urgent calls). `1mc`: the radio, queued in order. `crew`: next to us, dry. |
+| `channel` | `net`: the CIC net, at once (with the 1MC's urgent calls). `1mc`: the ship's loudspeakers, queued in order. `crew`: next to us, dry. |
 | `aside` | Flavour. It waits until no one is talking and no launch is under way. |
 | `onlyIfClear` | It never interrupts. It's skipped outright unless everything is clear. Used for vampire calls. |
 | `hush` | A channel whose lines wait until this line is over, plus their gap (`hushUntil`). The vampire call hushes the crew. |
@@ -40,18 +40,18 @@ the multi-splash `window`, the rescue call's `gap` after the crew's reaction, ch
   ranked). If none are fresh, the bucket stays quiet and its cooldown isn't spent. A line spends the
   cooldown as soon as it's picked (`reserve`), including while it waits in the 1MC's queue, and gives
   it back if it's dropped (`release`).
-- **Channels.** The net and the 1MC share the radio, so each waits for the other. The crew are a
-  separate line. A line starts at its due time, or as soon after as its line is free (`VOICE.gap`).
+- **Channels.** The CIC net, the 1MC and the crew are separate lines (separate circuits on a real
+  ship), so a long 1MC announcement doesn't keep "Birds away" off the net. A line starts at its due time, or as soon after as its line is free (`VOICE.gap`).
   It's dropped if it would start more than `stale` seconds late.
 - **Priorities.** Vampire calls never interrupt anyone, and they're skipped when anything is on.
   Crew lines never overlap each other, and wait until a vampire call is over (`hush`). 1MC calls go
-  out one at a time, in the order queued, and wait out a launch.
-- **Launches.** `warnVLSLaunch` holds the 1MC and flavour lines from its warning until about 2
-  seconds after the round fires (`holdRadio`, which sets `launchUntil`). It starts the alarm once the
-  latest vampire call is over (the vampire bucket's last line, `bucketState.vampire.voice`). 1MC calls
-  wait in the queue unscheduled, so a call due later doesn't make the radio look busy and push "Birds
-  away" out. `frame()` pumps the queue again, and the calls go out once the audio clock passes
-  `launchUntil`. An offline render (`makeOffline`) has no frames, so it never holds the radio.
+  out one at a time, in the order queued.
+- **Launches.** `warnVLSLaunch` starts the alarm once the latest vampire call is over (the vampire
+  bucket's last line, `bucketState.vampire.voice`), and holds the flavour lines from its warning until
+  about 2 seconds after the round fires (`holdRadio`, which sets `launchUntil`). A net aside that
+  comes up then is passed over rather than booked for after the hold, where it would take the net
+  "Birds away" needs. "Birds away" waits up to 5 seconds for the net. An offline render
+  (`makeOffline`) never holds anything.
 - **Loading.** Only `URGENT_CALLOUTS` are fetched at start-up. Every other clip is fetched and
   decoded on first use (`getCallout`), or earlier when an urgent bucket warms it.
   Lazily decoded clips past `LAZY_CALLOUT_SECONDS` are dropped, least recently used first, and

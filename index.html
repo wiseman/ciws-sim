@@ -827,14 +827,15 @@
         const CREW_RANGES = { quiet: 250, closeCall: 300, shells: 150 };
         // No voice clip is heard again within this many seconds (unless its bucket says otherwise)
         const VOICE_REPEAT_WINDOW = 300;
-        // Voice traffic on the CIC bus, by channel. The CIC net and the 1MC share the radio line, so
-        // each waits for the other; the crew are the people next to us. level: into the bus; duck:
-        // how far the battle drops under it; a line goes out at least `gap` s after the last on its
-        // line and is dropped if that's more than `stale` s late
-        const RADIO = { line: 'radio', level: 1, duck: 0.5, gap: 0.6 };
+        // Voice traffic on the CIC bus, by channel. The CIC net and the 1MC are separate circuits (the
+        // radio and the ship's loudspeakers), each with its own line, so a long 1MC announcement
+        // doesn't keep "Birds away" off the net; the crew are the people next to us. level: into the
+        // bus; duck: how far the battle drops under it; a line goes out at least `gap` s after the
+        // last on its line and is dropped if that's more than `stale` s late
+        const RADIO = { level: 1, duck: 0.5, gap: 0.6 };
         const VOICE = {
-            net: { ...RADIO, stale: 3 },
-            '1mc': { ...RADIO, stale: 8 },
+            net: { ...RADIO, line: 'net', stale: 3 },
+            '1mc': { ...RADIO, line: 'pa', stale: 8 },
             crew: { line: 'crew', level: 1, duck: 0.75, gap: 0.3, stale: 3 }
         };
         // Seconds of lazily decoded callouts kept; past that the least recently used are dropped
@@ -862,8 +863,8 @@
         // its clips round-robin from a random start, skipping any heard within `repeat` s; with none
         // left it stays quiet. See docs/voice/README.md. Fields (all but clips and channel optional):
         //   clips     clip names; '{field}' is filled from play's params (ship, side, bearing)
-        //   channel   'net': the radio, at once (the CIC net, and the 1MC's urgent calls); '1mc': the
-        //             radio, queued in order (queuePA); 'crew': next to us, dry. Paced by VOICE.
+        //   channel   'net': the CIC net, at once (with the 1MC's urgent calls); '1mc': the ship's
+        //             loudspeakers, queued in order (queuePA); 'crew': next to us, dry. Paced by VOICE.
         //   aside     flavour: waits until no one is talking and no launch is under way (clearFrom)
         //   onlyIfClear  never interrupts: skipped outright unless all is clear
         //   hush      a channel whose lines wait until this one's over (plus their gap)
@@ -902,7 +903,7 @@
             // Our ship's VLS launches (warnVLSLaunch): "Stand by for missile launch" before a routine
             // one, from the alarm's due time; "Birds away" as each fires
             'missile-launch': { ...URGENT_NET, clips: ['missile-launch'], cooldown: 90, lead: 0.3, stale: 8 },
-            'birds-away': { ...URGENT_NET, clips: ['birds-away'], cooldown: 30, lead: 0.4 },
+            'birds-away': { ...URGENT_NET, clips: ['birds-away'], cooldown: 10, lead: 0.4, stale: 5 },
             // A friendly hit (announceFriendlyHit): the crew react, naming her when params.named; the
             // 1MC's rescue call (they coalesce) and follow-up (side: 'stbd' or 'port'), from the hit
             reaction: {
@@ -1101,7 +1102,7 @@
             // A private copy of the controller driving an offline context, for rendering the game's
             // own sounds to a buffer (tools/audio_lab.py, tools/audio_stress.py). decodeAll: fetch and
             // decode every callout up front, so ones queued before rendering are scheduled straight
-            // away. It has no frames to pump the 1MC's queue, so a launch never holds the radio.
+            // away. A launch never holds its flavour lines (holdRadio does nothing).
             makeOffline: async function (ctx, spatialMode = this.spatialMode, { decodeAll = false } = {}) {
                 const A = Object.create(this);
                 Object.assign(A, {
@@ -1741,8 +1742,8 @@
                 this.lazyCallouts = new Map(); // lazily decoded name -> its seconds, least recently used first
                 this.lazyTotal = 0;        // their seconds
                 this.lazySeconds = LAZY_CALLOUT_SECONDS; // how much of them to keep
-                this.busy = { radio: 0, crew: 0 }; // end of the last voice scheduled on each VOICE line
-                this.launchUntil = 0;      // a launch under way holds the radio till then (holdRadio)
+                this.busy = { net: 0, pa: 0, crew: 0 }; // end of the last voice scheduled on each VOICE line
+                this.launchUntil = 0;      // a launch under way holds the net's flavour lines till then (holdRadio)
                 this.alarmAt = -Infinity;  // when the general alarm last sounded
                 // VOICE channel -> the end of the last line that hushes it (a bucket's `hush`)
                 this.hushUntil = Object.fromEntries(Object.keys(VOICE).map(channel => [channel, -Infinity]));
@@ -1940,10 +1941,10 @@
             say: function (name, clip, buffer, due) {
                 if (!buffer) return null;
                 const B = BUCKETS[name], ch = VOICE[B.channel];
-                // A radio aside that comes up while a launch holds the radio is passed over (its
+                // An aside for the net that comes up while a launch is under way is passed over (its
                 // cooldown goes back), rather than booked for after the hold, where it would take the
-                // radio that "Birds away" needs
-                if (B.aside && ch.line === 'radio' && this.ctx.currentTime < this.launchUntil) return null;
+                // net that "Birds away" needs
+                if (B.aside && ch.line === 'net' && this.ctx.currentTime < this.launchUntil) return null;
                 let start = Math.max(due, this.busy[ch.line] + ch.gap, this.hushUntil[B.channel] + ch.gap, this.ctx.currentTime + 0.02);
                 if (B.aside) start = this.clearFrom(start);
                 if (start - due > (B.stale ?? ch.stale)) return null;
@@ -1954,7 +1955,7 @@
             },
 
             // Puts a 1MC call ({ bucket, clip, due }) in line. Calls go out one at a time in the
-            // order queued, each once its clip is loaded and no launch holds the radio (pumpPA).
+            // order queued, each once its clip is loaded (pumpPA).
             // Resolves to its end time, or null if it didn't go out.
             queuePA: function (item) {
                 const said = new Promise(resolve => { item.done = resolve; });
@@ -1964,12 +1965,9 @@
                 return said;
             },
 
-            // Schedules the calls at the head of the queue whose clips are ready (in order). While a
-            // launch holds the radio they wait unscheduled, so "Birds away" finds it free, and
-            // frame() pumps again.
+            // Schedules the calls at the head of the queue whose clips are ready (in order)
             pumpPA: function () {
                 const q = this.paQueue;
-                if (this.ctx.currentTime < this.launchUntil) return;
                 while (q.length && q[0].buffer !== undefined) {
                     const { bucket, clip, buffer, due, done } = q.shift();
                     const end = this.say(bucket, clip, buffer, due);
@@ -1978,17 +1976,18 @@
                 }
             },
 
-            // A launch under way holds the 1MC and the flavour lines until `until` (warnVLSLaunch).
-            // An offline render has no frames to let them go again, and never holds them (makeOffline).
+            // A launch under way holds the flavour lines until `until` (warnVLSLaunch), so none takes
+            // the net "Birds away" needs. An offline render never holds them (makeOffline).
             holdRadio: function (until) {
                 this.launchUntil = Math.max(this.launchUntil, until);
             },
 
             // The earliest a line that's only flavour can start, at or after t: once no one is
-            // talking (or about to) on the radio or among the crew, with its line's gap after them,
-            // and no launch holds the radio. Without t: when the last voice scheduled is over.
+            // talking (or about to) on the net, the 1MC or among the crew, with its line's gap after
+            // them, and no launch holds them. Without t: when the last voice scheduled is over.
             clearFrom: function (t = -Infinity) {
-                return Math.max(t, this.busy.radio + VOICE.net.gap, this.busy.crew + VOICE.crew.gap, this.launchUntil);
+                return Math.max(t, this.busy.net + VOICE.net.gap, this.busy.pa + VOICE['1mc'].gap,
+                    this.busy.crew + VOICE.crew.gap, this.launchUntil);
             },
 
             // New anti-ship missile on radar: its vampire call (and what follows it), after the general
@@ -2453,7 +2452,6 @@
                 this.updateThreats(missileList);
                 this.updateNearMisses();
                 this.updateAmbient();
-                if (this.paQueue.length) this.pumpPA();
                 this.updateIdle(missileList);
             },
 
@@ -4369,7 +4367,7 @@ Ambient
                         const A = AudioController;
                         return { ...A.debugState.cic, decoded: Object.values(A.callouts ?? {}).filter(Boolean).length,
                                  waiting: A.paQueue?.length ?? 0, lazy: [...(A.lazyCallouts?.keys() ?? [])],
-                                 busyUntil: A.busy?.radio, now: A.ctx?.currentTime, repeat: VOICE_REPEAT_WINDOW };
+                                 busyUntil: A.busy?.net, now: A.ctx?.currentTime, repeat: VOICE_REPEAT_WINDOW };
                     }
                 }
             };
