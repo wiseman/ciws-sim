@@ -43,6 +43,27 @@ The crew, CIC net and 1MC callouts are recorded clips in `sounds/`, generated an
 the game loads. How each line plays is set in the game's `BUCKETS` table; see
 [docs/voice/README.md](docs/voice/README.md).
 
+## Long runs
+
+The longer a session goes on (zen mode or a long game), the more turns up. It's counted in real
+time played and kept for the browser tab's session, so the reboot after a game over carries on.
+
+- The 1MC passes the ship's routine (relieve the watch, sweepers, chow, mail, and later taps and
+  reveille), each after the bosun's pipe, as if it weren't general quarters.
+- The crew wear down: more tired remarks join their chatter at 15 and 30 minutes and at 1 and 2
+  hours, along with remarks about "R2" (the mount). After 2 hours the mount chirps now and then.
+- The Captain's word grows, from "good work" to medals, to the cost, to the longest day of his life.
+- The crew remark on what it's all cost (20 mm rounds and our ship's missiles) at $40 million, an
+  F-35, half a billion and the price of the ship.
+- A kill mark is stencilled on the back of the radome every 100 kills, and every ten become a gold
+  star. Zen mode's camera visits them.
+- Now and then something turns up: a Seahawk flying past, dolphins, a seagull the radar sees, a
+  sailboat that has wandered in, a whale, and (rarely) a rubber duck. Zen mode cuts to it.
+- Holidays: fireworks on the Fourth of July, pumpkins on Halloween and a visitor on Christmas Eve.
+  Add `?date=07-04` (or `10-31`, `12-24`) to the URL to see one on another day.
+
+`LONG_RUN`, `SIGHTINGS` and `HOLIDAYS` in `index.html` hold the timings.
+
 ## Tools
 
 The Python scripts in `tools/` (run with `uv run tools/<name>.py`) drive the game in headless

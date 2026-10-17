@@ -820,6 +820,11 @@
         // Our ship's missile-launch warning: a run of short, bright beeps (odd harmonics), higher and
         // quicker than the GQ bong. pitch (Hz), beep spacing and length, total length (s); lead: from
         // the end of "Stand by for missile launch" to the alarm
+        // Sounds passing by (playPassBy): loudest `peak` s into `seconds`, over about +-`width` s
+        const PASS_BY = {
+            rotor: { seconds: 9, peak: 4, width: 1.6, gain: 1.2, refDistance: 60 },
+            bells: { seconds: 7, peak: 3, width: 1.4, gain: 0.8, refDistance: 90 }
+        };
         const LAUNCH_ALARM = { pitch: 1050, period: 0.18, on: 0.11, seconds: 1.2, lead: 0.4 };
         // Ranges (units from our ship) for the crew's flavour lines. quiet: no threat this close for
         // idle chatter or the Captain; closeCall: an anti-ship missile shot down this close;
@@ -858,6 +863,7 @@
         };
         // A line's wordings: name, name-2 ... name-n
         const wordings = (name, n) => [name, ...Array.from({ length: n - 1 }, (_, i) => `${name}-${i + 2}`)];
+        const numbered = (name, n) => Array.from({ length: n }, (_, i) => `${name}-${i + 1}`);
         // Every voice line comes from a bucket: a named group of recorded clips (sounds/, made by
         // tools/make_cic_audio.py) that AudioController.play picks from and schedules. A bucket plays
         // its clips round-robin from a random start, skipping any heard within `repeat` s; with none
@@ -882,6 +888,8 @@
         // Shared field groups: the net's procedural calls that can't wait, and the crew's flavour
         const URGENT_NET = { channel: 'net', urgent: true, repeat: 0 };
         const CREW_ASIDE = { channel: 'crew', aside: true };
+        const PA_ROUTINE = { channel: '1mc', aside: true, lead: 0.5, stale: 20 };
+        const LONG_ASIDE = { ...CREW_ASIDE, lead: 0.4, stale: 10 };
         const BUCKETS = {
             // A new anti-ship missile on radar (announceVampire, after any general alarm); then the
             // 1MC's "General quarters" (every ten minutes) and the first time, its "Set condition Zebra"
@@ -889,21 +897,20 @@
                 clips: ['vampire-{bearing}', 'vampire-{bearing}-b', 'vampire-{bearing}-c'], channel: 'net',
                 urgent: true, onlyIfClear: true, hush: 'crew', cooldown: 6, lead: 0.05, then: 'gq'
             },
-            gq: { ...URGENT_NET, clips: ['general-quarters'], cooldown: 600, lead: 0.6, then: 'zebra' },
-            zebra: { clips: ['set-zebra'], channel: '1mc', aside: true, cooldown: Infinity, repeat: 0, lead: 0.8 },
+            gq: { ...URGENT_NET, clips: wordings('general-quarters', 3), keep: true, cooldown: 600, lead: 0.6, then: 'zebra' },
+            zebra: { clips: wordings('set-zebra', 3), channel: '1mc', aside: true, cooldown: Infinity, repeat: 0, lead: 0.8 },
             // The net on the first threat of a game (noteThreat), and on the raid growing
-            'weapons-free': { clips: ['weapons-free'], channel: 'net', aside: true, cooldown: Infinity, repeat: 0, lead: 1.5 },
-            'raid-size': { clips: ['raid-size'], channel: 'net', aside: true, cooldown: 90, lead: 1 },
-            // An anti-ship missile shot down (announceKill), if the net is free then. All but splash
-            // are loaded when one appears (noteThreat); the round-robin keeps any one ten calls apart.
+            'weapons-free': { clips: wordings('weapons-free', 3), channel: 'net', aside: true, cooldown: Infinity, repeat: 0, lead: 1.5 },
+            'raid-size': { clips: wordings('raid-size', 3), channel: 'net', aside: true, cooldown: 90, lead: 1 },
+            // An anti-ship missile shot down (announceKill), if the net is free then
             kill: {
                 channel: 'net', urgent: true, keep: true, cooldown: 20, lead: 0.3, stale: 0,
                 clips: ['splash', 'kill-splash-one', 'kill-splashed', 'kill-destroyed', 'kill-good', ...[1, 2, 3, 4, 5].map(i => `kill-track-${i}`)]
             },
             // Our ship's VLS launches (warnVLSLaunch): "Stand by for missile launch" before a routine
             // one, from the alarm's due time; "Birds away" as each fires
-            'missile-launch': { ...URGENT_NET, clips: ['missile-launch'], cooldown: 90, lead: 0.3, stale: 8 },
-            'birds-away': { ...URGENT_NET, clips: ['birds-away'], cooldown: 10, lead: 0.4, stale: 5 },
+            'missile-launch': { ...URGENT_NET, clips: wordings('missile-launch', 3), keep: true, cooldown: 90, lead: 0.3, stale: 8 },
+            'birds-away': { ...URGENT_NET, clips: wordings('birds-away', 3), keep: true, cooldown: 10, lead: 0.4, stale: 5 },
             // A friendly hit (announceFriendlyHit): the crew react, naming her when params.named; the
             // 1MC's rescue call (they coalesce) and follow-up (side: 'stbd' or 'port'), from the hit
             reaction: {
@@ -911,12 +918,12 @@
                     'hit-get-out', 'hit-no-no-no', 'hit-survivors', 'hit-god-help', 'hit-direct-hit'],
                 channel: 'crew', lead: 0.5, jitter: 0.7, rank: (clip, { ship, named }) => +(clip.startsWith(`hit-${ship}-`) !== named)
             },
-            rescue: { clips: ['rescue-{ship}'], channel: '1mc', cooldown: 20, lead: 4, jitter: 0.7 },
+            rescue: { clips: wordings('rescue-{ship}', 3), channel: '1mc', cooldown: 20, lead: 4, jitter: 0.7 },
             'rescue-followup': { clips: ['rescue-rhib-{side}', 'rescue-medical', 'rescue-lookouts'], channel: '1mc', cooldown: 45, lead: 13, jitter: 0.7 },
             // A hit on our ship (announceDamage): a shout from the crew, damage control's call from its
             // end (or the hit, without it), preferring the side and kind and then the nearest frame,
             // and sometimes their call for reports
-            'we-hit': { ...CREW_ASIDE, clips: ['we-hit'], cooldown: 10, lead: 0.1, then: 'dc', thenAlways: true },
+            'we-hit': { ...CREW_ASIDE, clips: wordings('we-hit', 3), cooldown: 10, lead: 0.1, then: 'dc', thenAlways: true },
             dc: {
                 clips: Object.keys(DC_CALLS), channel: '1mc', cooldown: 20, lead: 1, jitter: 1, then: 'dc-report',
                 rank: (clip, { side, frame, missile }) => {
@@ -924,7 +931,7 @@
                     return (s !== side ? 2000 : m !== missile ? 1000 : 0) + Math.abs(f - frame);
                 }
             },
-            'dc-report': { clips: ['dc-report'], channel: '1mc', cooldown: 60, chance: 0.5, lead: 0.6, jitter: 1 },
+            'dc-report': { clips: wordings('dc-report', 3), channel: '1mc', cooldown: 60, chance: 0.5, lead: 0.6, jitter: 1 },
             // The crew's remarks: on an anti-ship missile shot down within CREW_RANGES.closeCall, or else
             // on kills in quick succession (announceKill); on a shell aimed within
             // CREW_RANGES.shells (noteThreat); on a friendly's VLS round, her wreck going under, or a
@@ -932,26 +939,62 @@
             'close-call': { ...CREW_ASIDE, clips: wordings('close-call', 6), cooldown: 45, lead: 0.6 },
             'multi-splash': { ...CREW_ASIDE, clips: wordings('multi-splash', 6), cooldown: 45, lead: 0.4 },
             shells: { ...CREW_ASIDE, clips: wordings('shells-incoming', 4), cooldown: 75, lead: 0.5 },
-            shooting: { ...CREW_ASIDE, clips: ['shooting-{ship}'], cooldown: 30, chance: 0.5, lead: 0.8 },
-            gone: { ...CREW_ASIDE, clips: ['gone-{ship}'], cooldown: 10, lead: 1 },
-            arrive: { ...CREW_ASIDE, clips: ['arrive-{ship}'], cooldown: 10, lead: 0.3 },
-            joined: { clips: ['joined-{ship}-{side}'], channel: '1mc', aside: true, cooldown: 10, lead: 1.5 },
-            // The crew's chatter (updateIdle), one remark in six "Is it over?" (which gets an answer),
-            // slipped into a gap within `stale` s; the Captain, in a lull
+            shooting: { ...CREW_ASIDE, clips: wordings('shooting-{ship}', 3), cooldown: 30, chance: 0.5, lead: 0.8 },
+            gone: { ...CREW_ASIDE, clips: wordings('gone-{ship}', 3), cooldown: 10, lead: 1 },
+            arrive: { ...CREW_ASIDE, clips: wordings('arrive-{ship}', 3), cooldown: 10, lead: 0.3 },
+            joined: { clips: wordings('joined-{ship}-{side}', 3), channel: '1mc', aside: true, cooldown: 10, lead: 1.5 },
+            // The crew's chatter (updateIdle), slipped into a gap within `stale` s; one remark in six
+            // someone wondering if it's over, and someone else telling them not to tempt fate
             chatter: { ...CREW_ASIDE, clips: ['chat-launchers', 'chat-bearing', 'chat-seawhiz', 'chat-mikemike', 'chat-ears'], lead: 0.3, stale: 10 },
-            'chatter-over': { ...CREW_ASIDE, clips: ['chat-over'], lead: 0.3, stale: 10, then: 'jinx' },
-            jinx: { ...CREW_ASIDE, clips: ['chat-jinx'], lead: 0.8 },
-            captain: { clips: ['captain'], channel: '1mc', aside: true, cooldown: 240, lead: 0.5 }
+            'is-it-over': { ...CREW_ASIDE, clips: wordings('chat-over', 3), lead: 0.3, stale: 10, then: 'is-it-over-reply' },
+            'is-it-over-reply': { ...CREW_ASIDE, clips: wordings('chat-jinx', 4), lead: 0.8 },
+            // The Captain, more so the longer it goes on (LONG_RUN.captain, all on one cooldown)
+            captain: { clips: ['captain', 'captain-2', 'captain-3'], channel: '1mc', aside: true, lead: 0.5 },
+            'captain-medal': { clips: numbered('captain-medal', 3), channel: '1mc', aside: true, lead: 0.5 },
+            'captain-cost': { clips: numbered('captain-cost', 3), channel: '1mc', aside: true, lead: 0.5 },
+            'captain-long': { clips: numbered('captain-long', 3), channel: '1mc', aside: true, lead: 0.5 },
+            // Long runs (updateLongRun). The 1MC's ship's routine, as if it weren't general quarters;
+            // the crew as they tire, and on the mount (R2), joining the chatter as the hours go by
+            // (LONG_RUN.tired); what it's all cost, at each milestone
+            'pa-watch': { ...PA_ROUTINE, clips: numbered('pa-watch', 3) },
+            'pa-sweepers': { ...PA_ROUTINE, clips: numbered('pa-sweepers', 3) },
+            'pa-chow': { ...PA_ROUTINE, clips: numbered('pa-chow', 3) },
+            'pa-mail': { ...PA_ROUTINE, clips: numbered('pa-mail', 3) },
+            'pa-taps': { ...PA_ROUTINE, clips: numbered('pa-taps', 3) },
+            'pa-reveille': { ...PA_ROUTINE, clips: numbered('pa-reveille', 3) },
+            'tired-1': { ...LONG_ASIDE, clips: numbered('tired-1', 4) },
+            'tired-2': { ...LONG_ASIDE, clips: numbered('tired-2', 4) },
+            'tired-3': { ...LONG_ASIDE, clips: numbered('tired-3', 4) },
+            'tired-4': { ...LONG_ASIDE, clips: numbered('tired-4', 4) },
+            r2: { ...LONG_ASIDE, clips: numbered('r2', 4) },
+            'cost-1': { ...LONG_ASIDE, clips: numbered('cost-1', 3) },
+            'cost-2': { ...LONG_ASIDE, clips: numbered('cost-2', 3) },
+            'cost-3': { ...LONG_ASIDE, clips: numbered('cost-3', 3) },
+            'cost-4': { ...LONG_ASIDE, clips: numbered('cost-4', 3) },
+            // What turns up now and then (SIGHTINGS), as it comes into view (side: 'port' or 'starboard')
+            dolphins: { ...LONG_ASIDE, clips: numbered('dolphins', 3), stale: 6 },
+            whale: { ...LONG_ASIDE, clips: [1, 2, 3].map(i => `whale-{side}-${i}`), stale: 6 },
+            sailboat: { ...LONG_ASIDE, clips: numbered('sailboat', 3), stale: 8 },
+            duck: { ...LONG_ASIDE, clips: numbered('duck', 3), stale: 8 },
+            flyby: { clips: numbered('flyby', 3), channel: 'net', aside: true, lead: 0.3, stale: 6 },
+            bird: { clips: numbered('bird', 3), channel: 'net', aside: true, lead: 0.3, stale: 4 },
+            // Holidays (HOLIDAY): the crew on the Fourth of July's fireworks and Halloween's pumpkins
+            // (a kill now and then), and Christmas Eve's visitor on the net, then the crew
+            july4: { ...CREW_ASIDE, clips: numbered('july4', 3), cooldown: 180, chance: 0.3, lead: 1 },
+            halloween: { ...CREW_ASIDE, clips: numbered('halloween', 3), cooldown: 180, chance: 0.3, lead: 1 },
+            sleigh: { clips: numbered('sleigh', 3), channel: 'net', aside: true, lead: 0.3, stale: 8, then: 'sleigh-crew' },
+            'sleigh-crew': { ...CREW_ASIDE, clips: numbered('sleigh-crew', 3), lead: 1 }
         };
         // When the triggers ask for BUCKETS' lines (times in s). announceVampire: the general alarm
         // first if it hasn't sounded for `cooldown`, and the call `lead` after it. announceKill: the
         // crew's multi-splash on kills less than `window` apart. announceFriendlyHit: the rescue call
         // `gap` after the crew's reaction. updateIdle: chatter `delay` (a range) after the first kill
         // since the crew last chatted, tried every `retry` till it gets a word in; the Captain after
-        // `kills` kills or `action` since the first of them, once there's been no voice for his `quiet`.
+        // `kills` kills or `action` since the first of them, once there's been no voice for his `quiet`,
+        // and no sooner than `cooldown` after he last spoke.
         const VOICE_TRIGGERS = {
             alarm: { cooldown: 40, lead: 1.5 }, multiSplash: { window: 2.5 },
-            chatter: { delay: [45, 90], retry: 4 }, captain: { kills: 25, action: 270, quiet: 5 },
+            chatter: { delay: [45, 90], retry: 4 }, captain: { kills: 25, action: 270, quiet: 5, cooldown: 240 },
             rescue: { gap: 0.8 }
         };
         // The bearings the vampire calls name. Fetched and decoded at start-up and kept: each urgent
@@ -1759,6 +1802,7 @@
                 }]));
                 this.killTimes = [];       // recent kills (multi-splash)
                 this.captainKills = 0;     // kills since the Captain last spoke...
+                this.captainAt = -Infinity; // ...when that was
                 this.actionSince = 0;      // ...and when the first of them was
                 this.nextChatter = Infinity; // the crew may chat from then (set by a kill, announceKill)
             },
@@ -2063,18 +2107,32 @@
                 // The crew's chatter, on its timer: slipped into the next gap in the talk (an aside),
                 // and tried again shortly if none comes ("Is it over?" as one remark in six; the
                 // other kind if this one has none fresh)
+                // other kind if this one has none fresh). On a long run the tired remarks join in
+                // (LONG_RUN.tired), each lot as likely as the first; tried in a random order till one
+                // has a line fresh.
                 if (t >= this.nextChatter) {
                     this.nextChatter = t + chatter.retry;
                     const over = Math.random() * (BUCKETS.chatter.clips.length + 1) < 1;
-                    const said = this.play(over ? 'chatter-over' : 'chatter', {}, t) ?? this.play(over ? 'chatter' : 'chatter-over', {}, t);
+                    const lots = ['chatter', ...longRunLots(LONG_RUN.tired)].sort(() => Math.random() - 0.5)
+                        .flatMap(name => (name !== 'chatter' ? [name] : over ? ['is-it-over', 'chatter'] : ['chatter', 'is-it-over']));
+                    let said = null;
+                    for (const name of lots) if ((said = this.play(name, {}, t)) !== null) break;
                     Promise.resolve(said).then(end => { if (end !== null) this.nextChatter = Infinity; });
                 }
-                // The Captain, after a long fight, in a lull with nothing close
+                // The Captain, after a long fight, in a lull with nothing close: from the latest lot
+                // he's reached (LONG_RUN.captain) two times in three, or else an earlier one
                 const fought = this.captainKills >= captain.kills || (this.captainKills > 0 && t - this.actionSince >= captain.action);
-                if (!fought || t - this.clearFrom() < captain.quiet || this.paQueue.length) return;
+                if (!fought || t - this.captainAt < captain.cooldown || t - this.clearFrom() < captain.quiet || this.paQueue.length) return;
                 const range = CREW_RANGES.quiet ** 2;
                 for (const m of missileList) if (m.mesh.position.lengthSq() < range) return;
-                if (this.play('captain', {}, t)) this.captainKills = 0;
+                const lots = longRunLots(LONG_RUN.captain).reverse();
+                if (lots.length > 1 && Math.random() < 1 / 3) lots.push(lots.shift());
+                for (const name of lots) {
+                    if (this.play(name, {}, t) === null) continue;
+                    this.captainKills = 0;
+                    this.captainAt = t;
+                    break;
+                }
             },
 
             // Our ship is about to fire a VLS round. Routine: the 1MC's "Stand by for missile launch"
@@ -2101,6 +2159,73 @@
                 this.playAt(pick(this.buffers.vlsRoar), position, {
                     gain: 0.7 * scale, refDistance: 40, rate: 0.95 + Math.random() * 0.1, wet: 0.3, delay, spread: 0.45
                 });
+            },
+
+            // The mount's droid chirp on a long run (updateLongRun): a few quick warbling beeps, a
+            // different run of them each time. Built on first use.
+            playChirp: function () {
+                if (!this.isInit || this.isMuted || this.activeOneShots >= MAX_ONE_SHOTS) return;
+                this.buffers.chirps ??= Array.from({ length: 6 }, () => this.makeChirp());
+                this.playAt(pick(this.buffers.chirps), MOUNT_AUDIO_POSITION, { gain: 0.45, refDistance: 20, wet: 0.15, spread: 0.2 });
+            },
+
+            makeChirp: function () {
+                let at = 0;
+                const notes = Array.from({ length: 4 + Math.floor(Math.random() * 5) }, () => {
+                    const n = { at, length: rand(0.05, 0.14), f0: rand(1200, 3800), f1: rand(1200, 3800), wobble: Math.random() < 0.4 ? rand(18, 40) : 0 };
+                    at += n.length + rand(0.02, 0.07);
+                    return n;
+                });
+                return this.makeStereoBufferFrom(at + 0.05, (d, sr) => {
+                    for (const n of notes) {
+                        let phase = 0;
+                        const i0 = Math.floor(n.at * sr), len = Math.floor(n.length * sr);
+                        for (let i = 0; i < len && i0 + i < d.length; i++) {
+                            const u = i / len, f = (n.f0 + (n.f1 - n.f0) * u) * (1 + 0.15 * Math.sin(2 * Math.PI * n.wobble * i / sr));
+                            phase += 2 * Math.PI * f / sr;
+                            d[i0 + i] += (Math.sin(phase) + 0.2 * Math.sin(2 * phase)) * Math.min(1, u / 0.08, (1 - u) / 0.15);
+                        }
+                    }
+                }, 0.8);
+            },
+
+            // Something passing by (SIGHTINGS): a Seahawk's rotor ('rotor') or sleigh bells
+            // ('bells'), swelling to its loudest PASS_BY[kind].peak s in, as it passes `position`,
+            // and falling in pitch as it goes. Built on first use.
+            playPassBy: function (kind, position) {
+                if (!this.isInit || this.isMuted || this.activeOneShots >= MAX_ONE_SHOTS) return;
+                const P = PASS_BY[kind];
+                this.buffers[kind] ??= this.makeStereoBufferFrom(P.seconds, (d, sr) => {
+                    const thump = DSP.biquad('lowpass', 260, 0.8, sr), whine = DSP.biquad('bandpass', 2400, 6, sr);
+                    let phase = 0, next = 0, strikes = [];
+                    for (let i = 0; i < d.length; i++) {
+                        const t = i / sr, x = (t - P.peak) / P.width, swell = 1 / (1 + x * x);
+                        const doppler = 1 + 0.05 * Math.tanh(-x * 1.5);
+                        let s = 0;
+                        if (kind === 'rotor') {
+                            // Blade slap at four blades a turn, over the turbines' whine
+                            phase += 17 * doppler / sr;
+                            const slap = Math.exp(-(phase % 1) * 9);
+                            s = thump(Math.random() * 2 - 1) * 5 * slap + whine(Math.random() * 2 - 1) * 0.6 * doppler;
+                        } else {
+                            // Bells shaken in clusters, each strike three inharmonic partials
+                            if (t >= next) {
+                                next = t + (Math.random() < 0.25 ? rand(0.15, 0.25) : rand(0.015, 0.05));
+                                strikes.push({ at: t, f: rand(0.95, 1.05) });
+                            }
+                            for (const k of strikes) {
+                                const age = t - k.at;
+                                if (age > 0.12) continue;
+                                const e = Math.exp(-age / 0.035);
+                                s += e * (Math.sin(2 * Math.PI * 2650 * k.f * doppler * age) + 0.6 * Math.sin(2 * Math.PI * 4150 * k.f * doppler * age)
+                                    + 0.4 * Math.sin(2 * Math.PI * 5900 * k.f * doppler * age));
+                            }
+                            if (strikes.length > 40) strikes = strikes.filter(k => t - k.at <= 0.12);
+                        }
+                        d[i] = s * swell;
+                    }
+                });
+                this.playAt(this.buffers[kind], position, { gain: P.gain, refDistance: P.refDistance, wet: 0.25, spread: 0.4 });
             },
 
             toggleMute: function () {
@@ -3261,6 +3386,7 @@ Ambient
 
         function rebootSystem() {
             NeuralController.save();
+            saveLongRun();
             location.reload();
         }
 
@@ -4263,6 +4389,7 @@ Ambient
             createSky();
             createOcean();
             createShip();
+            loadLongRun();
             createPhalanxCIWS();
             createClouds();
             createMountains();
@@ -4305,6 +4432,16 @@ Ambient
                     get fx() { return { ...fxCounts }; },
                     get stats() { return { score, health, wave, engagementStats }; },
                     get zenShot() { return zen.on ? zen.director.shot : null; }, // the director's shot (ZEN_SHOTS)
+                    // Long runs: what's kept (LONG_RUN_SAVED), the sightings under way, the lines still
+                    // waiting to go out, the marks on the radome and the holiday; setLongRun(o) sets any
+                    // of it (e.g. { played: 3600 }); sight(name) starts a sighting (SIGHTINGS) now
+                    get longRun() {
+                        return { ...Object.fromEntries(LONG_RUN_SAVED.map(k => [k, longRun[k]])), live: longRun.live.map(s => s.name),
+                                 asks: longRun.asks.map(a => a.bucket), marks: killMarks?.shown, holiday: HOLIDAY };
+                    },
+                    setLongRun(o) { Object.assign(longRun, o); },
+                    sight(name) { return startSighting(name)?.name ?? null; },
+                    get sightings() { return longRun.live; },
                     holdSpawns() { spawnCooldown = Infinity; },
                     holdVLS() { vlsCooldown = Infinity; }, // no unprompted launches
                     holdFire() { fireCooldown = Infinity; }, // the gun tracks but never fires
@@ -4498,6 +4635,7 @@ Ambient
             radome.position.z = -0.5;
             radome.castShadow = true;
             turretPitch.add(radome);
+            createKillMarks(radome);
             const seam = y => dark(new THREE.TorusGeometry(0.955, 0.016, 5, 48), at(0, y, 0, Math.PI / 2), true);
             mergeByMaterial([
                 seam(0.95), seam(2.75),
@@ -6868,15 +7006,17 @@ Ambient
         const spawnFoamRing = (x, z, size, duration) =>
             spawnBillboard(flatRingPool, () => makeRing(true), new THREE.Vector3(x, WATER_LEVEL + 0.06, z), { size, duration });
 
-        function spawnSpark(position, velocity, life, width, length) {
+        // color: its own (a THREE.Color, dimming as it ages); otherwise white-hot cooling to orange
+        function spawnSpark(position, velocity, life, width, length, color = null) {
             if (fxSparks.length >= SPARK_MAX) return;
-            fxSparks.push({ pos: position.clone(), vel: velocity, age: 0, life, width, length });
+            fxSparks.push({ pos: position.clone(), vel: velocity, age: 0, life, width, length, color });
         }
 
         // carry: the threat's motion it carries on with (units/s), on top of its own spray, decaying
         // at FX_CARRY.debris.k
-        function spawnDebris(position, velocity, { life, trailWidth, trailLife = 1.6, smoke = 0xc9c5bd, carry = _noCarry }) {
-            const d = debrisPool.pop() || makeDebris();
+        // pumpkin: one of Halloween's (makePumpkinDebris)
+        function spawnDebris(position, velocity, { life, trailWidth, trailLife = 1.6, smoke = 0xc9c5bd, carry = _noCarry, pumpkin = false }) {
+            const d = pumpkin ? pumpkinPool.pop() || makePumpkinDebris() : debrisPool.pop() || makeDebris();
             d.mesh.position.copy(position);
             d.size = rand(0.6, 1.3);
             d.mesh.scale.setScalar(d.size);
@@ -6987,9 +7127,10 @@ Ambient
                 randomDirection(dir);
                 dir.y = Math.abs(dir.y) * 0.8 + 0.2;
                 spawnDebris(pos, dir.normalize().multiplyScalar(rand(18, 32) * scale), {
-                    life: rand(1.2, 2.0), trailWidth: 0.35 * scale, carry: _fxShare
+                    life: rand(1.2, 2.0), trailWidth: 0.35 * scale, carry: _fxShare, pumpkin: HOLIDAY === 'halloween' && i < 3
                 });
             }
+            if (HOLIDAY === 'july4') spawnFirework(pos);
             // Sparks streak along their velocity, so the carried share rakes them into a forward cone
             carryShare(_fxShare, carry, FX_CARRY.spark);
             for (let i = 0; i < 34; i++) {
@@ -7326,6 +7467,7 @@ Ambient
             if (!at) return false;
             at.cell.open = VLS_HATCH_LEAD + VLS_HATCH_AFTER;
             vlsPending.push({ launcher, at, bearing, delay: VLS_HATCH_LEAD });
+            if (launcher === 'ship') longRun.cost += LONG_RUN.cost.missile;
             return true;
         }
 
@@ -7499,6 +7641,7 @@ Ambient
             updateWrecks(dt);
             updateVLS(dt);
             updateSmokeColumns(dt);
+            updateSightings(dt);
         }
 
         const _sparkQuat = new THREE.Quaternion();
@@ -7810,7 +7953,7 @@ Ambient
                     if (hitWater) debrisSplash(p, _fxVel.copy(d.vel).add(d.carry), d.plume);
                     else if (hitHull) debrisClang(p, _fxVel.copy(d.vel).add(d.carry));
                     d.trail.head = null;
-                    releaseFrom(fxDebris, i, debrisPool, d);
+                    releaseFrom(fxDebris, i, d.pumpkin ? pumpkinPool : debrisPool, d);
                 }
             }
 
@@ -7862,7 +8005,7 @@ Ambient
                 _sparkScale.set(w, w, s.length * (1 - k * 0.6));
                 _sparkMatrix.compose(s.pos, _sparkQuat, _sparkScale);
                 sparkMesh.setMatrixAt(live, _sparkMatrix);
-                sparkMesh.setColorAt(live, _sparkColor.copy(_sparkHot).lerp(_sparkCool, k));
+                sparkMesh.setColorAt(live, s.color ? _sparkColor.copy(s.color).multiplyScalar(1 - 0.6 * k) : _sparkColor.copy(_sparkHot).lerp(_sparkCool, k));
                 live++;
             }
             fxSparks.length = live;
@@ -7909,6 +8052,7 @@ Ambient
                 prevPos: muzzlePos.clone() // where it was before its latest move
             });
             engagementStats[controllerMode].rounds++;
+            longRun.cost += LONG_RUN.cost.round;
 
             AudioController.noteShot();
             if (cameraMode === 1 || cameraMode === CAMERA_SPLIT) cameraShake = 0.3;
@@ -8186,6 +8330,7 @@ Ambient
             // Update elapsed time (scaled to real seconds, same as before)
             elapsedTime += deltaTime * timeScale;
             document.getElementById('time-elapsed').innerText = formatTime(elapsedTime);
+            updateLongRun(deltaTime);
 
             // 1. Manage Missiles
             spawnCooldown -= simSteps;
@@ -8424,6 +8569,7 @@ Ambient
                                 AudioController.announceKill(m.type, mPos.length());
                                 engagementStats[p.firedBy].kills++;
                                 score++;
+                                noteLongRunKill();
                                 document.getElementById('kill-count').innerText = score;
 
                                 // Update high score if beaten (not in zen mode, where nothing's at stake)
@@ -9012,6 +9158,635 @@ Ambient
         // A battle to watch: no UI, a steady busy wave, and no end to it (hits land but our ship
         // doesn't wear down, and a friendly that goes down is replaced, sendReplacement), while a
         // director cuts between camera shots. Z or the ZEN button; normal play resumes from there.
+        // --- Long runs ---
+        // What a long session earns: the 1MC's ship's routine, the crew wearing down and the
+        // Captain's word growing (LONG_RUN.tired and .captain, in updateIdle), the crew on what it's
+        // all cost, kill marks on the radome, and now and then something turning up (SIGHTINGS).
+        // Times are real s of play (none after a game over), kept for the tab's session
+        // (sessionStorage), so the reboot after a game over carries on where it left off.
+        const LONG_RUN = {
+            save: 15, // s between saves
+            // The 1MC's routine: its first call `first` s in, then every `every` (a range), each the
+            // one heard least lately of those reached (`from`; reveille only once taps has gone)
+            routine: {
+                first: 300, every: [360, 600],
+                from: { 'pa-watch': 0, 'pa-sweepers': 0, 'pa-chow': 0, 'pa-mail': 0, 'pa-taps': 3600, 'pa-reveille': 5400 }
+            },
+            // Buckets that join the crew's chatter, and the Captain's lots, from these s of play
+            tired: [['tired-1', 900], ['tired-2', 1800], ['tired-3', 3600], ['r2', 3600], ['tired-4', 7200]],
+            captain: [['captain', 0], ['captain-medal', 1200], ['captain-cost', 3600], ['captain-long', 7200]],
+            // What it costs (dollars): a 20 mm round and a round from our ship's VLS; the crew's word
+            // as the total passes each milestone
+            cost: { round: 35, missile: 2.1e6, milestones: [[4e7, 'cost-1'], [1e8, 'cost-2'], [5e8, 'cost-3'], [2e9, 'cost-4']] },
+            // A kill mark on the radome per `per` kills, and every `star` marks traded for a star
+            marks: { per: 100, star: 10 },
+            // The mount's droid chirp, between engagements, from `from` s of play, every `every`
+            chirp: { from: 7200, every: [240, 600] },
+            ask: { retry: 4 } // s between tries at a line that hasn't got a word in (sayEventually)
+        };
+        // A holiday by today's date (?date=MM-DD stands in for it, to try them out)
+        const HOLIDAYS = { '07-04': 'july4', '10-31': 'halloween', '12-24': 'xmas', '12-25': 'xmas' };
+        const HOLIDAY = (() => {
+            const now = new Date(), pad = n => String(n).padStart(2, '0');
+            const day = new URLSearchParams(location.search).get('date') ?? `${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+            return HOLIDAYS[day] ?? null;
+        })();
+        const LONG_RUN_SAVED = ['played', 'kills', 'cost', 'milestone', 'routineAt', 'routineHeard', 'chirpAt', 'sightAt'];
+        const longRun = {
+            played: 0, kills: 0, cost: 0,
+            milestone: 0,                       // LONG_RUN.cost.milestones passed
+            routineAt: LONG_RUN.routine.first,  // when the 1MC's next routine call is due...
+            routineHeard: {},                   // ...and when each was last asked for
+            chirpAt: LONG_RUN.chirp.from,
+            sightAt: {},                        // SIGHTINGS name -> when it next turns up
+            live: [],                           // sightings under way
+            asks: [],                           // lines still trying to get a word in (sayEventually)
+            savedAt: 0
+        };
+        const longRunLots = list => list.filter(([, from]) => longRun.played >= from).map(([name]) => name);
+
+        function loadLongRun() {
+            try {
+                Object.assign(longRun, JSON.parse(sessionStorage.getItem('ciwsLongRun') ?? '{}'));
+            } catch (err) { /* starts afresh */ }
+            longRun.savedAt = longRun.played;
+        }
+
+        function saveLongRun() {
+            longRun.savedAt = longRun.played;
+            try {
+                sessionStorage.setItem('ciwsLongRun', JSON.stringify(Object.fromEntries(LONG_RUN_SAVED.map(k => [k, longRun[k]]))));
+            } catch (err) { /* not kept */ }
+        }
+
+        // Asks for a line from `bucket`, and again every LONG_RUN.ask.retry s till it goes out or
+        // `within` s have passed
+        function sayEventually(bucket, params = {}, within = 60) {
+            longRun.asks.push({ bucket, params, until: longRun.played + within, next: 0, waiting: false, done: false });
+        }
+
+        function updateAsks() {
+            const L = longRun;
+            for (const a of L.asks) {
+                if (a.waiting || L.played < a.next) continue;
+                a.next = L.played + LONG_RUN.ask.retry;
+                const said = AudioController.play(a.bucket, a.params);
+                if (said === null) continue;
+                a.waiting = true;
+                Promise.resolve(said).then(end => {
+                    a.waiting = false;
+                    a.done = end !== null;
+                });
+            }
+            L.asks = L.asks.filter(a => !a.done && (a.waiting || L.played < a.until));
+        }
+
+        // Each frame of play (real s): the 1MC's routine, the cost milestones, the kill marks, the
+        // chirp, and the sightings' turns
+        function updateLongRun(dt) {
+            const L = longRun, R = LONG_RUN;
+            L.played += dt;
+            if (L.played >= L.routineAt) {
+                L.routineAt = L.played + rand(...R.routine.every);
+                const heard = name => L.routineHeard[name] ?? -1;
+                const due = Object.keys(R.routine.from).filter(name => L.played >= R.routine.from[name] &&
+                    (name !== 'pa-reveille' || heard('pa-taps') > heard('pa-reveille')));
+                const name = due.sort(() => Math.random() - 0.5).sort((a, b) => heard(a) - heard(b))[0];
+                L.routineHeard[name] = L.played;
+                sayEventually(name, {}, 90);
+            }
+            const milestone = R.cost.milestones[L.milestone];
+            if (milestone && L.cost >= milestone[0]) {
+                L.milestone++;
+                sayEventually(milestone[1], {}, 120);
+            }
+            updateKillMarks();
+            if (L.played >= L.chirpAt && !isFiring) {
+                L.chirpAt = L.played + rand(...R.chirp.every);
+                AudioController.playChirp();
+            }
+            for (const [name, S] of Object.entries(SIGHTINGS)) {
+                if (S.holiday && S.holiday !== HOLIDAY) continue;
+                L.sightAt[name] ??= S.after + rand(0, S.every[0] / 2);
+                if (L.played < L.sightAt[name]) continue;
+                // One at a time, and not straight after another
+                if (L.live.length) L.sightAt[name] = L.played + rand(60, 180);
+                else if (startSighting(name)) L.sightAt[name] = L.played + rand(...S.every);
+            }
+            updateAsks();
+            if (L.played - L.savedAt >= R.save) saveLongRun();
+        }
+
+        // A kill by the gun, and a round or a VLS round of ours spent (what the long run counts)
+        function noteLongRunKill() {
+            longRun.kills++;
+            if (HOLIDAY === 'july4' || HOLIDAY === 'halloween') AudioController.play(HOLIDAY);
+        }
+
+        // --- Kill marks ---
+        // Stencilled round the back of the radome, as fighter pilots paint them on: a missile per
+        // LONG_RUN.marks.per kills in a row, and every `star` of them traded for a gold star above
+        const KILL_MARKS = { r: 0.972, step: 0.19, markY: 2.0, starY: 2.48, maxStars: 28 };
+        let killMarks = null;
+        function createKillMarks(radome) {
+            const w = 0.035, fin = 0.08;
+            const missile = new THREE.Shape([[0, 0.16], [w, 0.105], [w, -0.09], [fin, -0.16], [-fin, -0.16], [-w, -0.09], [-w, 0.105]]
+                .map(([x, y]) => new THREE.Vector2(x, y)));
+            const star = new THREE.Shape(Array.from({ length: 10 }, (_, i) => {
+                const a = i * Math.PI / 5, r = i % 2 ? 0.048 : 0.115;
+                return new THREE.Vector2(Math.sin(a) * r, Math.cos(a) * r);
+            }));
+            const layer = (shape, color, n) => {
+                const mesh = new THREE.InstancedMesh(new THREE.ShapeGeometry(shape), new THREE.MeshBasicMaterial({ color }), n);
+                mesh.count = 0;
+                mesh.userData.noOutline = true;
+                radome.add(mesh);
+                return mesh;
+            };
+            killMarks = { radome, marks: layer(missile, PALETTE.ink, LONG_RUN.marks.star), stars: layer(star, 0xc9952c, KILL_MARKS.maxStars), shown: -1 };
+            updateKillMarks();
+        }
+
+        const _markMatrix = new THREE.Matrix4();
+        function placeMarks(mesh, count, y) {
+            const { r, step } = KILL_MARKS;
+            mesh.count = count;
+            for (let i = 0; i < count; i++) {
+                const a = Math.PI + (i - (count - 1) / 2) * step;
+                mesh.setMatrixAt(i, _markMatrix.makeRotationY(a).setPosition(Math.sin(a) * r, y, Math.cos(a) * r));
+            }
+            mesh.instanceMatrix.needsUpdate = true;
+        }
+
+        function updateKillMarks() {
+            const n = Math.floor(longRun.kills / LONG_RUN.marks.per), { star } = LONG_RUN.marks;
+            if (!killMarks || n === killMarks.shown) return;
+            killMarks.shown = n;
+            placeMarks(killMarks.stars, Math.min(Math.floor(n / star), KILL_MARKS.maxStars), KILL_MARKS.starY);
+            placeMarks(killMarks.marks, n % star, KILL_MARKS.markY);
+        }
+
+        // --- Sightings ---
+        // Now and then, something turns up that has nothing to do with the battle: built when it's
+        // first needed, sent on its way, and its line said (and the zen director's cut made) as it
+        // comes into view. after: s of play before the first; every: s between them (a range);
+        // holiday: only on that HOLIDAY.
+        const SIGHTINGS = {
+            flyby: { after: 480, every: [720, 1200], start: startFlyby },
+            dolphins: { after: 600, every: [900, 1500], start: startDolphins },
+            bird: { after: 720, every: [900, 1500], start: startGull },
+            sailboat: { after: 900, every: [1200, 2100], start: startSailboat },
+            whale: { after: 1200, every: [1500, 2400], start: startWhale },
+            duck: { after: 3600, every: [5400, 9000], start: startDuck },
+            sleigh: { holiday: 'xmas', after: 150, every: [1200, 1800], start: startSleigh }
+        };
+        const sightingModels = {};
+        const sightingModel = (name, build) => (sightingModels[name] ??= addOutlines(build()));
+
+        // A sighting: its model in the scene, step(s, dt) moving it on (false once it's done), and
+        // frame(s, cam, look) for the director's shot of it
+        function startSighting(name) {
+            const s = SIGHTINGS[name].start();
+            if (!s) return null;
+            s.name = name;
+            s.age = 0;
+            s.alive = true;
+            scene.add(s.mesh);
+            longRun.live.push(s);
+            return s;
+        }
+
+        // Its moment: its line, and the director's cut to it
+        function sightingSeen(s, bucket, params = {}) {
+            if (s.seen) return;
+            s.seen = true;
+            AudioController.play(bucket, params);
+            if (zen.on) zenSighting(s);
+        }
+
+        // Per frame (sim s), after the game's over too
+        function updateSightings(dt) {
+            const L = longRun;
+            if (!L.live.length) return;
+            L.live = L.live.filter(s => {
+                s.age += dt;
+                if (s.step(s, dt) !== false) return true;
+                s.alive = false;
+                scene.remove(s.mesh);
+                return false;
+            });
+        }
+
+        const _sightA = new THREE.Vector3(), _sightB = new THREE.Vector3(), _sightQ = new THREE.Quaternion();
+        // A side of our ship: 1 starboard (+x), -1 port
+        const anySide = () => (Math.random() < 0.5 ? 1 : -1);
+        const sideName = side => (side > 0 ? 'starboard' : 'port');
+
+        // A pod of dolphins down one side of us, leaping clear as they go, bow to stern
+        const DOLPHINS = { speed: 8, from: -170, to: 230, seen: [-70, -20], leap: 0.9, period: [2.0, 2.8] };
+        function buildDolphin() {
+            const g = new THREE.Group(), mat = toonMat(0x6b7c89);
+            const profile = [[0, -1.3], [0.1, -1.18], [0.28, -0.7], [0.36, -0.15], [0.34, 0.4], [0.22, 0.88], [0.09, 1.08], [0.06, 1.3], [0, 1.38]];
+            const body = new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 14).rotateX(Math.PI / 2).scale(1, 0.85, 1);
+            const fin = new THREE.ExtrudeGeometry(new THREE.Shape([[-0.32, 0], [0.12, 0], [-0.38, 0.4]].map(([x, y]) => new THREE.Vector2(x, y))),
+                { depth: 0.05, bevelEnabled: false }).translate(0, 0, -0.025).rotateY(-Math.PI / 2).translate(0, 0.26, 0);
+            const flukes = new THREE.ShapeGeometry(new THREE.Shape([[0, -0.02], [0.5, 0.32], [0.52, 0.16], [0.12, 0], [-0.12, 0], [-0.52, 0.16], [-0.5, 0.32]]
+                .map(([x, y]) => new THREE.Vector2(x, y)))).rotateX(-Math.PI / 2).translate(0, 0, -1.22);
+            mergeByMaterial([{ geo: body, mat }, { geo: fin, mat }, { geo: flukes, mat: toonMat(0x6b7c89, { side: THREE.DoubleSide }) }]).forEach(m => g.add(m));
+            return g;
+        }
+        function startDolphins() {
+            const side = anySide(), mesh = new THREE.Group(), D = DOLPHINS;
+            const x = side * rand(15, 24);
+            const pod = Array.from({ length: 4 + Math.floor(Math.random() * 3) }, (_, i) => {
+                const m = sightingModel('dolphin', buildDolphin).clone();
+                mesh.add(m);
+                return { mesh: m, dx: side * rand(-3, 4), dz: -i * rand(2.5, 4), period: rand(...D.period), phase: rand(0, 3), high: rand(1.1, 1.8), wet: true };
+            });
+            return {
+                mesh, side, z: D.from, pod, x,
+                step(s, dt) {
+                    s.z += D.speed * dt;
+                    for (const d of s.pod) {
+                        const t = (s.age + d.phase) % d.period, u = t / D.leap, x = s.x + d.dx, z = s.z + d.dz;
+                        const out = u < 1;
+                        if (out === d.wet) {
+                            d.wet = !out;
+                            spawnPlume(x, z, 0.22);
+                        }
+                        d.mesh.visible = out;
+                        if (!out) continue;
+                        d.mesh.position.set(x, WATER_LEVEL - 0.3 + d.high * 4 * u * (1 - u), z);
+                        d.mesh.rotation.x = -Math.atan2(d.high * 4 * (1 - 2 * u) / D.leap, D.speed);
+                    }
+                    if (s.z > D.seen[0] && s.z < D.seen[1]) sightingSeen(s, 'dolphins');
+                    return s.z < D.to;
+                },
+                frame(s, cam, look) {
+                    cam.set(s.x + s.side * 16, WATER_LEVEL + 3.2, s.z + 14);
+                    look.set(s.x * 0.6, 0.5, s.z - 6);
+                }
+            };
+        }
+
+        // A whale well out on our beam: she surfaces, blows twice, and dives, her flukes coming up
+        // as she goes. She turns over an arc `radius` below the surface, as if rolling over a wheel.
+        // roll: [s, rad] keys for her turn over the arc (eased into the last, the dive)
+        const WHALE = { radius: 9, speed: 1.2, blows: [3, 6.5], seen: 3, roll: [[0, -0.48], [3, -0.06], [8, 0.1], [16, 1.5]] };
+        function buildWhale() {
+            const g = new THREE.Group(), mat = toonMat(0x3c4851);
+            const profile = [[0, -6.6], [0.45, -6.0], [1.1, -4.4], [1.9, -2], [2.25, 0.5], [2.15, 3], [1.75, 5], [1.05, 6.5], [0, 7.1]];
+            const body = new THREE.LatheGeometry(profile.map(([r, y]) => new THREE.Vector2(r, y)), 18).rotateX(Math.PI / 2).scale(1, 0.78, 1);
+            const hump = new THREE.ConeGeometry(0.45, 0.7, 8).translate(0, 1.55, -3.4);
+            mergeByMaterial([{ geo: body, mat }, { geo: hump, mat }]).forEach(m => g.add(m));
+            const tail = new THREE.Group();
+            tail.position.z = -6.3;
+            const flukes = new THREE.ShapeGeometry(new THREE.Shape([[0, -0.1], [2.3, 1.15], [2.45, 0.55], [0.5, -0.15], [-0.5, -0.15], [-2.45, 0.55], [-2.3, 1.15]]
+                .map(([x, y]) => new THREE.Vector2(x, y)))).rotateX(-Math.PI / 2);
+            tail.add(new THREE.Mesh(flukes, toonMat(0x3c4851, { side: THREE.DoubleSide })));
+            g.add(tail);
+            g.userData.tail = tail;
+            return g;
+        }
+        function startWhale() {
+            const side = anySide(), W = WHALE;
+            const whale = sightingModel('whale', buildWhale);
+            const mesh = new THREE.Group(), arm = new THREE.Group();
+            mesh.position.set(side * rand(75, 110), WATER_LEVEL - W.radius, rand(-50, 70));
+            mesh.rotation.y = Math.random() < 0.5 ? 0 : Math.PI;
+            whale.position.set(0, W.radius, 0);
+            arm.add(whale);
+            mesh.add(arm);
+            const keys = W.roll;
+            return {
+                mesh, side, arm, whale, blows: [...W.blows],
+                step(s, dt) {
+                    mesh.translateZ(W.speed * dt);
+                    let i = 0;
+                    while (i < keys.length - 2 && s.age > keys[i + 1][0]) i++;
+                    const [t0, a0] = keys[i], [t1, a1] = keys[i + 1], k = THREE.MathUtils.clamp((s.age - t0) / (t1 - t0), 0, 1);
+                    const a = a0 + (a1 - a0) * (i === keys.length - 2 ? k * k * (3 - 2 * k) : k);
+                    s.arm.rotation.x = a;
+                    // The flukes lift toward the vertical as she dives
+                    s.whale.userData.tail.rotation.x = THREE.MathUtils.clamp((a - 0.15) * 2.2, 0, 1.25);
+                    if (s.blows.length && s.age >= s.blows[0]) {
+                        s.blows.shift();
+                        s.whale.getWorldPosition(_sightA);
+                        _sightB.set(0, 0, 4.6).applyQuaternion(s.whale.getWorldQuaternion(_sightQ));
+                        spawnPlume(_sightA.x + _sightB.x, _sightA.z + _sightB.z, 1.3);
+                    }
+                    if (s.age >= W.seen) sightingSeen(s, 'whale', { side: sideName(s.side) });
+                    return s.age < keys[keys.length - 1][0];
+                },
+                // From between her and us, low
+                frame(s, cam, look) {
+                    const p = s.mesh.position;
+                    cam.set(p.x - s.side * 32, 5, p.z - 14);
+                    look.set(p.x, 0.5, p.z);
+                }
+            };
+        }
+
+        // A yacht that's wandered in, ghosting through well out from us under sail
+        const SAILBOAT = { speed: 2.6, pass: [150, 230], half: 300, seen: 240 };
+        function buildSailboat() {
+            const g = new THREE.Group(), white = toonMat(0xf1eee6), sail = toonMat(0xf7f4ec, { side: THREE.DoubleSide });
+            const plan = [[0, 4.6], [1.0, 2.6], [1.4, 0], [1.3, -3.2], [0.9, -4.3], [-0.9, -4.3], [-1.3, -3.2], [-1.4, 0], [-1.0, 2.6]];
+            const hull = new THREE.ExtrudeGeometry(new THREE.Shape(plan.map(([x, z]) => new THREE.Vector2(x, z))), { depth: 1.3, bevelEnabled: false })
+                .rotateX(Math.PI / 2).translate(0, 1.1, 0);
+            const cabin = new THREE.BoxGeometry(1.6, 0.6, 2.6).translate(0, 1.4, 0.4);
+            const mast = new THREE.CylinderGeometry(0.07, 0.09, 11, 6).translate(0, 6.6, 0.9);
+            const boom = new THREE.CylinderGeometry(0.06, 0.06, 3.6, 6).rotateX(Math.PI / 2).translate(0, 2.1, -0.9);
+            const main = new THREE.ShapeGeometry(new THREE.Shape([[0, 0], [0, 9.6], [-3.4, 0]].map(([z, y]) => new THREE.Vector2(z, y))))
+                .rotateY(-Math.PI / 2).translate(0, 2.2, 0.9);
+            const jib = new THREE.ShapeGeometry(new THREE.Shape([[0, 0], [3.4, 0], [0, 8.6]].map(([z, y]) => new THREE.Vector2(z, y))))
+                .rotateY(-Math.PI / 2).translate(0, 1.5, 1.05);
+            mergeByMaterial([{ geo: hull, mat: white }, { geo: cabin, mat: toonMat(0xc9c4b8) }, { geo: mast, mat: toonMat(0x9aa0a4) },
+                { geo: boom, mat: toonMat(0x9aa0a4) }, { geo: main, mat: sail }, { geo: jib, mat: sail }]).forEach(m => g.add(m));
+            g.position.y = WATER_LEVEL;
+            return g;
+        }
+        function startSailboat() {
+            const S = SAILBOAT;
+            // A line that passes `pass` from us and keeps clear of the formation
+            for (let tries = 0; tries < 12; tries++) {
+                const bearing = rand(0, 2 * Math.PI), dist = rand(...S.pass);
+                const normal = new THREE.Vector3(Math.cos(bearing), 0, Math.sin(bearing)), dir = new THREE.Vector3(-normal.z, 0, normal.x);
+                if (Math.random() < 0.5) dir.negate();
+                const closest = normal.multiplyScalar(dist), start = closest.clone().addScaledVector(dir, -S.half);
+                const clear = friendlies.every(f => {
+                    const along = THREE.MathUtils.clamp(_sightA.subVectors(f.position, start).dot(dir), 0, 2 * S.half);
+                    return _sightB.copy(start).addScaledVector(dir, along).setY(0).distanceTo(_sightA.copy(f.position).setY(0)) > 45;
+                });
+                if (!clear) continue;
+                const mesh = sightingModel('sailboat', buildSailboat).clone();
+                mesh.position.set(start.x, WATER_LEVEL, start.z);
+                mesh.rotation.y = Math.atan2(dir.x, dir.z);
+                return {
+                    mesh, dir, travelled: 0,
+                    step(s, dt) {
+                        s.travelled += S.speed * dt;
+                        mesh.position.addScaledVector(s.dir, S.speed * dt);
+                        mesh.rotation.z = 0.12 + 0.03 * Math.sin(s.age * 0.9);
+                        mesh.position.y = WATER_LEVEL + 0.08 * Math.sin(s.age * 1.3);
+                        if (mesh.position.length() < S.seen) sightingSeen(s, 'sailboat');
+                        return s.travelled < 2 * S.half;
+                    },
+                    // From out beyond her, looking past her to the formation
+                    frame(s, cam, look) {
+                        const p = mesh.position;
+                        cam.copy(p).addScaledVector(_sightA.copy(p).setY(0).normalize(), 26).addScaledVector(s.dir, -8);
+                        cam.y = 4.5;
+                        look.set(p.x * 0.8, 3, p.z * 0.8);
+                    }
+                };
+            }
+            return null;
+        }
+
+        // A Seahawk from somewhere in the group, low down one side of us bow to stern
+        const FLYBY = { speed: 45, height: 22, offset: [26, 40], half: 700, seen: 420, sound: 4 };
+        function buildHelicopter() {
+            const g = new THREE.Group(), gray = toonMat(0x878e93), dark = toonMat(0x41484d);
+            const cabin = new THREE.BoxGeometry(2.3, 2.2, 5.6).translate(0, 0, 0.6);
+            const nose = new THREE.SphereGeometry(1.15, 12, 8).scale(1, 0.95, 1.4).translate(0, -0.05, 3.3);
+            const boom = new THREE.CylinderGeometry(0.35, 0.8, 7.5, 8).rotateX(-Math.PI / 2).translate(0, 0.45, -5.6);
+            const fin = new THREE.BoxGeometry(0.2, 2.4, 1.3).translate(0, 1.4, -9.2);
+            const stab = new THREE.BoxGeometry(2.6, 0.12, 0.7).translate(0, 0.4, -8.7);
+            const engines = new THREE.BoxGeometry(1.8, 0.7, 2.6).translate(0, 1.35, 0.2);
+            const hub = new THREE.CylinderGeometry(0.25, 0.3, 0.6, 8).translate(0, 1.9, 0.6);
+            mergeByMaterial([{ geo: cabin, mat: gray }, { geo: nose, mat: gray }, { geo: boom, mat: gray }, { geo: fin, mat: gray },
+                { geo: stab, mat: gray }, { geo: engines, mat: gray }, { geo: hub, mat: dark }]).forEach(m => g.add(m));
+            const rotor = new THREE.Group();
+            rotor.position.set(0, 2.2, 0.6);
+            const blade = new THREE.BoxGeometry(0.42, 0.06, 8.2).translate(0, 0, 4.1);
+            mergeByMaterial([0, 1, 2, 3].map(i => ({ geo: blade, mat: dark, matrix: at(0, 0, 0, 0, i * Math.PI / 2) }))).forEach(m => rotor.add(m));
+            const tailRotor = new THREE.Group();
+            tailRotor.position.set(-0.25, 1.6, -9.3);
+            const small = new THREE.BoxGeometry(0.05, 0.18, 1.5).translate(0, 0, 0.75);
+            mergeByMaterial([0, 1, 2, 3].map(i => ({ geo: small, mat: dark, matrix: at(0, 0, 0, i * Math.PI / 2) }))).forEach(m => tailRotor.add(m));
+            g.add(rotor, tailRotor);
+            g.userData.rotors = [rotor, tailRotor];
+            return g;
+        }
+        function startFlyby() {
+            const F = FLYBY, side = anySide(), dir = Math.random() < 0.5 ? 1 : -1;
+            const mesh = sightingModel('helicopter', buildHelicopter).clone();
+            const [rotor, tailRotor] = mesh.children.slice(-2);
+            mesh.position.set(side * rand(...F.offset), F.height, -dir * F.half);
+            mesh.rotation.set(0.08, dir > 0 ? 0 : Math.PI, 0, 'YXZ'); // nose a little down
+            return {
+                mesh, dir, side, rotor, tailRotor, heard: false,
+                step(s, dt) {
+                    mesh.position.z += s.dir * F.speed * dt;
+                    s.rotor.rotation.y += 27 * dt;
+                    s.tailRotor.rotation.x += 60 * dt;
+                    const z = mesh.position.z;
+                    if (-s.dir * z < F.seen && -s.dir * z > 0) sightingSeen(s, 'flyby');
+                    if (!s.heard && -s.dir * z < F.speed * F.sound) {
+                        s.heard = true;
+                        AudioController.playPassBy('rotor', _sightA.set(mesh.position.x, F.height, 0));
+                    }
+                    return s.dir * z < F.half;
+                },
+                frame(s, cam, look) {
+                    cam.set(s.side * 6, 11, 4);
+                    look.copy(mesh.position);
+                }
+            };
+        }
+
+        // A seagull, low across us; the mount's search radar sees it and the net says so
+        const GULL = { speed: 10, height: [11, 17], span: 130, seen: 70 };
+        function buildGull() {
+            const g = new THREE.Group(), white = toonMat(0xf3f1ec), gray = toonMat(0x9aa2a8, { side: THREE.DoubleSide });
+            const body = new THREE.SphereGeometry(0.24, 10, 8).scale(1, 0.9, 2.6);
+            const head = new THREE.SphereGeometry(0.2, 8, 6).translate(0, 0.12, 0.62);
+            const beak = new THREE.ConeGeometry(0.06, 0.25, 5).rotateX(Math.PI / 2).translate(0, 0.08, 0.88);
+            const tail = new THREE.ShapeGeometry(new THREE.Shape([[0, 0], [0.22, 0.45], [-0.22, 0.45]].map(([x, y]) => new THREE.Vector2(x, y))))
+                .rotateX(-Math.PI / 2).translate(0, 0, -0.55);
+            mergeByMaterial([{ geo: body, mat: white }, { geo: head, mat: white }, { geo: beak, mat: toonMat(0xe0a62a) }, { geo: tail, mat: gray }]).forEach(m => g.add(m));
+            const wing = new THREE.ShapeGeometry(new THREE.Shape([[0, -0.25], [1.4, -0.05], [2.2, 0.35], [1.2, 0.25], [0, 0.25]].map(([x, z]) => new THREE.Vector2(x, z))))
+                .rotateX(-Math.PI / 2); // shape y is aft
+            const wings = [1, -1].map(sx => {
+                const w = new THREE.Mesh(wing, gray);
+                w.scale.x = sx;
+                w.position.y = 0.1;
+                g.add(w);
+                return w;
+            });
+            g.userData.wings = wings;
+            g.scale.setScalar(1.4);
+            return g;
+        }
+        function startGull() {
+            const G = GULL, side = anySide();
+            const mesh = sightingModel('gull', buildGull).clone();
+            const wings = mesh.children.slice(-2);
+            const from = new THREE.Vector3(side * G.span, rand(...G.height), rand(-60, 40));
+            const to = new THREE.Vector3(-side * G.span, rand(...G.height), rand(-50, 30));
+            const dir = to.clone().sub(from).normalize(), length = from.distanceTo(to);
+            mesh.position.copy(from);
+            return {
+                mesh, from, dir, length, wings, travelled: 0,
+                step(s, dt) {
+                    s.travelled += G.speed * dt;
+                    mesh.position.copy(s.from).addScaledVector(s.dir, s.travelled);
+                    mesh.position.y += Math.sin(s.age * 0.8) * 1.2;
+                    mesh.position.x += Math.sin(s.age * 0.5) * 3;
+                    mesh.rotation.y = Math.atan2(s.dir.x, s.dir.z) + Math.sin(s.age * 0.5) * 0.25;
+                    // Flapping, with a glide now and then
+                    const flap = (s.age % 4) < 2.6 ? Math.sin(s.age * 9) * 0.55 : 0.1;
+                    s.wings[0].rotation.z = flap;
+                    s.wings[1].rotation.z = -flap;
+                    if (mesh.position.length() < G.seen) sightingSeen(s, 'bird');
+                    return s.travelled < s.length;
+                },
+                // Following her from off to one side and a little behind
+                frame(s, cam, look) {
+                    const p = mesh.position;
+                    cam.copy(p).addScaledVector(s.dir, -5).add(_sightA.set(-s.dir.z * 7, 1.2, s.dir.x * 7));
+                    look.copy(p).addScaledVector(s.dir, 2);
+                }
+            };
+        }
+
+        // A rubber duck, bobbing past close down one side of us
+        const DUCK = { speed: 1.5, from: -95, to: 135, seen: [-12, 12] };
+        function buildDuck() {
+            const g = new THREE.Group(), yellow = toonMat(0xffcd1c);
+            const body = new THREE.SphereGeometry(0.7, 16, 12).scale(1, 0.72, 1.3).translate(0, 0.2, 0);
+            const head = new THREE.SphereGeometry(0.45, 14, 10).translate(0, 0.95, 0.5);
+            const tail = new THREE.ConeGeometry(0.28, 0.5, 8).rotateX(-2.2).translate(0, 0.55, -0.85);
+            const beak = new THREE.SphereGeometry(0.22, 10, 6).scale(1.1, 0.4, 1.3).translate(0, 0.86, 0.95);
+            const eye = new THREE.SphereGeometry(0.06, 6, 4);
+            mergeByMaterial([{ geo: body, mat: yellow }, { geo: head, mat: yellow }, { geo: tail, mat: yellow }, { geo: beak, mat: toonMat(0xf07a18) },
+                { geo: eye, mat: INK_MAT, matrix: at(0.25, 1.08, 0.86), noOutline: true },
+                { geo: eye, mat: INK_MAT, matrix: at(-0.25, 1.08, 0.86), noOutline: true }]).forEach(m => g.add(m));
+            g.scale.setScalar(1.15);
+            return g;
+        }
+        function startDuck() {
+            const side = anySide(), D = DUCK;
+            const mesh = sightingModel('duck', buildDuck).clone();
+            mesh.position.set(side * rand(11, 14), WATER_LEVEL, D.from);
+            return {
+                mesh, side,
+                step(s, dt) {
+                    mesh.position.z += D.speed * dt;
+                    mesh.position.y = WATER_LEVEL - 0.15 + 0.12 * Math.sin(s.age * 1.7);
+                    mesh.rotation.set(0.08 * Math.sin(s.age * 1.3), 0.6 * Math.sin(s.age * 0.13) + s.side * 0.3, 0.1 * Math.sin(s.age * 1.1));
+                    const z = mesh.position.z;
+                    if (z > D.seen[0] && z < D.seen[1]) sightingSeen(s, 'duck');
+                    return z < D.to;
+                },
+                frame(s, cam, look) {
+                    const p = mesh.position;
+                    cam.set(p.x + s.side * 6, WATER_LEVEL + 1.6, p.z + 4);
+                    look.set(p.x - s.side * 2, WATER_LEVEL + 1.2, p.z - 1);
+                }
+            };
+        }
+
+        // Christmas Eve: a sleigh and eight reindeer, high and slow across the sky, shedding sparkles
+        const SLEIGH = { speed: 30, height: [45, 60], offset: [30, 80], half: 750, seen: 650, sound: 3, sparkles: 40 };
+        function buildSleigh() {
+            const g = new THREE.Group(), red = toonMat(0xb3262b), gold = toonMat(0xd2a33a), brown = toonMat(0x7a5434), white = toonMat(0xf3f0ea);
+            const parts = [
+                { geo: new THREE.BoxGeometry(1.8, 1.0, 2.6).translate(0, 1.1, 0), mat: red },
+                { geo: new THREE.BoxGeometry(1.9, 0.9, 0.3).translate(0, 1.95, -1.2), mat: red },
+                { geo: new THREE.TorusGeometry(0.55, 0.12, 6, 12, Math.PI).rotateY(Math.PI / 2).translate(0, 1.6, 1.3), mat: gold },
+                ...[-0.75, 0.75].map(x => ({ geo: new THREE.BoxGeometry(0.12, 0.12, 3.6).translate(x, 0.25, 0.3), mat: gold })),
+                ...[-0.75, 0.75].map(x => ({ geo: new THREE.TorusGeometry(0.4, 0.08, 5, 10, Math.PI / 2).rotateY(Math.PI / 2).translate(x, 0.65, 2.1), mat: gold })),
+                // Santa, and his sack
+                { geo: new THREE.SphereGeometry(0.7, 12, 8).translate(0, 2.2, -0.3), mat: red },
+                { geo: new THREE.SphereGeometry(0.42, 10, 8).translate(0, 2.95, -0.2), mat: toonMat(0xf0c9a8) },
+                { geo: new THREE.SphereGeometry(0.4, 10, 8).scale(1, 1.1, 0.7).translate(0, 2.7, 0.1), mat: white },
+                { geo: new THREE.ConeGeometry(0.42, 0.8, 10).translate(0, 3.6, -0.25), mat: red },
+                { geo: new THREE.SphereGeometry(0.14, 6, 4).translate(0, 4.0, -0.3), mat: white },
+                { geo: new THREE.SphereGeometry(0.8, 10, 8).translate(0, 2.0, -1.6), mat: brown }
+            ];
+            // Eight reindeer in pairs ahead, the leaders' noses red
+            const deer = new THREE.Group();
+            for (let i = 0; i < 8; i++) {
+                const x = (i % 2 ? 0.8 : -0.8), z = 4.2 + Math.floor(i / 2) * 2.6, nose = i >= 6 ? toonMat(0xe0201c) : brown;
+                parts.push(
+                    { geo: new THREE.BoxGeometry(0.55, 0.6, 1.5).translate(x, 1.6, z), mat: brown },
+                    { geo: new THREE.BoxGeometry(0.3, 0.7, 0.3).rotateX(-0.5).translate(x, 2.1, z + 0.75), mat: brown },
+                    { geo: new THREE.BoxGeometry(0.32, 0.32, 0.55).translate(x, 2.45, z + 1.05), mat: brown },
+                    { geo: new THREE.SphereGeometry(0.1, 6, 4).translate(x, 2.45, z + 1.35), mat: nose },
+                    ...[-0.12, 0.12].map(dx => ({ geo: new THREE.BoxGeometry(0.05, 0.5, 0.05).rotateZ(dx * 3).translate(x + dx * 1.5, 2.85, z + 0.9), mat: toonMat(0xd8c7a0) })),
+                    ...[[-0.2, 0.5], [0.2, 0.5], [-0.2, -0.5], [0.2, -0.5]].map(([dx, dz]) => ({ geo: new THREE.BoxGeometry(0.1, 0.8, 0.1).rotateX(dz).translate(x + dx, 1.0, z + dz), mat: brown }))
+                );
+            }
+            // The reins
+            parts.push(...[-0.8, 0.8].map(x => ({ ...strut(new THREE.Vector3(x * 0.9, 1.4, 1.2), new THREE.Vector3(x, 1.7, 13.4), 0.06, true), mat: INK_MAT, noOutline: true })));
+            mergeByMaterial(parts).forEach(m => g.add(m));
+            g.scale.setScalar(2.2);
+            return g;
+        }
+        function startSleigh() {
+            const S = SLEIGH, side = anySide(), dir = Math.random() < 0.5 ? 1 : -1;
+            const mesh = sightingModel('sleigh', buildSleigh).clone();
+            const y = rand(...S.height);
+            mesh.position.set(side * rand(...S.offset), y, -dir * S.half);
+            mesh.rotation.y = dir > 0 ? 0 : Math.PI;
+            return {
+                mesh, dir, side, y, heard: false, sparkle: 0,
+                step(s, dt) {
+                    const p = mesh.position;
+                    p.z += s.dir * S.speed * dt;
+                    p.y = s.y + Math.sin(s.age * 1.4) * 1.5;
+                    mesh.rotation.x = -Math.cos(s.age * 1.4) * 0.05;
+                    // Sparkles off the runners
+                    for (s.sparkle += S.sparkles * dt; s.sparkle >= 1; s.sparkle--) {
+                        _sightA.set(rand(-1.5, 1.5), 0.3, -s.dir * rand(1, 3)).add(p);
+                        spawnSpark(_sightA, randomDirection().multiplyScalar(rand(1, 4)), rand(0.6, 1.4), 0.12, 0.3, SPARKLE_GOLD);
+                    }
+                    if (Math.abs(p.z) < S.seen && -s.dir * p.z > 0) sightingSeen(s, 'sleigh');
+                    if (!s.heard && -s.dir * p.z < S.speed * S.sound) {
+                        s.heard = true;
+                        AudioController.playPassBy('bells', _sightA.set(p.x, s.y, 0));
+                    }
+                    return s.dir * p.z < S.half;
+                },
+                frame(s, cam, look) {
+                    cam.set(s.side * -8, 6, -s.dir * 10);
+                    look.copy(mesh.position);
+                }
+            };
+        }
+        const SPARKLE_GOLD = new THREE.Color(0xffe08a);
+
+        // The Fourth of July: each shoot-down also bursts like a firework, in two of its colours
+        const FIREWORK_COLORS = [0xff3b3b, 0xffffff, 0x4f7dff, 0xffc94a].map(c => new THREE.Color(c));
+        function spawnFirework(pos) {
+            const a = pick(FIREWORK_COLORS), b = pick(FIREWORK_COLORS), dir = new THREE.Vector3();
+            for (let i = 0; i < 110; i++) {
+                randomDirection(dir).multiplyScalar(rand(38, 50));
+                spawnSpark(pos, dir.clone(), rand(1.4, 2.2), 0.45, 3, i % 2 ? a : b);
+            }
+        }
+
+        // Halloween: some of a shoot-down's debris is pumpkins
+        let pumpkinTemplate = null;
+        const pumpkinPool = [];
+        function makePumpkinDebris() {
+            if (!pumpkinTemplate) {
+                const ribs = new THREE.SphereGeometry(0.9, 16, 10), p = ribs.attributes.position;
+                for (let i = 0; i < p.count; i++) {
+                    const x = p.getX(i), z = p.getZ(i), k = 1 + 0.09 * Math.cos(8 * Math.atan2(z, x));
+                    p.setXYZ(i, x * k, p.getY(i) * 0.78, z * k);
+                }
+                ribs.computeVertexNormals();
+                const stem = new THREE.CylinderGeometry(0.09, 0.14, 0.45, 5).translate(0, 0.8, 0);
+                pumpkinTemplate = new THREE.Group();
+                mergeByMaterial([{ geo: ribs, mat: toonMat(0xe8771c) }, { geo: stem, mat: toonMat(0x4d6b2a) }]).forEach(m => pumpkinTemplate.add(m));
+                addOutlines(pumpkinTemplate);
+            }
+            return { mesh: pumpkinTemplate.clone(), vel: new THREE.Vector3(), carry: new THREE.Vector3(), spin: new THREE.Vector3(), pumpkin: true };
+        }
+
         const ZEN_WAVE = 7;
         const ZEN_SHOT_SECONDS = [8, 14];  // real seconds a shot holds
         const ZEN_TAKEOVER_SECONDS = 20;   // the director leaves the camera alone this long after the user moves it
@@ -9022,6 +9797,8 @@ Ambient
         const ZEN_VAMPIRE_MIN = 4;         // real s on the vampire shot before it goes to split screen
         const ZEN_INELIGIBLE_GRACE = 3;    // a follow shot ends only after it's had nothing to follow this long
         const ZEN_RAID_SECONDS = [180, 300]; // sim s between the net's raid calls (the wave doesn't ramp)
+        const ZEN_SIGHTING_SECONDS = [9, 13]; // real s on a sighting
+        const ZEN_SIGHTING_WAIT = 25;        // sim s a sighting can wait for the director (the next cut)
         const zen = {
             on: false,
             saved: null,   // the wave ramp and the orbit view as entering found them, to put back
@@ -9035,6 +9812,10 @@ Ambient
                 paused: 0,              // real s left of the user's turn with the camera
                 vampire: null,          // the anti-ship missile the vampire and split shots are covering
                 lastVampire: -Infinity, // clock.elapsedTime of the last vampire cut
+                sighting: null,         // the sighting the sighting shot is on...
+                waiting: null,          // ...or one that came while the director was busy, for the next cut
+                marksAngle: 0,          // the marks shot's bearing round the mount (eased)
+                dt: 0,                  // this frame's real s, for the shots that move with what they follow
                 // An orbit-camera shot: the camera `offset` from the `pivot` it looks at (turning about it, its `turn`)
                 pivot: new THREE.Vector3(), offset: new THREE.Vector3()
             }
@@ -9088,6 +9869,27 @@ Ambient
                     look.set(p.x * 0.4, 1.5, p.z * 0.4 + SHIP_MID_Z * 0.6);
                 }
             },
+            // Close on the kill marks round the back of the radome, easing round with the mount
+            marks: {
+                mode: 'off', track: true, eligible: () => killMarks?.shown > 0, turn: 0, frame(cam, look) {
+                    const d = zen.director, radome = killMarks.radome;
+                    radome.updateWorldMatrix(true, false);
+                    const c = radome.localToWorld(_zenMount.set(0, KILL_MARKS.markY, 0));
+                    const back = _zenDir.set(0, 0, -1).transformDirection(radome.matrixWorld);
+                    const a = Math.atan2(back.x, back.z);
+                    d.marksAngle = d.age === 0 ? a : d.marksAngle + wrapAngle(a - d.marksAngle) * Math.min(1, d.dt * 1.2);
+                    const view = d.marksAngle + 0.4;
+                    cam.set(c.x + Math.sin(view) * 4.3, c.y + 0.7, c.z + Math.cos(view) * 4.3);
+                    look.copy(c);
+                }
+            },
+            // Whatever's turned up (SIGHTINGS), as it frames it, following it. Manual: zenSighting cuts to it.
+            sighting: {
+                mode: 'off', manual: true, track: true, turn: 0, frame(cam, look) {
+                    const s = zen.director.sighting;
+                    s.frame(s, cam, look);
+                }
+            },
             // Low behind our ship, down a vampire's line of approach (the demo's). Manual: only
             // zenVampire cuts to it, and it doesn't count among the recent shots.
             vampire: {
@@ -9115,7 +9917,7 @@ Ambient
                 for (const f of friendlies) if (!f.alive && !wrecks.some(w => w.slot === f.id)) sendReplacement(f.id);
                 d.paused = 0;
                 d.recent = [];
-                d.vampire = null;
+                d.vampire = d.sighting = d.waiting = null;
                 zenCut('mount');
             } else {
                 ({ wave, missileSpawnRate, difficultyCooldown } = zen.saved);
@@ -9123,7 +9925,7 @@ Ambient
                 setCameraMode('off');
                 setOrbitView(zen.saved);
                 splitView.pinned = null;
-                d.vampire = null;
+                d.vampire = d.sighting = d.waiting = null;
                 clearTimeout(zen.exitTimer);
                 ui('zen-exit').classList.remove('shown');
             }
@@ -9157,7 +9959,12 @@ Ambient
             d.ineligible = 0;
             if (!shot.manual) d.recent = [name, d.recent[0]];
             setCameraMode(shot.mode);
-            if (!shot.frame) return;
+            if (shot.frame) zenFrame(shot);
+        }
+
+        // A shot's framing into the orbit camera's pivot and offset
+        function zenFrame(shot) {
+            const d = zen.director;
             shot.frame(_zenCam, _zenLook);
             const flat = Math.hypot(_zenLook.x - _zenCam.x, _zenLook.z - _zenCam.z);
             _zenLook.y = Math.min(_zenLook.y, _zenCam.y - 1.02 * flat / Math.tan(controls.maxPolarAngle));
@@ -9165,10 +9972,12 @@ Ambient
             d.offset.subVectors(_zenCam, _zenLook);
         }
 
-        // Any shot (not a manual one) that's eligible and not one of the last two
+        // A sighting that came while the director was busy, if it's still about; otherwise any shot
+        // (not a manual one) that's eligible and not one of the last two
         function zenNextShot() {
-            const d = zen.director;
-            d.vampire = null;
+            const d = zen.director, s = d.waiting;
+            d.vampire = d.sighting = d.waiting = null;
+            if (s?.alive && s.age - s.seenAt < ZEN_SIGHTING_WAIT) return zenSighting(s);
             zenCut(pick(Object.keys(ZEN_SHOTS).filter(name => !ZEN_SHOTS[name].manual && !d.recent.includes(name) && ZEN_SHOTS[name].eligible())));
         }
 
@@ -9183,9 +9992,24 @@ Ambient
             zenCut('vampire');
         }
 
+        // Something's turned up (sightingSeen): unless the director's on a vampire or the user has
+        // the camera, a shot of it now, or else at the next cut
+        function zenSighting(s) {
+            const d = zen.director;
+            s.seenAt ??= s.age;
+            if (d.paused > 0 || d.vampire || d.shot === 'sighting' || d.age < ZEN_MIN_SHOT) {
+                if (!d.waiting && d.sighting !== s) d.waiting = s;
+                return;
+            }
+            d.sighting = s;
+            zenCut('sighting');
+            d.left = rand(...ZEN_SIGHTING_SECONDS);
+        }
+
         // Each frame in zen mode, before the follow cameras: when to cut, and the orbit-camera shots' drift
         function updateZenDirector(realDt) {
             const d = zen.director, v = d.vampire;
+            d.dt = realDt;
             if (d.paused > 0) {
                 if ((d.paused -= realDt) <= 0) zenNextShot();
                 return;
@@ -9200,16 +10024,19 @@ Ambient
                     splitView.pinned = v; // as debug.setChaseTrack
                     zenCut('split');
                 }
+            } else if (d.shot === 'sighting') {
+                if (!d.sighting.alive || (d.age >= ZEN_MIN_SHOT && d.left <= 0)) zenNextShot();
             } else if (v) {
                 // Split screen on the vampire, through the kill (or the hit) and the chase camera's
                 // hold on it; the frame it goes, the chase camera hasn't started the hold yet
                 if (!isLive(v) && splitView.track !== v && splitView.hold.left <= 0.05 && d.age >= ZEN_MIN_SHOT) zenNextShot();
             } else {
                 d.ineligible = ZEN_SHOTS[d.shot].eligible() ? 0 : d.ineligible + realDt;
-                if (d.age >= ZEN_MIN_SHOT && (d.left <= 0 || d.ineligible >= ZEN_INELIGIBLE_GRACE)) zenNextShot();
+                if (d.age >= ZEN_MIN_SHOT && (d.left <= 0 || d.ineligible >= ZEN_INELIGIBLE_GRACE || d.waiting)) zenNextShot();
             }
             const shot = ZEN_SHOTS[d.shot];
             if (cameraMode !== 0 || !shot.frame) return;
+            if (shot.track) zenFrame(shot);
             camera.position.copy(d.offset).applyAxisAngle(_yAxis, shot.turn * d.age).add(d.pivot);
             controls.target.copy(d.pivot);
         }
