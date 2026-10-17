@@ -5870,6 +5870,75 @@ Ambient
             return shell;
         });
 
+        // Halloween's threats. A witch on a broomstick for a drone, nose (+z) forward, about its size
+        const createWitch = cachedTemplate(() => addOutlines(buildWitch()));
+        function buildWitch() {
+            const witch = new THREE.Group();
+            const black = toonMat(0x231c2a), skin = toonMat(0x7fae4a), wood = toonMat(0x6b4a2b);
+            const v = (x, y, z) => new THREE.Vector3(x, y, z);
+            const cape = new THREE.BufferGeometry().setFromPoints([v(-0.3, 0.92, 0.05), v(0.3, 0.92, 0.05), v(0.6, 0.45, -0.95),
+                v(-0.3, 0.92, 0.05), v(0.6, 0.45, -0.95), v(-0.6, 0.45, -0.95)]);
+            cape.computeVertexNormals();
+            mergeByMaterial([
+                // The broom: handle, straw and its binding
+                { geo: alongZ(new THREE.CylinderGeometry(0.05, 0.06, 2.7, 8)), mat: wood, matrix: at(0, 0, 0.35) },
+                { geo: alongZ(new THREE.ConeGeometry(0.36, 0.95, 10)), mat: toonMat(0xc9a24a), matrix: at(0, 0, -1.4) },
+                { geo: alongZ(new THREE.CylinderGeometry(0.12, 0.12, 0.12, 8)), mat: toonMat(0x8a3324), matrix: at(0, 0, -0.95) },
+                // Robe, skirt and cape
+                { geo: new THREE.ConeGeometry(0.32, 0.95, 10), mat: black, matrix: at(0, 0.55, 0.08, 0.25) },
+                { geo: new THREE.ConeGeometry(0.44, 0.45, 10), mat: black, matrix: at(0, 0.15, 0) },
+                { geo: cape, mat: toonMat(0x3a2450, { side: THREE.DoubleSide }) },
+                // Legs and boots, reaching forward along the handle
+                ...[-1, 1].flatMap(x => [
+                    { ...strut(v(x * 0.17, 0.05, 0.1), v(x * 0.2, -0.32, 0.5), 0.12, true), mat: black },
+                    { geo: new THREE.BoxGeometry(0.13, 0.12, 0.28), mat: black, matrix: at(x * 0.2, -0.36, 0.6) }
+                ]),
+                // Arms out to her hands on the broom
+                ...[-1, 1].flatMap(x => [
+                    { ...strut(v(x * 0.26, 0.86, 0.22), v(x * 0.08, 0.08, 0.85), 0.13, true), mat: black },
+                    { geo: new THREE.SphereGeometry(0.07, 8, 6), mat: skin, matrix: at(x * 0.07, 0.06, 0.88) }
+                ]),
+                // Head, nose, hair and hat
+                { geo: new THREE.SphereGeometry(0.2, 12, 10), mat: skin, matrix: at(0, 1.17, 0.3) },
+                { geo: alongZ(new THREE.ConeGeometry(0.05, 0.2, 6)), mat: skin, matrix: at(0, 1.14, 0.55) },
+                { geo: new THREE.BoxGeometry(0.34, 0.36, 0.12), mat: toonMat(0x9c3a1c), matrix: at(0, 1.05, 0.14) },
+                { geo: new THREE.CylinderGeometry(0.44, 0.44, 0.03, 16), mat: black, matrix: at(0, 1.3, 0.27) },
+                { geo: new THREE.CylinderGeometry(0.23, 0.24, 0.08, 12), mat: toonMat(0x6a3a8a), matrix: at(0, 1.35, 0.26) },
+                { geo: new THREE.ConeGeometry(0.23, 0.7, 12), mat: black, matrix: at(0, 1.66, 0.18, -0.4) }
+            ]).forEach(m => witch.add(m));
+            witch.scale.setScalar(2.6);
+            return witch;
+        }
+
+        // A jack-o'-lantern for a shell: carved face forward (+z) and glowing, trailing flames
+        const createJackOLantern = cachedTemplate(() => {
+            const R = 1.5, lantern = new THREE.Group();
+            mergeByMaterial([{ geo: pumpkinGeometry(R), mat: toonMat(0xe8771c) },
+                { geo: new THREE.CylinderGeometry(0.1, 0.16, 0.5, 6), mat: toonMat(0x4d6b2a), matrix: at(0, R * 0.78 + 0.15, 0) }])
+                .forEach(m => lantern.add(m));
+            addOutlines(lantern);
+            // The face: flat shapes (x, y) laid onto the pumpkin's front, lit from inside
+            const tri = (x, y, w, h, up = 1) => [[x - w / 2, y - up * h / 2], [x + w / 2, y - up * h / 2], [x, y + up * h / 2]];
+            const mouth = [[-0.62, 0.0], [-0.4, -0.12], [-0.3, 0.02], [-0.15, -0.14], [0, 0.0], [0.15, -0.14], [0.3, 0.02],
+                [0.4, -0.12], [0.62, 0.0], [0.45, -0.38], [0.15, -0.5], [-0.15, -0.5], [-0.45, -0.38]];
+            const face = [tri(-0.38, 0.38, 0.36, 0.3), tri(0.38, 0.38, 0.36, 0.3), tri(0, 0.12, 0.16, 0.14), mouth].map(points => {
+                const geo = new THREE.ShapeGeometry(new THREE.Shape(points.map(([x, y]) => new THREE.Vector2(x * R, y * R))));
+                const p = geo.attributes.position;
+                for (let i = 0; i < p.count; i++) {
+                    const x = p.getX(i) / (R * 1.06), y = p.getY(i) / (R * 0.85);
+                    p.setZ(i, R * 1.06 * Math.sqrt(Math.max(0, 1 - x * x - y * y)) + 0.05);
+                }
+                return geo;
+            });
+            const glow = new THREE.Mesh(mergeGeometries(face), new THREE.MeshBasicMaterial({ color: 0xffd23a }));
+            glow.userData.noOutline = true;
+            lantern.add(glow);
+            const flame = makeExhaustFlame(5, 1.2);
+            flame.position.z = -R * 0.8;
+            lantern.add(flame);
+            return lantern;
+        });
+
         // Exhaust flame: a hard-edged orange cone around a pale core, pointing back along -z from
         // the origin. Flickered by scaling the group.
         function makeExhaustFlame(length, radius) {
@@ -6130,6 +6199,7 @@ Ambient
             pos.addScaledVector(m.velocity, simSteps);
             m.velocity.y -= GRAVITY * simSteps;
             m.mesh.lookAt(_mortarLook.copy(m.velocity).normalize().add(pos));
+            if (m.flame) flickerFlame(m.flame, 1.3);
             const dx = pos.x - aim.x, dz = pos.z - aim.z;
             return Math.sqrt(dx * dx + dz * dz) < 8 && pos.y < aim.y + 2;
         }
@@ -6164,7 +6234,7 @@ Ambient
             const { degToRad, clamp } = THREE.MathUtils;
             const angle = opts.angle ?? Math.random() * Math.PI * 2;
             const height = opts.height ?? rand(DRONE_CRUISE_Y_MIN, DRONE_CRUISE_Y_MAX);
-            const mesh = createDeltaWingDrone();
+            const mesh = HOLIDAY === 'halloween' ? createWitch() : createDeltaWingDrone();
             mesh.position.set(Math.cos(angle) * DRONE_SPAWN_DISTANCE, height, Math.sin(angle) * DRONE_SPAWN_DISTANCE);
             scene.add(mesh);
             const aim = targetInfo.type === 'ciws' ? droneStrikePoint() : targetInfo.position.clone().setY(targetInfo.position.y + DRONE_FRIENDLY_AIM_Y);
@@ -6315,7 +6385,7 @@ Ambient
             // Mortars spawn near ground level, at a random bearing, for a high-arc trajectory
             const angle = Math.random() * Math.PI * 2;
             const distance = 900;
-            const missile = createMortarShell();
+            const missile = HOLIDAY === 'halloween' ? createJackOLantern() : createMortarShell();
             missile.position.set(Math.cos(angle) * distance, 2 + Math.random() * 5, Math.sin(angle) * distance);
 
             // Calculate 45-degree high-angle ballistic arc trajectory that hits the target
@@ -6349,7 +6419,7 @@ Ambient
 
             missile.lookAt(missile.position.clone().add(velocity));
             scene.add(missile);
-            addThreat(missile, velocity, 'mortar', targetInfo);
+            addThreat(missile, velocity, 'mortar', targetInfo).flame = missile.getObjectByName('flame');
         }
 
         // --- Explosion FX ---
@@ -9768,17 +9838,23 @@ Ambient
             }
         }
 
+        // A pumpkin of radius r: a squat sphere with eight ribs round it
+        function pumpkinGeometry(r) {
+            const geo = new THREE.SphereGeometry(r, 16, 10), p = geo.attributes.position;
+            for (let i = 0; i < p.count; i++) {
+                const x = p.getX(i), z = p.getZ(i), k = 1 + 0.06 * Math.cos(8 * Math.atan2(z, x));
+                p.setXYZ(i, x * k, p.getY(i) * 0.78, z * k);
+            }
+            geo.computeVertexNormals();
+            return geo;
+        }
+
         // Halloween: some of a shoot-down's debris is pumpkins
         let pumpkinTemplate = null;
         const pumpkinPool = [];
         function makePumpkinDebris() {
             if (!pumpkinTemplate) {
-                const ribs = new THREE.SphereGeometry(0.9, 16, 10), p = ribs.attributes.position;
-                for (let i = 0; i < p.count; i++) {
-                    const x = p.getX(i), z = p.getZ(i), k = 1 + 0.09 * Math.cos(8 * Math.atan2(z, x));
-                    p.setXYZ(i, x * k, p.getY(i) * 0.78, z * k);
-                }
-                ribs.computeVertexNormals();
+                const ribs = pumpkinGeometry(0.9);
                 const stem = new THREE.CylinderGeometry(0.09, 0.14, 0.45, 5).translate(0, 0.8, 0);
                 pumpkinTemplate = new THREE.Group();
                 mergeByMaterial([{ geo: ribs, mat: toonMat(0xe8771c) }, { geo: stem, mat: toonMat(0x4d6b2a) }]).forEach(m => pumpkinTemplate.add(m));
