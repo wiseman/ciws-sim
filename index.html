@@ -896,7 +896,7 @@
             // An anti-ship missile shot down (announceKill), if the net is free then. All but splash
             // are loaded when one appears (noteThreat); the round-robin keeps any one ten calls apart.
             kill: {
-                ...URGENT_NET, cooldown: 20, lead: 0.3, stale: 0,
+                channel: 'net', urgent: true, keep: true, cooldown: 20, lead: 0.3, stale: 0,
                 clips: ['splash', 'kill-splash-one', 'kill-splashed', 'kill-destroyed', 'kill-good', ...[1, 2, 3, 4, 5].map(i => `kill-track-${i}`)]
             },
             // Our ship's VLS launches (warnVLSLaunch): "Stand by for missile launch" before a routine
@@ -935,27 +935,28 @@
             gone: { ...CREW_ASIDE, clips: ['gone-{ship}'], cooldown: 10, lead: 1 },
             arrive: { ...CREW_ASIDE, clips: ['arrive-{ship}'], cooldown: 10, lead: 0.3 },
             joined: { clips: ['joined-{ship}-{side}'], channel: '1mc', aside: true, cooldown: 10, lead: 1.5 },
-            // In a lull (updateIdle): idle chatter, one remark in six "Is it over?" (which gets an
-            // answer), or the Captain
-            chatter: { ...CREW_ASIDE, clips: ['chat-launchers', 'chat-bearing', 'chat-seawhiz', 'chat-mikemike', 'chat-ears'], lead: 0.3 },
-            'chatter-over': { ...CREW_ASIDE, clips: ['chat-over'], lead: 0.3, then: 'jinx' },
+            // The crew's chatter (updateIdle), one remark in six "Is it over?" (which gets an answer),
+            // slipped into a gap within `stale` s; the Captain, in a lull
+            chatter: { ...CREW_ASIDE, clips: ['chat-launchers', 'chat-bearing', 'chat-seawhiz', 'chat-mikemike', 'chat-ears'], lead: 0.3, stale: 10 },
+            'chatter-over': { ...CREW_ASIDE, clips: ['chat-over'], lead: 0.3, stale: 10, then: 'jinx' },
             jinx: { ...CREW_ASIDE, clips: ['chat-jinx'], lead: 0.8 },
             captain: { clips: ['captain'], channel: '1mc', aside: true, cooldown: 240, lead: 0.5 }
         };
         // When the triggers ask for BUCKETS' lines (times in s). announceVampire: the general alarm
         // first if it hasn't sounded for `cooldown`, and the call `lead` after it. announceKill: the
-        // crew's multi-splash on kills less than `window` apart. updateIdle: chatter once there's been
-        // no voice for `quiet`, no sooner than `delay` (a range) after the first kill since the crew
-        // last chatted; the Captain after `kills` kills or `action` since the first of them, once
-        // there's been no voice for his `quiet`.
+        // crew's multi-splash on kills less than `window` apart. announceFriendlyHit: the rescue call
+        // `gap` after the crew's reaction. updateIdle: chatter `delay` (a range) after the first kill
+        // since the crew last chatted, tried every `retry` till it gets a word in; the Captain after
+        // `kills` kills or `action` since the first of them, once there's been no voice for his `quiet`.
         const VOICE_TRIGGERS = {
             alarm: { cooldown: 40, lead: 1.5 }, multiSplash: { window: 2.5 },
-            chatter: { quiet: 12, delay: [45, 90] }, captain: { kills: 25, action: 270, quiet: 5 }
+            chatter: { delay: [45, 90], retry: 4 }, captain: { kills: 25, action: 270, quiet: 5 },
+            rescue: { gap: 0.8 }
         };
         // The bearings the vampire calls name. Fetched and decoded at start-up and kept: each urgent
-        // bucket's first clip, on every bearing if it names one.
+        // bucket's first clip (all its clips if it `keep`s them), on every bearing if it names one.
         const CALLED_BEARINGS = Array.from({ length: 12 }, (_, i) => String(i * 30).padStart(3, '0'));
-        const URGENT_CALLOUTS = new Set(Object.values(BUCKETS).filter(B => B.urgent).map(B => B.clips[0])
+        const URGENT_CALLOUTS = new Set(Object.values(BUCKETS).filter(B => B.urgent).flatMap(B => (B.keep ? B.clips : [B.clips[0]]))
             .flatMap(clip => (clip.includes('{bearing}') ? CALLED_BEARINGS.map(b => clip.replace('{bearing}', b)) : [clip])));
 
         // Small offline DSP toolkit for building buffers
@@ -1890,10 +1891,6 @@
 
             // Starts fetching and decoding the clips bucket `name` could play next, so an urgent one
             // has them to hand
-            prepare: function (name, params = {}, t = this.ctx.currentTime) {
-                for (const [, clip] of this.fresh(name, params, t)) this.getCallout(clip);
-            },
-
             // Plays a line from bucket `name` (BUCKETS) `lead` s (default the bucket's; plus its
             // jitter) after t on the audio clock (default now), filling its clip's {fields} from
             // params. Returns its end time, null if it doesn't go out, or a promise of either while
@@ -2014,10 +2011,15 @@
             // follow-up. key: a FRIENDLY_NAMES key; side: 1 if she's to starboard of us, -1 to port.
             // `at` schedules it on the audio clock (default: now).
             announceFriendlyHit: function (key, side, at) {
-                this.play('reaction', { ship: key, named: Math.random() < 0.7 }, at);
-                if (this.play('rescue', { ship: key }, at) === null || Math.random() < 0.5) {
-                    this.play('rescue-followup', { side: side > 0 ? 'stbd' : 'port' }, at);
-                }
+                const t = at ?? this.ctx.currentTime;
+                const reacted = this.play('reaction', { ship: key, named: Math.random() < 0.7 }, t);
+                // The rescue call waits for the crew's reaction to finish (or, without one, goes on
+                // its own lead from the hit)
+                Promise.resolve(reacted).then(end => {
+                    const rescue = end === null ? this.play('rescue', { ship: key }, t)
+                        : this.play('rescue', { ship: key }, end, VOICE_TRIGGERS.rescue.gap);
+                    if (rescue === null || Math.random() < 0.5) this.play('rescue-followup', { side: side > 0 ? 'stbd' : 'port' }, t);
+                });
             },
 
             // A hit on our ship: a shout from the crew, then damage control's call for it and
@@ -2029,12 +2031,10 @@
             },
 
             // A threat has appeared (addThreat). The first one in a game has the net call weapons
-            // free; an anti-ship missile has the kill calls loaded in case it's shot down; a shell
-            // aimed near us has the crew shout now and then.
+            // free; a shell aimed near us has the crew shout now and then.
             noteThreat: function (m) {
                 if (!this.isInit || this.isMuted) return;
                 this.play('weapons-free');
-                if (m.type === 'ascm') this.prepare('kill');
                 if (m.type === 'mortar' && m.targetInfo.position.length() < CREW_RANGES.shells) this.play('shells');
             },
 
@@ -2061,21 +2061,21 @@
             updateIdle: function (missileList) {
                 if (this.isMuted || isGameOver) return;
                 const t = this.ctx.currentTime, { captain, chatter } = VOICE_TRIGGERS;
-                const quiet = t - this.clearFrom();
+                // The crew's chatter, on its timer: slipped into the next gap in the talk (an aside),
+                // and tried again shortly if none comes ("Is it over?" as one remark in six; the
+                // other kind if this one has none fresh)
+                if (t >= this.nextChatter) {
+                    this.nextChatter = t + chatter.retry;
+                    const over = Math.random() * (BUCKETS.chatter.clips.length + 1) < 1;
+                    const said = this.play(over ? 'chatter-over' : 'chatter', {}, t) ?? this.play(over ? 'chatter' : 'chatter-over', {}, t);
+                    Promise.resolve(said).then(end => { if (end !== null) this.nextChatter = Infinity; });
+                }
+                // The Captain, after a long fight, in a lull with nothing close
                 const fought = this.captainKills >= captain.kills || (this.captainKills > 0 && t - this.actionSince >= captain.action);
-                const chat = quiet >= chatter.quiet && t >= this.nextChatter;
-                if (!(fought || chat) || quiet < captain.quiet || this.paQueue.length) return;
+                if (!fought || t - this.clearFrom() < captain.quiet || this.paQueue.length) return;
                 const range = CREW_RANGES.quiet ** 2;
                 for (const m of missileList) if (m.mesh.position.lengthSq() < range) return;
-                if (fought && this.play('captain', {}, t)) {
-                    this.captainKills = 0;
-                    return;
-                }
-                if (!chat) return;
-                this.nextChatter = Infinity;
-                // "Is it over?" as one remark in six; the other kind if this one has none fresh
-                const over = Math.random() * (BUCKETS.chatter.clips.length + 1) < 1;
-                if (this.play(over ? 'chatter-over' : 'chatter', {}, t) === null) this.play(over ? 'chatter' : 'chatter-over', {}, t);
+                if (this.play('captain', {}, t)) this.captainKills = 0;
             },
 
             // Our ship is about to fire a VLS round. Routine: the 1MC's "Stand by for missile launch"
