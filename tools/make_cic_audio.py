@@ -129,8 +129,8 @@ LINES = {
     # Rescue of a stricken friendly: the rescue and assistance (R and A) team and the boat crew
     **{f"rescue-{key}": (f"{name} has been hit. Away the rescue and assistance team. "
                          "R and A team, lay to the boat deck.", "1mc") for key, name in SHIPS.items()},
-    "rescue-rhib-stbd": ("Away the starboard RHIB. Boat crew and SAR swimmer, lay to the starboard boat deck.", "1mc"),
-    "rescue-rhib-port": ("Away the port RHIB. Boat crew and SAR swimmer, lay to the port boat deck.", "1mc"),
+    "rescue-rhib-stbd": ("Away the starboard RHIB. Boat crew and Sar swimmer, lay to the starboard boat deck.", "1mc"),
+    "rescue-rhib-port": ("Away the port RHIB. Boat crew and Sar swimmer, lay to the port boat deck.", "1mc"),
     "rescue-medical": ("Medical, stand by to receive casualties on the flight deck.", "1mc"),
     "rescue-lookouts": ("Lookouts, report all survivors in the water to the bridge.", "1mc"),
 }

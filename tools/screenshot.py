@@ -7,7 +7,8 @@
 Usage: uv run tools/screenshot.py [out_prefix] [wait_seconds]
 Loads the page at 2x DPR and captures the default orbit view plus a few scripted camera angles
 (posed relative to the gun's deck height, window.__ciws.layout.mountY), then steps the camera
-button through PHALANX and MISSILE, then switches to SPLIT.
+button through PHALANX and MISSILE, then switches to SPLIT, then enters zen mode (no HUD, the
+director's opening shot) and waits for the director's next shot.
 """
 import sys
 import time
@@ -26,6 +27,8 @@ views = {
     "gun-cam": ("window.toggleCameraFollow();", 1.5),
     "missile-cam": ("window.toggleCameraFollow();", 2.5),
     "split": ("window.__ciws.setCameraMode('split');", 3),
+    "zen": ("window.toggleZenMode();", 1.5),
+    "zen-next": ("/* a shot holds 8-14 s */", 14),
 }
 
 with game_page(dpr=2, console_levels=("error", "warning")) as (page, errors):

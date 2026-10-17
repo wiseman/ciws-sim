@@ -114,6 +114,39 @@
             color: #ff9c94;
         }
 
+        /* Zen mode: no UI at all, only a chip to leave by that a click or tap brings up for a moment */
+        body.zen #hud {
+            display: none;
+        }
+
+        #zen-exit {
+            display: none;
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(38, 50, 56, 0.88);
+            border: 2px solid #56676e;
+            padding: 10px 15px;
+            color: #9df2b5;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 12px;
+            cursor: pointer;
+            user-select: none;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.4s;
+        }
+
+        body.zen #zen-exit {
+            display: block;
+        }
+
+        #zen-exit.shown {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
         /* Fire-control / learning dock, bottom-left. Collapsed it is a one-line chip. */
         #ml-panel {
             left: 20px;
@@ -529,6 +562,10 @@
                 <span>SPATIAL</span>
                 <span id="spatial-status">EXTREME</span>
             </div>
+            <div id="zen-toggle" class="toggle-btn" onclick="toggleZenMode()" title="Zen mode [Z]">
+                <span>ZEN</span>
+                <span id="zen-status">OFF</span>
+            </div>
         </div>
 
         <div id="audio-debug" class="panel">
@@ -616,6 +653,8 @@
                 SYSTEM</button>
         </div>
     </div>
+
+    <div id="zen-exit" onclick="toggleZenMode()">EXIT ZEN · Z</div>
 
     <!-- Load Three.js -->
     <script type="importmap">
@@ -710,6 +749,7 @@
         // World height of the 01-level deck the CIWS stands on (the sea is at WATER_LEVEL)
         const MOUNT_Y = 4;
         const BRIDGE_ROOF_Y = 8.5; // our ship's bridge roof, under the gun's line of fire
+        const MAST_TOP_Y = 25.5;   // the top of our ship's tripod mast
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -3105,6 +3145,10 @@ Ambient
                 toggleCameraFollow();
             } else if (key === 'v') {
                 toggleSplitView();
+            } else if (key === 'z') {
+                toggleZenMode();
+            } else if (key === 'escape' && zen.on) {
+                setZenMode(false);
             }
         }
 
@@ -3818,7 +3862,7 @@ Ambient
             const rod = (p, q, diameter) => ({ ...strut(p, q, diameter, true), mat: NAVY_HAZE_LT });
             structure.push(
                 ...[v(-2.0, bridgeRoof, 17.4), v(2.0, bridgeRoof, 17.4), v(0, bridgeRoof, 22.8)].map(foot => rod(foot, mastAt(17), 0.44)),
-                rod(mastAt(16.9), mastAt(25.5), 0.3),
+                rod(mastAt(16.9), mastAt(MAST_TOP_Y), 0.3),
                 part(slopedBlock({ hx: 1.3, z0: mastAt(17).z - 1.3, z1: mastAt(17).z + 1.3, y0: 16.85, y1: 17.15 }), NAVY_HAZE_LT),
                 part(new THREE.SphereGeometry(0.45, 12, 8), RADOME_WHITE, at(0, 17.6, mastAt(17).z - 0.8)),
                 part(new THREE.CylinderGeometry(0.32, 0.32, 0.8, 12), NAVY_HAZE_LT, at(0, 24.6, mastAt(24.6).z)),
@@ -4054,6 +4098,9 @@ Ambient
             controls.maxDistance = 400;
             controls.minDistance = 5;
             controls.maxPolarAngle = Math.PI / 2 - 0.1; // Prevent going under water
+            // In zen mode, moving the view takes the camera off the director for a while
+            controls.addEventListener('start', () => { if (zen.on) zen.director.paused = ZEN_TAKEOVER_SECONDS; });
+            renderer.domElement.addEventListener('pointerdown', showZenExit);
 
             // Lighting: soft sky fill plus a single sun that drives the toon bands
             const hemiLight = new THREE.HemisphereLight(0xe4f1fa, 0x6f8c99, 1.5);
@@ -4122,6 +4169,7 @@ Ambient
                     get simTime() { return elapsedTime; }, // sim seconds, what the FX run on
                     get fx() { return { ...fxCounts }; },
                     get stats() { return { score, health, wave, engagementStats }; },
+                    get zenShot() { return zen.on ? zen.director.shot : null; }, // the director's shot (ZEN_SHOTS)
                     holdSpawns() { spawnCooldown = Infinity; },
                     holdVLS() { vlsCooldown = Infinity; }, // no unprompted launches
                     holdFire() { fireCooldown = Infinity; }, // the gun tracks but never fires
@@ -4130,12 +4178,7 @@ Ambient
                         missiles.forEach(disposeThreat);
                         missiles.length = 0;
                     },
-                    setWave(n) {
-                        wave = n;
-                        missileSpawnRate = Math.max(20, 120 - (wave * 5)); // as the wave ramp would leave it
-                        difficultyCooldown = Infinity;
-                        document.getElementById('wave-count').innerText = wave;
-                    },
+                    setWave: applyWave,
                     setTimeScale(k) { timeScale = k; }, // for fast-forwarding long effects in tests
                     // Split screen: pin the chase camera on threat m (null: back to choosing for
                     // itself), force 'side' or 'stack' (or 'auto'), and what it's showing
@@ -4201,6 +4244,15 @@ Ambient
             };
 
             updateAudioDebugOverlay();
+
+            // Zen mode chosen after a game over comes back on here (toggleZenMode reboots for it)
+            let zenOnLoad = false;
+            try {
+                zenOnLoad = sessionStorage.getItem('ciwsZenOnLoad') === '1';
+                sessionStorage.removeItem('ciwsZenOnLoad');
+            } catch (err) { /* no storage: start normally */ }
+            if (zenOnLoad) setZenMode(true);
+
             animate();
         }
 
@@ -5181,7 +5233,6 @@ Ambient
         }
 
         function createFriendlies() {
-            const halfArea = FRIENDLY_AREA;
             // Each gets a different name (FRIENDLY_NAMES), which the crew and the 1MC use
             const names = Object.keys(FRIENDLY_NAMES);
             for (let i = names.length - 1; i > 0; i--) {
@@ -5189,54 +5240,215 @@ Ambient
                 [names[i], names[j]] = [names[j], names[i]];
             }
 
-            // Anywhere in the area as before (centre at least 15 off our hull), now also with her
-            // whole length clear of our hull and of the others, steering about our course
             const footprints = [];
-            const tooClose = (a, b) => a.some(p => b.some(q => Math.hypot(p.x - q.x, p.z - q.z) < 18));
             for (let i = 0; i < FRIENDLY_COUNT; i++) {
-                let x, z, heading, footprint;
-                do {
-                    x = (Math.random() * 2 - 1) * halfArea;
-                    z = (Math.random() * 2 - 1) * halfArea;
-                    heading = rand(-0.45, 0.45);
-                    footprint = friendlyFootprint(x, z, heading);
-                } while (nearShip({ x, z }, 15) || footprint.some(p => nearShip(p, 8)) || footprints.some(other => tooClose(footprint, other)));
-                footprints.push(footprint);
-
-                const key = names[i % names.length];
-                const { fit, number } = FRIENDLY_HULLS[key];
-                const mesh = FRIENDLY_FITS[fit].ship();
-                mesh.position.set(x, FRIENDLY_Y, z);
-                mesh.rotation.y = heading;
-                const markings = decalMat(makeFriendlyMarkings(number, FRIENDLY_NAMES[key]), { alphaTest: 0.5 });
-                mesh.getObjectByName('markings').material = markings;
-                const vls = mesh.getObjectByName('vls');
-                const radar = mesh.getObjectByName('friendly-radar');
-                radar.rotation.y = rand(0, Math.PI * 2);
-                scene.add(mesh);
-
-                friendlies.push({
-                    id: i,
-                    key,
-                    name: FRIENDLY_NAMES[key],
-                    fit,
-                    mesh,
-                    markings,
-                    radar,
-                    position: mesh.position.clone(),
-                    vls,
-                    vlsCells: vlsHatches(vls, new THREE.Vector3(), FRIENDLY_LIVE_CELLS.map(c => vlsCells(new THREE.Vector3())[c]), 'vls-hatch'),
-                    alive: true
-                });
+                const station = pickFriendlyStation(footprints);
+                footprints.push(station.footprint);
+                friendlies.push(buildFriendly(i, names[i % names.length], station));
             }
 
             updateFriendlyUI();
         }
 
+        // A station for a friendly: anywhere in the area (centre at least 15 off our hull), with
+        // her whole length clear of our hull and of the others' footprints (`others`), steering
+        // about our course. With `lane`, that far astern of it is clear too, for her to steam in
+        // along. Returns { x, z, heading, footprint }.
+        function pickFriendlyStation(others, lane = 0) {
+            const halfArea = FRIENDLY_AREA;
+            const tooClose = (a, b) => a.some(p => b.some(q => Math.hypot(p.x - q.x, p.z - q.z) < 18));
+            let x, z, heading, footprint, path;
+            do {
+                x = (Math.random() * 2 - 1) * halfArea;
+                z = (Math.random() * 2 - 1) * halfArea;
+                heading = rand(-0.45, 0.45);
+                footprint = friendlyFootprint(x, z, heading);
+                // Points every 9 units astern, so nothing 18 off the lane slips between them
+                path = Array.from({ length: Math.ceil(lane / 9) }, (_, i) => ({
+                    x: x + Math.sin(heading) * (i + 1) * 9, z: z + Math.cos(heading) * (i + 1) * 9
+                }));
+            } while (nearShip({ x, z }, 15) || footprint.some(p => nearShip(p, 8)) || others.some(other => tooClose(footprint, other)) ||
+                     path.some(p => nearShip(p, 8)) || others.some(other => tooClose(path, other)));
+            return { x, z, heading, footprint };
+        }
+
+        // Friendly `id` (her slot in `friendlies`), the FRIENDLY_NAMES key `key` with its fit and
+        // hull number (FRIENDLY_HULLS), on station: added to the scene, and her record
+        function buildFriendly(id, key, { x, z, heading }) {
+            const { fit, number } = FRIENDLY_HULLS[key];
+            const mesh = FRIENDLY_FITS[fit].ship();
+            mesh.position.set(x, FRIENDLY_Y, z);
+            mesh.rotation.y = heading;
+            const markings = decalMat(makeFriendlyMarkings(number, FRIENDLY_NAMES[key]), { alphaTest: 0.5 });
+            mesh.getObjectByName('markings').material = markings;
+            const vls = mesh.getObjectByName('vls');
+            const radar = mesh.getObjectByName('friendly-radar');
+            radar.rotation.y = rand(0, Math.PI * 2);
+            scene.add(mesh);
+
+            return {
+                id,
+                key,
+                name: FRIENDLY_NAMES[key],
+                fit,
+                mesh,
+                markings,
+                radar,
+                position: mesh.position.clone(),
+                vls,
+                vlsCells: vlsHatches(vls, new THREE.Vector3(), FRIENDLY_LIVE_CELLS.map(c => vlsCells(new THREE.Vector3())[c]), 'vls-hatch'),
+                alive: true,
+                arriving: null // a replacement steaming in: the station she's making for (sendReplacement)
+            };
+        }
+
+        // A friendly that's there to aim at and to launch: afloat and not still steaming in
+        const onStation = f => f.alive && !f.arriving;
+
+        // Zen mode: a frigate takes the place of one that's gone down, in her slot. She has a name
+        // none of the others has, and comes up from astern of a free station at about 20 m/s,
+        // slowing to a stop on it (updateArrivals). Till then nothing aims at her and she doesn't launch.
+        const ARRIVAL = { distance: 600, lane: 300, speed: 0.35, ease: 60 }; // units, and units per step
+        function sendReplacement(slot) {
+            const taken = new Set(friendlies.map(f => f.key));
+            const key = pick(Object.keys(FRIENDLY_NAMES).filter(k => !taken.has(k)));
+            const others = friendlies.filter(f => f.id !== slot).map(f => {
+                const at = f.arriving ?? f.position;
+                return friendlyFootprint(at.x, at.z, f.mesh.rotation.y);
+            });
+            const station = pickFriendlyStation(others, ARRIVAL.lane);
+            const f = buildFriendly(slot, key, station);
+            f.arriving = f.mesh.position.clone();
+            f.mesh.position.x += Math.sin(station.heading) * ARRIVAL.distance;
+            f.mesh.position.z += Math.cos(station.heading) * ARRIVAL.distance;
+            f.position.copy(f.mesh.position);
+            f.wake = makeWake(f);
+            friendlies[slot] = f;
+            updateFriendlyUI();
+        }
+
+        // A replacement's wake as she steams in: the white bow wave and the wash along her sides, the
+        // two broken arms of a Kelvin wake spreading back at 19.5°, and a band of churned water astern.
+        // It's a flat patch on the sea that she carries (a steady wake keeps its shape in the ship's
+        // frame); its foam is placed by distance through the water, so it streams aft as she moves.
+        // It grows behind her as she comes on, thins as she slows and dissolves once she's stopped.
+        const WAKE = { length: 220, fadeSeconds: 10, settled: 0.4 }; // settled: its strength as she stops
+        // Flat, running aft from her bow along +z: a wedge just wider than the foam can reach
+        const WAKE_GEO = (() => {
+            const w0 = FRIENDLY_HALF_BEAM + 2, w1 = w0 + WAKE.length * 0.4, L = WAKE.length;
+            return new THREE.BufferGeometry()
+                .setAttribute('position', new THREE.Float32BufferAttribute([-w0, 0, 0, w0, 0, 0, w1, 0, L, -w1, 0, L], 3))
+                .setIndex([0, 3, 2, 0, 2, 1]); // facing up
+        })();
+        const glslFloat = x => Number.isInteger(x) ? x.toFixed(1) : String(x);
+        // A hash and smooth value noise on it, for the wake and the splash plumes (NOISE_GLSL is
+        // simplex noise, for the water and the smoke)
+        const HASH_NOISE_2D_GLSL = `
+            float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+            float noise(vec2 p) {
+                vec2 i = floor(p), f = fract(p);
+                f = f * f * (3.0 - 2.0 * f);
+                return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x), mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+            }
+        `;
+        const WAKE_FRAGMENT = `
+            uniform float uScroll, uStrength;
+            varying vec2 vLocal;
+            const float HALF_LENGTH = ${glslFloat(FRIENDLY_HALF_LENGTH)}, HALF_BEAM = ${glslFloat(FRIENDLY_HALF_BEAM)};
+            const float LENGTH = ${glslFloat(WAKE.length)};
+            ${HASH_NOISE_2D_GLSL}
+            void main() {
+                float d = vLocal.y;            // distance aft of her bow
+                float x = abs(vLocal.x);
+                if (d > min(LENGTH, uScroll)) discard; // she hasn't laid it down yet
+                float w = d - uScroll;         // fixed in the water
+                float fade = (1.0 - d / LENGTH) * uStrength;
+                float foam = 0.0;
+                // Bow wave and the wash along her sides
+                float side = HALF_BEAM + 0.4 + d * 0.06;
+                if (d < 2.0 * HALF_LENGTH) foam = max(foam, (1.0 - smoothstep(0.0, 1.3, abs(x - side))) * (d < 3.0 ? 1.0 : 0.75));
+                // Kelvin arms, broken into crests
+                float arm = d * 0.354;
+                float armWidth = 0.35 + d * 0.008;
+                if (abs(x - arm) < armWidth && noise(vec2(w * 0.35, x * 0.1)) > 0.42) foam = max(foam, 0.8);
+                // Churned water astern of her, widening and breaking up with distance
+                float aft = d - 2.0 * HALF_LENGTH;
+                if (aft > -2.0) {
+                    float band = HALF_BEAM * 0.6 + max(aft, 0.0) * 0.05;
+                    if (x < band && noise(vec2(vLocal.x * 0.45, w * 0.18)) > 0.38 + 0.004 * max(aft, 0.0)) foam = max(foam, 1.0);
+                }
+                if (foam <= 0.0) discard;
+                // Fading by breaking into foam patches (smooth noise, so they're blobs, not blocks)
+                if (foam * fade < 0.2 + 0.6 * noise(vec2(vLocal.x * 0.7, w * 0.7))) discard;
+                gl_FragColor = vec4(foam > 0.9 ? vec3(1.0) : vec3(0.84, 0.92, 0.95), 1.0);
+                #include <colorspace_fragment>
+            }
+        `;
+        // Hung on her mesh (which only turns, about y), on the water at her bow
+        function makeWake(f) {
+            const mat = new THREE.ShaderMaterial({
+                uniforms: { uScroll: { value: 0 }, uStrength: { value: 1 } },
+                vertexShader: `
+                    varying vec2 vLocal;
+                    void main() {
+                        vLocal = position.xz;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }`,
+                fragmentShader: WAKE_FRAGMENT,
+                polygonOffset: true, polygonOffsetFactor: -2 // over the water it lies on
+            });
+            const mesh = new THREE.Mesh(WAKE_GEO, mat);
+            mesh.position.set(0, WATER_LEVEL + 0.05 - FRIENDLY_Y, -FRIENDLY_HALF_LENGTH);
+            f.mesh.add(mesh);
+            return { mesh };
+        }
+
+        function dropWake(f) {
+            f.wake.mesh.removeFromParent();
+            f.wake.mesh.material.dispose();
+            f.wake = null;
+        }
+
+        // moved: how far she came this step, or null once she's on station (or sunk), when it dissolves
+        function updateWake(f, moved, simSteps) {
+            const strength = f.wake.mesh.material.uniforms.uStrength;
+            if (moved === null) {
+                strength.value -= WAKE.settled * simSteps / SIM_STEPS_PER_SECOND / WAKE.fadeSeconds;
+                if (strength.value <= 0 || !f.alive) dropWake(f);
+                return;
+            }
+            f.wake.mesh.material.uniforms.uScroll.value += moved;
+            // With her speed: a full wake at full speed, little as she's slowing to a stop
+            if (!f.arriving) strength.value = WAKE.settled;
+            else if (simSteps > 0) strength.value = Math.min(1, moved / (ARRIVAL.speed * simSteps));
+        }
+
+        // Replacements steaming in: full speed, then a steady deceleration over the last
+        // ARRIVAL.ease units (speed going as the square root of the distance left)
+        function updateArrivals(simSteps) {
+            for (const f of friendlies) {
+                if (!f.arriving) {
+                    if (f.wake) updateWake(f, null, simSteps);
+                    continue;
+                }
+                const left = f.mesh.position.distanceTo(f.arriving);
+                const step = Math.min(left, ARRIVAL.speed * Math.sqrt(Math.min(1, left / ARRIVAL.ease)) * simSteps);
+                if (left - step < 0.01) {
+                    f.mesh.position.copy(f.arriving);
+                    f.arriving = null;
+                } else {
+                    f.mesh.position.addScaledVector(_arrivalDir.subVectors(f.arriving, f.mesh.position), step / left);
+                }
+                f.position.copy(f.mesh.position);
+                if (f.wake) updateWake(f, step, simSteps);
+            }
+        }
+        const _arrivalDir = new THREE.Vector3();
+
         // Odds of 2:1 that an incoming threat goes for our ship rather than a friendly
         const SHIP_TARGET_CHANCE = 2 / 3;
         function pickTargetForIncoming() {
-            const aliveFriendlies = friendlies.filter(f => f.alive);
+            const aliveFriendlies = friendlies.filter(onStation);
             const targetCiws = Math.random() < SHIP_TARGET_CHANCE || aliveFriendlies.length === 0;
             return targetInfoFor(targetCiws ? null : aliveFriendlies[Math.floor(Math.random() * aliveFriendlies.length)]);
         }
@@ -5346,11 +5558,38 @@ Ambient
             return drone;
         }
 
+        // An artillery shell (oversized, as the other threats are), nose along +z: a lathe-turned olive
+        // body with a boat-tailed base and a rounded ogive, the copper rotating band, the yellow band of
+        // a high-explosive round, a grey nose fuze and the tracer burning at its base
         const createMortarShell = cachedTemplate(() => {
-            const shell = addOutlines(new THREE.Mesh(alongZ(new THREE.CylinderGeometry(0.4, 0.8, 6, 24)), toonMat(0x8a5a2b)));
-            const glow = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffb347 }));
-            glow.position.z = -1.5;
-            shell.add(glow);
+            const R = 0.75, v = (r, y) => new THREE.Vector2(r, y);
+            const profile = [v(0, -3), v(0.52, -3), v(0.62, -2.85), v(R, -2.55), v(R, 0.35)];
+            for (let i = 1; i <= 10; i++) {
+                const t = i / 10; // ogive: a circular arc from the body down to the fuze
+                profile.push(v(0.22 + (R - 0.22) * Math.sqrt(1 - t * t), 0.35 + 2.15 * t));
+            }
+            profile.push(v(0, 2.5));
+            // One geometry, each part in its own vertex colour (linear, as the material's colour is)
+            const painted = (geo, hex, z = 0) => {
+                const c = new THREE.Color(hex), colors = new Float32Array(geo.getAttribute('position').count * 3);
+                for (let i = 0; i < colors.length; i += 3) c.toArray(colors, i);
+                geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+                return alongZ(geo).translate(0, 0, z);
+            };
+            const band = (radius, z0, z1, hex) => painted(new THREE.CylinderGeometry(radius, radius, z1 - z0, 24), hex, (z0 + z1) / 2);
+            const shell = new THREE.Mesh(mergeGeometries([
+                painted(new THREE.LatheGeometry(profile, 24), 0x5f6b3c),
+                band(R + 0.04, -2.35, -2.05, 0xb8693a), // rotating band
+                band(R + 0.01, 0.05, 0.3, 0xd8b23a),    // HE marking
+                painted(new THREE.CylinderGeometry(0.04, 0.22, 0.55, 16), 0x9aa2a8, 2.77) // fuze
+            ]), toonMat(0xffffff, { vertexColors: true }));
+            shell.castShadow = true;
+            addOutlines(shell);
+            const tracer = new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), new THREE.MeshBasicMaterial({ color: 0xffb347 }));
+            tracer.position.z = -3;
+            tracer.scale.z = 0.5;
+            tracer.userData.noOutline = true;
+            shell.add(tracer);
             return shell;
         });
 
@@ -5779,6 +6018,7 @@ Ambient
             const bearing = bearingFromShip(m.mesh.position);
             if (vampireDetections++ % VAMPIRE_CALL_EVERY === 0) AudioController.announceVampire(bearing);
             requestVLSResponse(bearing);
+            if (zen.on) zenVampire(m);
         }
 
         function spawnMissile() {
@@ -5858,6 +6098,18 @@ Ambient
             impactDebris: { f: 0.25, cap: 40 }, // and its sparks
             flakSpark: { f: 0.1, cap: 50 }
         };
+
+        // Splash plumes come only from bursts no higher than twice our mast top: from higher up the
+        // field of them was too busy, and the debris has spread and slowed by the time it comes down
+        const plumesFrom = pos => pos.y <= 2 * MAST_TOP_Y;
+
+        // Unseen fragments. In SINKEX footage a blast's small debris rings the sea with splashes well
+        // around (and downrange of) the burst; each low kill or hit on a ship throws `count` of these,
+        // simulated as bare points with no mesh, each throwing up a plume of spray where it lands on the
+        // water. Ones that come down on a hull just stop.
+        const SPLINTERS = { count: 60, max: 1200, speed: [12, 45], drag: 0.6, life: 8, carry: FX_CARRY.debris };
+        // The plumes (all of them one instanced draw): heights and widths in units, life in sim s
+        const PLUMES = { max: 1024, height: [4, 10], width: [1.8, 3.6], life: [1.1, 1.9] };
 
         // Ashima simplex noise (MIT)
         const NOISE_GLSL = `
@@ -6175,6 +6427,10 @@ Ambient
         const rocketTrailPool = [];
         let sparkMesh = null;
         const fxCounts = { clangs: 0, skips: 0 }; // for the tools
+        // The fragments' state, packed: positions and velocities (x, y, z each) and ages
+        const splinterPos = new Float32Array(SPLINTERS.max * 3), splinterVel = new Float32Array(SPLINTERS.max * 3);
+        const splinterAge = new Float32Array(SPLINTERS.max);
+        let splinterCount = 0;
         let debrisTemplate = null;
 
         // An explosion shake on one camera: each blast within `range` kicks it by `amount`, less with
@@ -6486,6 +6742,7 @@ Ambient
             d.mesh.scale.setScalar(d.size);
             d.vel.copy(velocity);
             d.carry.copy(carry);
+            d.plume = plumesFrom(position); // a splash plume if it lands in the sea
             d.clear = false; // set once it's outside every hull
             d.spin.set(rand(-12, 12), rand(-12, 12), rand(-12, 12));
             d.age = 0;
@@ -6549,6 +6806,7 @@ Ambient
             spawnShockRing(pos, 20 * scale, 0.45);
             flashLight(pos, 600 * scale, 0.45);
             addShake(pos, 0.5 * scale, 160);
+            if (plumesFrom(pos)) spawnSplinters(pos, carry);
 
             const dir = new THREE.Vector3();
             spawnPuff(pos, {
@@ -6609,6 +6867,7 @@ Ambient
             else spawnShockRing(pos, 26, 0.5);
             flashLight(pos, 700, 0.6);
             addShake(pos, 1.0, 120);
+            if (!onWater && plumesFrom(pos)) spawnSplinters(pos, carry, true);
 
             const flat = _fxShare2.set(carry.x, 0, carry.z);
             const dir = new THREE.Vector3();
@@ -6798,13 +7057,14 @@ Ambient
         // 0 → 1 smoothly as x goes from a to b
         const easeBetween = (a, b, x) => THREE.MathUtils.smoothstep(x, a, b);
 
-        // A friendly is hit: it becomes a wreck, and losing the last one ends the game. The crew
-        // and the 1MC call it by name; side is which side of our ship she's on (starboard +x).
+        // A friendly is hit: it becomes a wreck, and losing the last one ends the game (except in
+        // zen mode). The crew and the 1MC call it by name; side is which side of our ship she's on
+        // (starboard +x).
         function destroyFriendly(f) {
             f.alive = false;
             wreckFriendly(f);
             AudioController.announceFriendlyHit(f.key, f.position.x >= 0 ? 1 : -1);
-            if (updateFriendlyUI() === 0) triggerGameOver('friendlies');
+            if (updateFriendlyUI() === 0 && !zen.on) triggerGameOver('friendlies');
         }
 
         function wreckFriendly(f) {
@@ -6816,6 +7076,8 @@ Ambient
             scene.add(wreck);
             wrecks.push({
                 mesh: wreck,
+                slot: f.id,
+                markings: f.markings,
                 bow: wreck.getObjectByName('wreck-bow'),
                 stern: wreck.getObjectByName('wreck-stern'),
                 emitter: wreck.getObjectByName('wreck-fire').position, // the wreck's own frame
@@ -6838,6 +7100,10 @@ Ambient
                 if (plungeK >= 1) {
                     scene.remove(w.mesh);
                     wrecks.splice(i, 1);
+                    // Her paint was hers alone; in zen mode another ship takes her place
+                    w.markings.map.dispose();
+                    w.markings.dispose();
+                    if (zen.on) sendReplacement(w.slot);
                     continue;
                 }
                 // The break settles until it's awash with the ends lifting; in the plunge both ends
@@ -6906,11 +7172,23 @@ Ambient
             };
         }
 
+        // A launch takes a cell, swings its hatch open, and fires once it's up; the hatch stays open
+        // a while after the missile is clear, then closes
+        const VLS_HATCH_LEAD = 0.8;  // s from the hatch starting to open to ignition
+        const VLS_HATCH_AFTER = 6;   // s it stays open after ignition
+        const vlsPending = [];       // launches waiting on their hatch
+
         // bearing: degrees clockwise from the bow direction (-z); null picks one at random
         function launchVLS(launcher, bearing = null) {
             const at = vlsLaunchPoint(launcher);
             if (!at) return false;
-            const { pos, scale, cell, vent } = at;
+            at.cell.open = VLS_HATCH_LEAD + VLS_HATCH_AFTER;
+            vlsPending.push({ launcher, at, bearing, delay: VLS_HATCH_LEAD });
+            return true;
+        }
+
+        function fireVLS(launcher, at, bearing) {
+            const { pos, scale, vent } = at;
             const b = THREE.MathUtils.degToRad(bearing ?? rand(0, 360));
             const heading = new THREE.Vector3(Math.sin(b), 0, -Math.cos(b));
             const mesh = createVLSMissile();
@@ -6918,7 +7196,6 @@ Ambient
             mesh.position.copy(pos).addScaledVector(VLS_UP, -2.6 * scale); // starts down in the cell
             mesh.quaternion.setFromUnitVectors(_zAxis, VLS_UP);
             scene.add(mesh);
-            if (cell) cell.open = 4.5;
 
             const L = {
                 mesh, scale, heading,
@@ -6972,7 +7249,6 @@ Ambient
             });
             AudioController.playVLSLaunch(pos, scale);
             if (launcher === 'ship') AudioController.announce('birds-away');
-            return true;
         }
 
         // A hatch swings open fast and closes slowly once the missile is clear
@@ -6980,10 +7256,16 @@ Ambient
             c.open -= dt;
             const target = c.open > 0 ? 1 : 0;
             c.amount += (target - c.amount) * Math.min(1, dt * (target ? 14 : 2.5));
-            c.lid.rotation.z = c.side * 1.9 * c.amount;
+            c.lid.rotation.z = -c.side * 1.9 * c.amount; // the lid lies inboard of its hinge: this lifts it up and over
         }
 
         function updateVLS(dt) {
+            for (let i = vlsPending.length - 1; i >= 0; i--) {
+                const P = vlsPending[i];
+                if ((P.delay -= dt) > 0) continue;
+                vlsPending.splice(i, 1);
+                if (P.launcher === 'ship' || onStation(P.launcher)) fireVLS(P.launcher, P.at, P.bearing);
+            }
             for (const c of shipVLS.cells) swingHatch(c, dt);
             for (const f of friendlies) for (const c of f.vlsCells) swingHatch(c, dt);
 
@@ -7048,8 +7330,8 @@ Ambient
             const follow = due ? vlsResponse.follow : null;
             vlsResponse = null;
             vlsCooldown = rand(35, 75);
-            const alive = friendlies.filter(f => f.alive);
-            const launcher = follow && (follow === 'ship' || follow.alive) ? follow
+            const alive = friendlies.filter(onStation);
+            const launcher = follow && (follow === 'ship' || onStation(follow)) ? follow
                 : Math.random() < 0.35 || !alive.length ? 'ship' : pick(alive);
             // Our ship warns before a launch, but not again for a salvo's second round
             const wait = launcher === 'ship' && !follow ? launchShipVLS(!due, bearing)
@@ -7133,22 +7415,168 @@ Ambient
                 (p.y < FRIENDLY_Y + 2.5 && overFriendly(p));
         }
 
-        // A piece of debris lands in the sea: a small white splash, and, when it's still running fast
-        // (it carries on from a moving kill), a second, lower one further on and a ring of foam as it skips
-        function debrisSplash(p, vel) {
+        // A burst's unseen fragments: a spray biased upward, plus most of the threat's own motion
+        // (flat: horizontal only, for hits on a hull)
+        function spawnSplinters(pos, carry, flat = false) {
+            carryShare(_splinterCarry, carry, SPLINTERS.carry);
+            if (flat) _splinterCarry.y = 0;
+            const [slow, fast] = SPLINTERS.speed;
+            for (let n = 0; n < SPLINTERS.count && splinterCount < SPLINTERS.max; n++) {
+                const dir = randomDirection(_splinterDir);
+                dir.y = dir.y * 0.8 + 0.35;
+                dir.normalize().multiplyScalar(rand(slow, fast)).addScaledVector(_splinterCarry, rand(0.6, 1));
+                const i = splinterCount++, j = i * 3;
+                splinterPos[j] = pos.x; splinterPos[j + 1] = pos.y; splinterPos[j + 2] = pos.z;
+                splinterVel[j] = dir.x; splinterVel[j + 1] = dir.y; splinterVel[j + 2] = dir.z;
+                splinterAge[i] = 0;
+            }
+        }
+
+        function updateSplinters(dt) {
+            const drag = Math.exp(-SPLINTERS.drag * dt);
+            for (let i = splinterCount - 1; i >= 0; i--) {
+                const j = i * 3;
+                splinterVel[j] *= drag;
+                splinterVel[j + 1] = splinterVel[j + 1] * drag - FX_GRAVITY * dt;
+                splinterVel[j + 2] *= drag;
+                splinterPos[j] += splinterVel[j] * dt;
+                splinterPos[j + 1] += splinterVel[j + 1] * dt;
+                splinterPos[j + 2] += splinterVel[j + 2] * dt;
+                splinterAge[i] += dt;
+                const at = _splinterAt.set(splinterPos[j], splinterPos[j + 1], splinterPos[j + 2]);
+                let done = splinterAge[i] > SPLINTERS.life || insideHull(at);
+                if (!done && at.y <= WATER_LEVEL) {
+                    const speed = Math.hypot(splinterVel[j], splinterVel[j + 1], splinterVel[j + 2]);
+                    spawnPlume(at.x, at.z, 0.6 + 0.4 * Math.min(1, speed / 40));
+                    done = true;
+                }
+                if (!done) continue;
+                // Swap the last one into this slot
+                const last = --splinterCount, k = last * 3;
+                splinterPos[j] = splinterPos[k]; splinterPos[j + 1] = splinterPos[k + 1]; splinterPos[j + 2] = splinterPos[k + 2];
+                splinterVel[j] = splinterVel[k]; splinterVel[j + 1] = splinterVel[k + 1]; splinterVel[j + 2] = splinterVel[k + 2];
+                splinterAge[i] = splinterAge[last];
+            }
+        }
+        const _splinterCarry = new THREE.Vector3(), _splinterDir = new THREE.Vector3(), _splinterAt = new THREE.Vector3();
+
+        // Splash plumes: upright columns of spray that shoot up, hang, slump back and break up. One
+        // instanced mesh draws them all; each instance carries its base, birth time, life, height,
+        // width and a seed, and the shaders animate it from the sim clock (uTime), so a spawn is just
+        // a write into the next slot of a ring buffer.
+        const PLUME_VERTEX = `
+            uniform float uTime;
+            attribute vec3 aBase;
+            attribute vec4 aShape; // born, life, height, width
+            attribute float aSeed;
+            varying vec2 vUv;
+            varying float vAge, vSeed;
+            void main() {
+                float t = (uTime - aShape.x) / aShape.y;
+                if (t < 0.0 || t >= 1.0) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+                float rise = 1.0 - pow(1.0 - min(t / 0.22, 1.0), 3.0);
+                float h = aShape.z * rise * (1.0 - 0.55 * smoothstep(0.45, 1.0, t));
+                float w = aShape.w * (0.6 + 0.7 * t);
+                // Turned about the vertical to face the camera
+                vec3 toCam = cameraPosition - aBase;
+                vec3 across = normalize(vec3(toCam.z, 0.0, -toCam.x) + vec3(1e-4, 0.0, 0.0));
+                vec3 p = aBase + across * position.x * w + vec3(0.0, position.y * h, 0.0);
+                vUv = vec2(position.x * 2.0, position.y);
+                vAge = t;
+                vSeed = aSeed;
+                gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+            }
+        `;
+        const PLUME_FRAGMENT = `
+            varying vec2 vUv;
+            varying float vAge, vSeed;
+            ${HASH_NOISE_2D_GLSL}
+            void main() {
+                float y = vUv.y, x = abs(vUv.x);
+                // A bushy column, rounding off to a ragged top, a little wider at the foot
+                float hw = (1.0 - pow(y, 2.4)) * 0.85 + 0.15 * (1.0 - y);
+                hw *= 0.8 + 0.12 * sin(y * 13.0 + vSeed * 6.0) + 0.08 * sin(y * 31.0 - vSeed * 9.0);
+                if (x > hw) discard;
+                // Breaking up into droplets as it falls back
+                vec2 cell = floor(vec2(vUv.x * 5.0, y * 9.0) + vSeed * 13.0);
+                if (hash(cell) < (vAge - 0.55) * 2.4) discard;
+                vec3 col = x < hw * 0.55 && y < 0.85 ? vec3(1.0) : vec3(0.82, 0.89, 0.93);
+                gl_FragColor = vec4(col, 1.0);
+                #include <colorspace_fragment>
+            }
+        `;
+        let plumes = null;
+        let plumeTime = 0; // sim seconds, the plumes' clock
+        function initPlumes() {
+            const geo = new THREE.InstancedBufferGeometry();
+            const quad = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+            geo.index = quad.index;
+            geo.setAttribute('position', quad.getAttribute('position'));
+            const attr = (size) => new THREE.InstancedBufferAttribute(new Float32Array(PLUMES.max * size), size)
+                .setUsage(THREE.DynamicDrawUsage);
+            const base = attr(3), shape = attr(4), seed = attr(1);
+            geo.setAttribute('aBase', base);
+            geo.setAttribute('aShape', shape);
+            geo.setAttribute('aSeed', seed);
+            geo.instanceCount = 0; // the slots used so far
+            const mat = new THREE.ShaderMaterial({
+                uniforms: { uTime: { value: 0 } },
+                vertexShader: PLUME_VERTEX, fragmentShader: PLUME_FRAGMENT, side: THREE.DoubleSide
+            });
+            const mesh = new THREE.Mesh(geo, mat);
+            mesh.frustumCulled = false;
+            scene.add(mesh);
+            // lo..hi: the slots written since the last upload (lo > hi: none)
+            plumes = { geo, mat, base, shape, seed, attrs: [base, shape, seed], next: 0, lo: Infinity, hi: -1 };
+        }
+
+        // A plume at (x, z) on the water; scale 0..1 sizes it (a faster fragment throws a bigger one)
+        function spawnPlume(x, z, scale = 1) {
+            if (!plumes) initPlumes();
+            const i = plumes.next;
+            plumes.next = (i + 1) % PLUMES.max;
+            const { life: [life0, life1], height: [height0, height1], width: [width0, width1] } = PLUMES;
+            plumes.base.setXYZ(i, x, WATER_LEVEL, z);
+            plumes.shape.setXYZW(i, plumeTime, rand(life0, life1), rand(height0, height1) * scale, rand(width0, width1) * (0.7 + 0.3 * scale));
+            plumes.seed.setX(i, Math.random());
+            plumes.lo = Math.min(plumes.lo, i); // a wrap round the ring within a frame makes it all of them
+            plumes.hi = Math.max(plumes.hi, i);
+            plumes.geo.instanceCount = Math.max(plumes.geo.instanceCount, i + 1);
+        }
+
+        function updatePlumes(dt) {
+            plumeTime += dt;
+            if (!plumes) return;
+            plumes.mat.uniforms.uTime.value = plumeTime;
+            if (plumes.lo > plumes.hi) return;
+            for (const a of plumes.attrs) {
+                a.clearUpdateRanges();
+                a.addUpdateRange(plumes.lo * a.itemSize, (plumes.hi - plumes.lo + 1) * a.itemSize);
+                a.needsUpdate = true;
+            }
+            plumes.lo = Infinity;
+            plumes.hi = -1;
+        }
+
+        // A piece of debris lands in the sea: a splash plume (from a low burst) or a small white splash,
+        // and, when it's still running fast (it carries on from a moving kill), a second, smaller one
+        // further on and a ring of foam as it skips
+        function debrisSplash(p, vel, plume) {
             const splash = (rise, s0, s1, life, delay = 0) => spawnPuff(_splashAt, {
                 vel: _splashVel.set(0, rise, 0), s0, s1, growRate: 5,
                 heat: -1, heatRate: 0, life, dissolveStart: 0.3, drag: 1, buoyancy: 0,
                 gravity: 20, smoke: 0xeef5f8, lowDetail: true, delay
             });
             _splashAt.set(p.x, WATER_LEVEL + 0.3, p.z);
-            splash(rand(6, 10), 0.3, 0.9, 0.9);
+            if (plume) spawnPlume(p.x, p.z, 1);
+            else splash(rand(6, 10), 0.3, 0.9, 0.9);
             const speed = Math.hypot(vel.x, vel.z);
             if (speed < 25) return;
             const ahead = Math.min(8, speed * 0.08);
             _splashAt.x += vel.x / speed * ahead;
             _splashAt.z += vel.z / speed * ahead;
-            splash(rand(3, 6), 0.25, 0.7, 0.7, rand(0.06, 0.12));
+            if (plume) spawnPlume(_splashAt.x, _splashAt.z, 0.6);
+            else splash(rand(3, 6), 0.25, 0.7, 0.7, rand(0.06, 0.12));
             spawnFoamRing(p.x, p.z, 3, 0.6);
             fxCounts.skips++;
         }
@@ -7174,6 +7602,8 @@ Ambient
         }
 
         function updateExplosionFX(dt, realDt) {
+            updateSplinters(dt);
+            updatePlumes(dt);
             for (let i = fxPuffs.length - 1; i >= 0; i--) {
                 const p = fxPuffs[i];
                 if (p.delay > 0) {
@@ -7232,7 +7662,7 @@ Ambient
                 const hitHull = inHull && d.clear;
                 if (!inHull) d.clear = true;
                 if (d.age >= d.life || hitWater || hitHull) {
-                    if (hitWater) debrisSplash(p, _fxVel.copy(d.vel).add(d.carry));
+                    if (hitWater) debrisSplash(p, _fxVel.copy(d.vel).add(d.carry), d.plume);
                     else if (hitHull) debrisClang(p, _fxVel.copy(d.vel).add(d.carry));
                     d.trail.head = null;
                     releaseFrom(fxDebris, i, debrisPool, d);
@@ -7570,6 +8000,14 @@ Ambient
             };
         }
 
+        // Straight to wave n, with the spawn rate the ramp would have left, and the ramp stopped there
+        function applyWave(n) {
+            wave = n;
+            missileSpawnRate = Math.max(20, 120 - (wave * 5));
+            difficultyCooldown = Infinity;
+            document.getElementById('wave-count').innerText = wave;
+        }
+
         function triggerGameOver(reason) {
             if (isGameOver) return;
 
@@ -7622,6 +8060,7 @@ Ambient
 
             // Cosmetic VLS launches from our ship and the friendlies
             updateVLSSchedule(simSteps / SIM_STEPS_PER_SECOND);
+            updateArrivals(simSteps);
 
 
 
@@ -7644,8 +8083,11 @@ Ambient
                     disposeThreat(m);
                     missiles.splice(i, 1);
                     if (m.targetInfo.type === 'ciws') {
-                        health = Math.max(0, health - THREAT_TYPES[m.type].damage);
-                        document.getElementById('health-bar').innerText = `${health}%`;
+                        // In zen mode the hits land, but our ship doesn't wear down
+                        if (!zen.on) {
+                            health = Math.max(0, health - THREAT_TYPES[m.type].damage);
+                            document.getElementById('health-bar').innerText = `${health}%`;
+                        }
                         if (health <= 0) {
                             triggerGameOver('ciws');
                         } else {
@@ -7834,8 +8276,8 @@ Ambient
                                 score++;
                                 document.getElementById('kill-count').innerText = score;
 
-                                // Update high score if beaten
-                                if (score > highScore) {
+                                // Update high score if beaten (not in zen mode, where nothing's at stake)
+                                if (score > highScore && !zen.on) {
                                     highScore = score;
                                     safeStorageSet('ciwsHighScore', highScore);
                                     document.getElementById('high-score').innerText = highScore;
@@ -7869,14 +8311,17 @@ Ambient
             if (mode === CAMERA_SPLIT) splitView.prevMode = cameraMode;
             cameraMode = mode;
             if (mode === CAMERA_SPLIT) enterSplitView();
-            if (mode === 0) {
-                camera.position.copy(orbitPose.position);
-                controls.target.copy(orbitPose.target);
-                controls.update();
-            }
+            if (mode === 0) setOrbitView(orbitPose);
             ui('camera-toggle').classList.toggle('active', mode !== 0);
             setText(ui('follow-status'), CAMERA_MODES[mode]);
             controls.enabled = mode === 0;
+        }
+
+        // The orbit camera onto pose ({ position, target })
+        function setOrbitView(pose) {
+            camera.position.copy(pose.position);
+            controls.target.copy(pose.target);
+            controls.update();
         }
 
         function toggleCameraFollow() {
@@ -7931,6 +8376,7 @@ Ambient
         window.resetNeuralNetwork = resetNeuralNetwork;
         window.toggleMLPanel = toggleMLPanel;
         window.rebootSystem = rebootSystem;
+        window.toggleZenMode = toggleZenMode;
 
         // The missile camera holds for a moment on a kill it was following, watching the fireball
         // carry on along the threat's path, before it moves on. Sim seconds, so slow motion holds longer.
@@ -8237,11 +8683,16 @@ Ambient
                 s.idleAngle = Math.atan2(m.mesh.position.z, m.mesh.position.x); // NO TRACK starts on its side
             } else {
                 s.idleAngle += NO_TRACK.turn * realDt;
-                const centre = (SHIP_BOUNDS.bow + SHIP_BOUNDS.stern) / 2;
-                cam.position.set(Math.cos(s.idleAngle) * NO_TRACK.range, NO_TRACK.height, centre + Math.sin(s.idleAngle) * NO_TRACK.range);
-                cam.lookAt(0, 0, centre);
+                cam.lookAt(noTrackPose(s.idleAngle, cam.position, _chaseVec));
                 s.fov = NO_TRACK.fov;
             }
+        }
+
+        // NO TRACK's view, `angle` round the formation: the camera position into camOut and the point
+        // it looks at into lookOut (returned)
+        function noTrackPose(angle, camOut, lookOut) {
+            camOut.set(Math.cos(angle) * NO_TRACK.range, NO_TRACK.height, SHIP_MID_Z + Math.sin(angle) * NO_TRACK.range);
+            return lookOut.set(0, 0, SHIP_MID_Z);
         }
 
         // e.g. 'VAMPIRE 090': its type and bearing from our ship, three digits as the callouts say it
@@ -8407,6 +8858,209 @@ Ambient
             applyMainViewport();
         }
 
+        // --- ZEN MODE ---
+        // A battle to watch: no UI, a steady busy wave, and no end to it (hits land but our ship
+        // doesn't wear down, and a friendly that goes down is replaced, sendReplacement), while a
+        // director cuts between camera shots. Z or the ZEN button; normal play resumes from there.
+        const ZEN_WAVE = 7;
+        const ZEN_SHOT_SECONDS = [8, 14];  // real seconds a shot holds
+        const ZEN_TAKEOVER_SECONDS = 20;   // the director leaves the camera alone this long after the user moves it
+        const ZEN_VAMPIRE_GAP = 40;        // real s between vampire cuts (at this wave one's detected every ~7 s)
+        const ZEN_SPLIT_RANGE = 520;       // the vampire shot goes to split screen once it's this close...
+        const ZEN_SPLIT_LATEST = 300;      // ...after a few seconds on it, or at once if it gets this close
+        const ZEN_MIN_SHOT = 6;            // real s before any cut, so shots don't flicker past
+        const ZEN_VAMPIRE_MIN = 4;         // real s on the vampire shot before it goes to split screen
+        const ZEN_INELIGIBLE_GRACE = 3;    // a follow shot ends only after it's had nothing to follow this long
+        const zen = {
+            on: false,
+            saved: null,   // the wave ramp and the orbit view as entering found them, to put back
+            exitTimer: 0,  // hides the exit chip again
+            director: {
+                shot: '',               // the ZEN_SHOTS shot on screen
+                left: 0, age: 0,        // real s before the next cut, and since this one
+                ineligible: 0,          // real s a follow shot has had nothing to follow
+                recent: [],             // the last two shots, not repeated
+                paused: 0,              // real s left of the user's turn with the camera
+                vampire: null,          // the anti-ship missile the vampire and split shots are covering
+                lastVampire: -Infinity, // clock.elapsedTime of the last vampire cut
+                // An orbit-camera shot: the camera `offset` from the `pivot` it looks at (turning about it, its `turn`)
+                pivot: new THREE.Vector3(), offset: new THREE.Vector3()
+            }
+        };
+        const _zenMount = new THREE.Vector3(), _zenDir = new THREE.Vector3();
+        const _zenCam = new THREE.Vector3(), _zenLook = new THREE.Vector3();
+        const always = () => true;
+
+        // The director's shots: a camera mode, when it's worth cutting to, and for the orbit-camera
+        // ones ('off') where the camera starts and what it looks at, framed into (cam, look), and how
+        // fast it turns about that (rad/s)
+        const ZEN_SHOTS = {
+            // The whole mount from behind its line of fire and off to one side (the demo's opening)
+            mount: {
+                mode: 'off', eligible: always, turn: THREE.MathUtils.degToRad(1.5), frame(cam, look) {
+                    barrels.updateWorldMatrix(true, false);
+                    const mount = barrels.getWorldPosition(_zenMount);
+                    const aim = _zenDir.set(0, 0, 1).transformDirection(barrels.matrixWorld).setY(0);
+                    if (aim.lengthSq() < 1e-6) aim.set(0, 0, -1); // straight up: as if off the bow
+                    aim.normalize();
+                    cam.copy(mount).addScaledVector(aim, -13);
+                    cam.x -= aim.z * 9.5;
+                    cam.z += aim.x * 9.5;
+                    cam.y += 4.5;
+                    look.copy(mount).addScaledVector(aim, 4);
+                    look.y -= 1.5;
+                }
+            },
+            phalanx: { mode: 'phalanx', eligible: () => !!target },
+            missile: { mode: 'missile', eligible: () => missiles.length > 0 },
+            split: { mode: 'split', eligible: () => (nearestThreat(anyThreat)?.mesh.position.length() ?? Infinity) < 700 },
+            // NO TRACK's turn round the formation, from the last threat's side
+            orbit: {
+                mode: 'off', eligible: always, turn: NO_TRACK.turn, frame(cam, look) {
+                    noTrackPose(splitView.idleAngle, cam, look);
+                }
+            },
+            // The demo's overview of the whole group
+            high: {
+                mode: 'off', eligible: always, turn: THREE.MathUtils.degToRad(0.6), frame(cam, look) {
+                    cam.set(-120, 78, 95);
+                    look.set(45, 0, -5);
+                }
+            },
+            // Low over the water off a friendly's quarter, on her side away from us, looking past her to our ship
+            friendly: {
+                mode: 'off', eligible: () => friendlies.some(onStation), turn: THREE.MathUtils.degToRad(0.5), frame(cam, look) {
+                    const f = pick(friendlies.filter(onStation)), h = f.mesh.rotation.y, p = f.position;
+                    const out = Math.sign(p.x * Math.cos(h) - p.z * Math.sin(h)) || 1; // her beam (cos h, -sin h) away from us
+                    cam.set(p.x + (Math.sin(h) + out * Math.cos(h)) * 24, 4.5, p.z + (Math.cos(h) - out * Math.sin(h)) * 24);
+                    look.set(p.x * 0.4, 1.5, p.z * 0.4 + SHIP_MID_Z * 0.6);
+                }
+            },
+            // Low behind our ship, down a vampire's line of approach (the demo's). Manual: only
+            // zenVampire cuts to it, and it doesn't count among the recent shots.
+            vampire: {
+                mode: 'off', manual: true, turn: 0, frame(cam, look) {
+                    const dir = _zenDir.copy(zen.director.vampire.mesh.position).setY(0).normalize();
+                    cam.set(-8, MOUNT_Y + 12, 5).addScaledVector(dir, -36);
+                    look.set(0, MOUNT_Y + 6, 0).addScaledVector(dir, 70);
+                }
+            }
+        };
+
+        function setZenMode(on) {
+            if (on === zen.on) return;
+            zen.on = on;
+            document.body.classList.toggle('zen', on);
+            ui('zen-toggle').classList.toggle('active', on);
+            setText(ui('zen-status'), on ? 'ON' : 'OFF');
+            const d = zen.director;
+            if (on) {
+                setCameraMode('off'); // back to the orbit view as it was left, to come back to
+                zen.saved = { wave, missileSpawnRate, difficultyCooldown, position: camera.position.clone(), target: controls.target.clone() };
+                applyWave(ZEN_WAVE);
+                // Slots whose wrecks went down before now get their replacements too
+                for (const f of friendlies) if (!f.alive && !wrecks.some(w => w.slot === f.id)) sendReplacement(f.id);
+                d.paused = 0;
+                d.recent = [];
+                d.vampire = null;
+                zenCut('mount');
+            } else {
+                ({ wave, missileSpawnRate, difficultyCooldown } = zen.saved);
+                document.getElementById('wave-count').innerText = wave;
+                setCameraMode('off');
+                setOrbitView(zen.saved);
+                splitView.pinned = null;
+                d.vampire = null;
+                clearTimeout(zen.exitTimer);
+                ui('zen-exit').classList.remove('shown');
+            }
+        }
+
+        // After a game over the game has stopped, so zen mode starts afresh: reboot into it (init)
+        function toggleZenMode() {
+            if (!isGameOver) {
+                setZenMode(!zen.on);
+                return;
+            }
+            try { sessionStorage.setItem('ciwsZenOnLoad', '1'); } catch (err) { /* reboots into normal play */ }
+            rebootSystem();
+        }
+
+        // A click or tap in zen mode brings up the exit chip for a few seconds
+        function showZenExit() {
+            if (!zen.on) return;
+            ui('zen-exit').classList.add('shown');
+            clearTimeout(zen.exitTimer);
+            zen.exitTimer = setTimeout(() => ui('zen-exit').classList.remove('shown'), 3000);
+        }
+
+        // To shot `name`, holding it for a while. An orbit-camera shot's look point is lowered if need
+        // be: the controls won't look at a target less than (90° - maxPolarAngle) below the camera.
+        function zenCut(name) {
+            const d = zen.director, shot = ZEN_SHOTS[name];
+            d.shot = name;
+            d.age = 0;
+            d.left = rand(...ZEN_SHOT_SECONDS);
+            d.ineligible = 0;
+            if (!shot.manual) d.recent = [name, d.recent[0]];
+            setCameraMode(shot.mode);
+            if (!shot.frame) return;
+            shot.frame(_zenCam, _zenLook);
+            const flat = Math.hypot(_zenLook.x - _zenCam.x, _zenLook.z - _zenCam.z);
+            _zenLook.y = Math.min(_zenLook.y, _zenCam.y - 1.02 * flat / Math.tan(controls.maxPolarAngle));
+            d.pivot.copy(_zenLook);
+            d.offset.subVectors(_zenCam, _zenLook);
+        }
+
+        // Any shot (not a manual one) that's eligible and not one of the last two
+        function zenNextShot() {
+            const d = zen.director;
+            d.vampire = null;
+            zenCut(pick(Object.keys(ZEN_SHOTS).filter(name => !ZEN_SHOTS[name].manual && !d.recent.includes(name) && ZEN_SHOTS[name].eligible())));
+        }
+
+        // A vampire detected: unless the director is on one already, or covered one lately, a low shot
+        // from behind our ship down its line of approach, then split screen as it closes
+        function zenVampire(m) {
+            const d = zen.director;
+            if (d.paused > 0 || d.vampire || d.shot === 'split' || d.age < ZEN_MIN_SHOT ||
+                clock.elapsedTime - d.lastVampire < ZEN_VAMPIRE_GAP) return;
+            d.lastVampire = clock.elapsedTime;
+            d.vampire = m;
+            zenCut('vampire');
+        }
+
+        // Each frame in zen mode, before the follow cameras: when to cut, and the orbit-camera shots' drift
+        function updateZenDirector(realDt) {
+            const d = zen.director, v = d.vampire;
+            if (d.paused > 0) {
+                if ((d.paused -= realDt) <= 0) zenNextShot();
+                return;
+            }
+            d.age += realDt;
+            d.left -= realDt;
+            if (d.shot === 'vampire') {
+                const range = isLive(v) ? v.mesh.position.length() : Infinity;
+                if (!isLive(v)) {
+                    if (d.age >= ZEN_MIN_SHOT) zenNextShot(); // shot down early: stay on the smoke a while
+                } else if ((d.age >= ZEN_VAMPIRE_MIN && range < ZEN_SPLIT_RANGE) || range < ZEN_SPLIT_LATEST || d.left <= 0) {
+                    splitView.pinned = v; // as debug.setChaseTrack
+                    zenCut('split');
+                }
+            } else if (v) {
+                // Split screen on the vampire, through the kill (or the hit) and the chase camera's
+                // hold on it; the frame it goes, the chase camera hasn't started the hold yet
+                if (!isLive(v) && splitView.track !== v && splitView.hold.left <= 0.05 && d.age >= ZEN_MIN_SHOT) zenNextShot();
+            } else {
+                d.ineligible = ZEN_SHOTS[d.shot].eligible() ? 0 : d.ineligible + realDt;
+                if (d.age >= ZEN_MIN_SHOT && (d.left <= 0 || d.ineligible >= ZEN_INELIGIBLE_GRACE)) zenNextShot();
+            }
+            const shot = ZEN_SHOTS[d.shot];
+            if (cameraMode !== 0 || !shot.frame) return;
+            camera.position.copy(d.offset).applyAxisAngle(_yAxis, shot.turn * d.age).add(d.pivot);
+            controls.target.copy(d.pivot);
+        }
+
         function animate() {
             requestAnimationFrame(animate);
 
@@ -8427,6 +9081,7 @@ Ambient
             updateRadar();
             updateAudioDebugOverlay();
             updateMLPanel();
+            if (zen.on) updateZenDirector(realDt);
             updateCameraFollow();
 
             if (cameraMode === 0) {
