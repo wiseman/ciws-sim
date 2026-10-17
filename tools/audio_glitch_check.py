@@ -18,7 +18,7 @@ import time
 
 import numpy as np
 
-from _harness import B64_ENCODE_JS, game_page, report_errors
+from _harness import B64_ENCODE_JS, enable_audio, game_page, report_errors
 
 seconds = float(sys.argv[1]) if len(sys.argv) > 1 else 20
 camera = sys.argv[2] if len(sys.argv) > 2 else "orbit"
@@ -60,10 +60,8 @@ CAPTURE = """async ([seconds, recorderSrc]) => {
   return { pcm: toBase64(inter.buffer), sampleRate: ctx.sampleRate, stats };
 }""" % B64_ENCODE_JS
 
-with game_page(extra_args=["--autoplay-policy=no-user-gesture-required"]) as (page, errors):
-    time.sleep(1.5)
-    page.mouse.click(640, 600)
-    page.click("#audio-toggle")
+with game_page(audio=True) as (page, errors):
+    enable_audio(page, settle=0)
     for _ in range({"orbit": 0, "gun": 1, "missile": 2}[camera]):
         page.click("#camera-toggle")
     time.sleep(1)

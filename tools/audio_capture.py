@@ -12,10 +12,9 @@ Also prints any page errors. Convert/inspect with ffmpeg afterwards.
 """
 import base64
 import sys
-import time
 from pathlib import Path
 
-from _harness import B64_ENCODE_JS, game_page, report_errors
+from _harness import B64_ENCODE_JS, enable_audio, game_page, report_errors
 
 vampire = "--vampire" in sys.argv
 argv = [a for a in sys.argv if a != "--vampire"]
@@ -24,10 +23,8 @@ seconds = float(argv[2]) if len(argv) > 2 else 20
 camera = argv[3] if len(argv) > 3 else "orbit"
 slowmo = len(argv) > 4 and argv[4] == "slowmo"
 
-with game_page(extra_args=["--autoplay-policy=no-user-gesture-required"]) as (page, errors):
-    time.sleep(1.5)
-    page.mouse.click(640, 600)          # first gesture initializes audio
-    page.click("#audio-toggle")          # unmute
+with game_page(audio=True) as (page, errors):
+    enable_audio(page, settle=0)
     for _ in range({"orbit": 0, "gun": 1, "missile": 2}[camera]):
         page.click("#camera-toggle")
     if slowmo:

@@ -808,6 +808,8 @@
         };
         const SPATIAL_MODES = Object.keys(SPATIAL_PROFILES);
         const GUN_SPATIAL_LIMITS = { maxPan: 0.2, cueScale: 0.25 };
+        // The gun's level over a session: full for `start` s, then a linear ease to `floor` of it by `end` s
+        const GUN_FATIGUE = { start: 10, end: 120, floor: 0.5 };
         const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, MOUNT_Y + 4, 0);
         const AUDIBLE_FLOOR = 0.006; // ≈ -44 dB: one-shot parts quieter than this aren't played
         const MAX_ONE_SHOTS = 32;    // concurrent one-shot sounds; more are dropped
@@ -816,87 +818,145 @@
         // pitch (Hz), spacing, decay time constant and tone length (s), total length (s)
         const GQ_ALARM = { pitch: 400, interval: 0.6, decay: 0.15, tone: 0.52, seconds: 5.4 };
         // Our ship's missile-launch warning: a run of short, bright beeps (odd harmonics), higher and
-        // quicker than the GQ bong. pitch (Hz), beep spacing and length, total length (s)
-        const LAUNCH_ALARM = { pitch: 1050, period: 0.18, on: 0.11, seconds: 1.2 };
-        // Callout pacing (s). cooldown: how soon it can go out again; lead: from the event to the
-        // voice (alarm: from the alarm's first bong; gq: from the end of the vampire callout;
-        // rescue: from the crew reaction; rescue-followup: from the rescue call's start (they run
-        // ~8.5 s, so it doesn't queue long enough to go stale); launch: from the end of "Stand by
-        // for missile launch" to the launch alarm); jitter: up to this much more
-        const CIC_TIMING = {
-            vampire: { cooldown: 6, lead: 0.05 },
-            alarm: { cooldown: 40, lead: 1.5 },
-            gq: { cooldown: 180, lead: 0.5 },
-            splash: { cooldown: 8, lead: 0.3 },
-            'birds-away': { cooldown: 30, lead: 0.4 },
-            reaction: { lead: 0.5, jitter: 0.7 },
-            rescue: { cooldown: 20, lead: 3.5 },
-            'rescue-followup': { cooldown: 45, lead: 9 },
-            dc: { cooldown: 20, lead: 1, jitter: 1 },
-            'missile-launch': { cooldown: 90, lead: 0.3 },
-            launch: { lead: 0.4 }
-        };
-        // Voice traffic on the CIC bus. radio: the CIC net and the 1MC; crew: the people next to us.
-        // level: into the bus; duck: how far the battle drops under it; queued calls go out `gap` s
-        // apart and are dropped if they'd go out more than `stale` s late
+        // quicker than the GQ bong. pitch (Hz), beep spacing and length, total length (s); lead: from
+        // the end of "Stand by for missile launch" to the alarm
+        const LAUNCH_ALARM = { pitch: 1050, period: 0.18, on: 0.11, seconds: 1.2, lead: 0.4 };
+        // Ranges (units from our ship) for the crew's flavour lines. quiet: no threat this close for
+        // idle chatter or the Captain; closeCall: an anti-ship missile shot down this close;
+        // shells: a shell aimed this close
+        const CREW_RANGES = { quiet: 250, closeCall: 300, shells: 150 };
+        // No voice clip is heard again within this many seconds (unless its bucket says otherwise)
+        const VOICE_REPEAT_WINDOW = 300;
+        // Voice traffic on the CIC bus, by channel. The CIC net and the 1MC share the radio line, so
+        // each waits for the other; the crew are the people next to us. level: into the bus; duck:
+        // how far the battle drops under it; a line goes out at least `gap` s after the last on its
+        // line and is dropped if that's more than `stale` s late
+        const RADIO = { line: 'radio', level: 1, duck: 0.5, gap: 0.6 };
         const VOICE = {
-            radio: { level: 1, duck: 0.5, gap: 0.6, stale: 8 },
-            crew: { level: 1, duck: 0.75, gap: 0.3, stale: 3 }
+            net: { ...RADIO, stale: 3 },
+            '1mc': { ...RADIO, stale: 8 },
+            crew: { line: 'crew', level: 1, duck: 0.75, gap: 0.3, stale: 3 }
         };
         // Seconds of lazily decoded callouts kept; past that the least recently used are dropped
         // (and decoded again if they're needed). ~190 KB of PCM per second at 48 kHz.
         const LAZY_CALLOUT_SECONDS = 60;
-        // The recorded "vampire" callout for a bearing (degrees): one every 30°, named by the
-        // three-digit bearing, e.g. vampire-030
-        const vampireCallout = deg => `vampire-${String((Math.round(deg / 30) * 30) % 360).padStart(3, '0')}`;
-        // Each bearing also has two other wordings (-b "closing fast", -c "sea-skimmer", in a second
-        // voice); only the first is decoded at start-up
-        const vampireCallouts = deg => ['', '-b', '-c'].map(v => vampireCallout(deg) + v);
         // The friendlies' names (fictional): sound-file key -> display name. Each friendly draws a
         // different one at the start (createFriendlies).
         const FRIENDLY_NAMES = {
             halvorsen: 'Halvorsen', whitcomb: 'Whitcomb', cordell: 'Cordell', pellam: 'Pellam',
             marsden: 'Marsden', talbert: 'Talbert', vanover: 'Vanover', 'cape-sable': 'Cape Sable'
         };
-        // Crew reactions to a friendly being hit: four per ship naming her (hit-<key>-1..4), and these
-        const crewReactions = key => [1, 2, 3, 4].map(i => `hit-${key}-${i}`);
-        const CREW_GENERIC = [
-            'hit-oh-no', 'hit-look-at-that', 'hit-going-down', 'hit-get-out',
-            'hit-no-no-no', 'hit-survivors', 'hit-god-help', 'hit-direct-hit'
-        ];
-        // Damage control's 1MC calls, by the side and frame they name (their compartment numbers
-        // agree: the position digit is odd for starboard, even for port, 0 on the centreline).
-        // side: 1 starboard, -1 port, 0 centreline; missile: a "Missile impact" line (anti-ship
-        // missile hits); the rest are fire and flooding calls
-        const DC_CALLS = [
-            { name: 'dc-hit-stbd-fwd', side: 1, frame: 80, missile: true },
-            { name: 'dc-hit', side: 1, frame: 210, missile: true },
-            { name: 'dc-hit-port', side: -1, frame: 160, missile: true },
-            { name: 'dc-hit-port-aft', side: -1, frame: 310, missile: true },
-            { name: 'dc-fire-bravo', side: 1, frame: 120 },
-            { name: 'dc-fire-charlie-stbd', side: 1, frame: 150 },
-            { name: 'dc-fire-alpha-port', side: -1, frame: 96 },
-            { name: 'dc-flooding-port', side: -1, frame: 180 },
-            { name: 'dc-fire-bravo-port', side: -1, frame: 220 },
-            { name: 'dc-fire-charlie', side: -1, frame: 240 },
-            { name: 'dc-flooding', side: 0, frame: 142 }
-        ];
-        // Recorded voice callouts in sounds/: ElevenLabs text-to-speech ("Adam" on the CIC net, "Bill"
-        // on the 1MC, eight crew voices for the reactions), processed by tools/make_cic_audio.py:
-        // radio for the net and 1MC, dry for the crew. CIC_URGENT are decoded at start-up (they go
-        // out with little or no lead); the rest when first needed.
-        const CIC_URGENT = [
-            ...Array.from({ length: 12 }, (_, i) => vampireCallout(i * 30)),
-            'splash', 'birds-away', 'general-quarters', 'missile-launch'
-        ];
-        const CIC_CALLOUTS = [
-            ...CIC_URGENT,
-            ...Array.from({ length: 12 }, (_, i) => vampireCallouts(i * 30).slice(1)).flat(),
-            ...DC_CALLS.map(c => c.name),
-            ...Object.keys(FRIENDLY_NAMES).flatMap(key => [...crewReactions(key), `rescue-${key}`]),
-            ...CREW_GENERIC,
-            'rescue-rhib-stbd', 'rescue-rhib-port', 'rescue-medical', 'rescue-lookouts'
-        ];
+        // Damage control's 1MC calls: name -> [side, frame, missile], by the side and frame they name
+        // (their compartment numbers agree: the position digit is odd for starboard, even for port, 0
+        // on the centreline). side: 1 starboard, -1 port, 0 centreline; missile: a "Missile impact"
+        // line (anti-ship missile hits); the rest (no missile) are fire and flooding calls
+        const DC_CALLS = {
+            'dc-hit-stbd-fwd': [1, 80, true], 'dc-hit': [1, 210, true], 'dc-hit-port': [-1, 160, true], 'dc-hit-port-aft': [-1, 310, true],
+            'dc-fire-bravo': [1, 120], 'dc-fire-charlie-stbd': [1, 150], 'dc-fire-alpha-port': [-1, 96], 'dc-flooding-port': [-1, 180],
+            'dc-fire-bravo-port': [-1, 220], 'dc-fire-charlie': [-1, 240], 'dc-flooding': [0, 142]
+        };
+        // A line's wordings: name, name-2 ... name-n
+        const wordings = (name, n) => [name, ...Array.from({ length: n - 1 }, (_, i) => `${name}-${i + 2}`)];
+        // Every voice line comes from a bucket: a named group of recorded clips (sounds/, made by
+        // tools/make_cic_audio.py) that AudioController.play picks from and schedules. A bucket plays
+        // its clips round-robin from a random start, skipping any heard within `repeat` s; with none
+        // left it stays quiet. See docs/voice/README.md. Fields (all but clips and channel optional):
+        //   clips     clip names; '{field}' is filled from play's params (ship, side, bearing)
+        //   channel   'net': the radio, at once (the CIC net, and the 1MC's urgent calls); '1mc': the
+        //             radio, queued in order (queuePA); 'crew': next to us, dry. Paced by VOICE.
+        //   aside     flavour: waits until no one is talking and no launch is under way (clearFrom)
+        //   onlyIfClear  never interrupts: skipped outright unless all is clear
+        //   hush      a channel whose lines wait until this one's over (plus their gap)
+        //   urgent    on time or not at all: takes only a decoded clip, and decodes the others for
+        //             next time; its first clip (for every bearing) is fetched and decoded at
+        //             start-up and kept (the rest of the clips are fetched on first use)
+        //   cooldown  s before it plays again (Infinity: once a game), spent only if a line goes out
+        //   repeat    s before a clip plays again (default VOICE_REPEAT_WINDOW; 0: procedural calls,
+        //             which real crews repeat word for word)
+        //   lead, jitter  s from the trigger (play's t) to the line, plus up to `jitter` more
+        //   chance    how often it's tried; stale: overrides the channel's
+        //   rank(clip, params)  lower is preferred among the fresh clips (ties go round-robin)
+        //   then      the bucket that follows it, from its end, with the same params
+        //   thenAlways  `then` follows even if this line doesn't go out (from play's t)
+        // Shared field groups: the net's procedural calls that can't wait, and the crew's flavour
+        const URGENT_NET = { channel: 'net', urgent: true, repeat: 0 };
+        const CREW_ASIDE = { channel: 'crew', aside: true };
+        const BUCKETS = {
+            // A new anti-ship missile on radar (announceVampire, after any general alarm); then the
+            // 1MC's "General quarters" (every ten minutes) and the first time, its "Set condition Zebra"
+            vampire: {
+                clips: ['vampire-{bearing}', 'vampire-{bearing}-b', 'vampire-{bearing}-c'], channel: 'net',
+                urgent: true, onlyIfClear: true, hush: 'crew', cooldown: 6, lead: 0.05, then: 'gq'
+            },
+            gq: { ...URGENT_NET, clips: ['general-quarters'], cooldown: 600, lead: 0.6, then: 'zebra' },
+            zebra: { clips: ['set-zebra'], channel: '1mc', aside: true, cooldown: Infinity, repeat: 0, lead: 0.8 },
+            // The net on the first threat of a game (noteThreat), and on the raid growing
+            'weapons-free': { clips: ['weapons-free'], channel: 'net', aside: true, cooldown: Infinity, repeat: 0, lead: 1.5 },
+            'raid-size': { clips: ['raid-size'], channel: 'net', aside: true, cooldown: 90, lead: 1 },
+            // An anti-ship missile shot down (announceKill), if the net is free then. All but splash
+            // are loaded when one appears (noteThreat); the round-robin keeps any one ten calls apart.
+            kill: {
+                ...URGENT_NET, cooldown: 20, lead: 0.3, stale: 0,
+                clips: ['splash', 'kill-splash-one', 'kill-splashed', 'kill-destroyed', 'kill-good', ...[1, 2, 3, 4, 5].map(i => `kill-track-${i}`)]
+            },
+            // Our ship's VLS launches (warnVLSLaunch): "Stand by for missile launch" before a routine
+            // one, from the alarm's due time; "Birds away" as each fires
+            'missile-launch': { ...URGENT_NET, clips: ['missile-launch'], cooldown: 90, lead: 0.3, stale: 8 },
+            'birds-away': { ...URGENT_NET, clips: ['birds-away'], cooldown: 30, lead: 0.4 },
+            // A friendly hit (announceFriendlyHit): the crew react, naming her when params.named; the
+            // 1MC's rescue call (they coalesce) and follow-up (side: 'stbd' or 'port'), from the hit
+            reaction: {
+                clips: [...[1, 2, 3, 4].map(i => `hit-{ship}-${i}`), 'hit-oh-no', 'hit-look-at-that', 'hit-going-down',
+                    'hit-get-out', 'hit-no-no-no', 'hit-survivors', 'hit-god-help', 'hit-direct-hit'],
+                channel: 'crew', lead: 0.5, jitter: 0.7, rank: (clip, { ship, named }) => +(clip.startsWith(`hit-${ship}-`) !== named)
+            },
+            rescue: { clips: ['rescue-{ship}'], channel: '1mc', cooldown: 20, lead: 4, jitter: 0.7 },
+            'rescue-followup': { clips: ['rescue-rhib-{side}', 'rescue-medical', 'rescue-lookouts'], channel: '1mc', cooldown: 45, lead: 13, jitter: 0.7 },
+            // A hit on our ship (announceDamage): a shout from the crew, damage control's call from its
+            // end (or the hit, without it), preferring the side and kind and then the nearest frame,
+            // and sometimes their call for reports
+            'we-hit': { ...CREW_ASIDE, clips: ['we-hit'], cooldown: 10, lead: 0.1, then: 'dc', thenAlways: true },
+            dc: {
+                clips: Object.keys(DC_CALLS), channel: '1mc', cooldown: 20, lead: 1, jitter: 1, then: 'dc-report',
+                rank: (clip, { side, frame, missile }) => {
+                    const [s, f, m = false] = DC_CALLS[clip];
+                    return (s !== side ? 2000 : m !== missile ? 1000 : 0) + Math.abs(f - frame);
+                }
+            },
+            'dc-report': { clips: ['dc-report'], channel: '1mc', cooldown: 60, chance: 0.5, lead: 0.6, jitter: 1 },
+            // The crew's remarks: on an anti-ship missile shot down within CREW_RANGES.closeCall, or else
+            // on kills in quick succession (announceKill); on a shell aimed within
+            // CREW_RANGES.shells (noteThreat); on a friendly's VLS round, her wreck going under, or a
+            // replacement in sight. The 1MC when the replacement joins (side: 'port' or 'starboard').
+            'close-call': { ...CREW_ASIDE, clips: wordings('close-call', 6), cooldown: 45, lead: 0.6 },
+            'multi-splash': { ...CREW_ASIDE, clips: wordings('multi-splash', 6), cooldown: 45, lead: 0.4 },
+            shells: { ...CREW_ASIDE, clips: wordings('shells-incoming', 4), cooldown: 75, lead: 0.5 },
+            shooting: { ...CREW_ASIDE, clips: ['shooting-{ship}'], cooldown: 30, chance: 0.5, lead: 0.8 },
+            gone: { ...CREW_ASIDE, clips: ['gone-{ship}'], cooldown: 10, lead: 1 },
+            arrive: { ...CREW_ASIDE, clips: ['arrive-{ship}'], cooldown: 10, lead: 0.3 },
+            joined: { clips: ['joined-{ship}-{side}'], channel: '1mc', aside: true, cooldown: 10, lead: 1.5 },
+            // In a lull (updateIdle): idle chatter, one remark in six "Is it over?" (which gets an
+            // answer), or the Captain
+            chatter: { ...CREW_ASIDE, clips: ['chat-launchers', 'chat-bearing', 'chat-seawhiz', 'chat-mikemike', 'chat-ears'], lead: 0.3 },
+            'chatter-over': { ...CREW_ASIDE, clips: ['chat-over'], lead: 0.3, then: 'jinx' },
+            jinx: { ...CREW_ASIDE, clips: ['chat-jinx'], lead: 0.8 },
+            captain: { clips: ['captain'], channel: '1mc', aside: true, cooldown: 240, lead: 0.5 }
+        };
+        // When the triggers ask for BUCKETS' lines (times in s). announceVampire: the general alarm
+        // first if it hasn't sounded for `cooldown`, and the call `lead` after it. announceKill: the
+        // crew's multi-splash on kills less than `window` apart. updateIdle: chatter once there's been
+        // no voice for `quiet`, no sooner than `delay` (a range) after the first kill since the crew
+        // last chatted; the Captain after `kills` kills or `action` since the first of them, once
+        // there's been no voice for his `quiet`.
+        const VOICE_TRIGGERS = {
+            alarm: { cooldown: 40, lead: 1.5 }, multiSplash: { window: 2.5 },
+            chatter: { quiet: 12, delay: [45, 90] }, captain: { kills: 25, action: 270, quiet: 5 }
+        };
+        // The bearings the vampire calls name. Fetched and decoded at start-up and kept: each urgent
+        // bucket's first clip, on every bearing if it names one.
+        const CALLED_BEARINGS = Array.from({ length: 12 }, (_, i) => String(i * 30).padStart(3, '0'));
+        const URGENT_CALLOUTS = new Set(Object.values(BUCKETS).filter(B => B.urgent).map(B => B.clips[0])
+            .flatMap(clip => (clip.includes('{bearing}') ? CALLED_BEARINGS.map(b => clip.replace('{bearing}', b)) : [clip])));
 
         // Small offline DSP toolkit for building buffers
         const DSP = {
@@ -1013,7 +1073,7 @@
                 drive: { spin: 0, freq: 0 },
                 traverse: { level: 0, freq: 0 },
                 threats: { drones: 0, mortars: 0, ascms: 0, nearMisses: 0 },
-                cic: { last: '-', fetched: 0, decoded: 0, queued: 0, dropped: 0, skipped: 0 },
+                cic: { last: '-', fetched: 0, queued: 0, dropped: 0, skipped: 0 },
                 explosions: { lastKind: '-', lastDistance: 0 },
                 ambient: { sea: 0, wind: 0 }
             },
@@ -1023,6 +1083,11 @@
                 const AudioContext = window.AudioContext || window.webkitAudioContext;
                 this.buildGraph(new AudioContext());
                 this.masterGain.gain.value = this.isMuted ? 0 : 1;
+                // The gun is tiring to hear nonstop: full level for the first few seconds of play, then
+                // easing down to half over the first couple of minutes, and holding there
+                const gun = this.gunBus.gain, t = this.ctx.currentTime, level = gun.value;
+                gun.setValueAtTime(level, t + GUN_FATIGUE.start);
+                gun.linearRampToValueAtTime(level * GUN_FATIGUE.floor, t + GUN_FATIGUE.end);
                 this.isInit = true;
                 this.loadCallouts();
                 // The VLS roar isn't needed until the first launch, 30+ s in; build it once things settle
@@ -1033,14 +1098,15 @@
             },
 
             // A private copy of the controller driving an offline context, for rendering the game's
-            // own sounds to a buffer (tools/audio_lab.py, tools/audio_stress.py). decodeAll: decode
-            // every callout up front, so ones queued before rendering are scheduled straight away.
+            // own sounds to a buffer (tools/audio_lab.py, tools/audio_stress.py). decodeAll: fetch and
+            // decode every callout up front, so ones queued before rendering are scheduled straight
+            // away. It has no frames to pump the 1MC's queue, so a launch never holds the radio.
             makeOffline: async function (ctx, spatialMode = this.spatialMode, { decodeAll = false } = {}) {
                 const A = Object.create(this);
                 Object.assign(A, {
                     isMuted: false, isInit: true, spatialMode, slowPitch: 1, activeOneShots: 0,
                     lastFlakTime: -Infinity, soundArrivals: [], threatVoices: new Map(), buffers: {},
-                    debugState: JSON.parse(JSON.stringify(this.debugState))
+                    debugState: JSON.parse(JSON.stringify(this.debugState)), holdRadio() {}
                 });
                 A.buildGraph(ctx);
                 A.buildVLSRoar();
@@ -1668,89 +1734,96 @@
                 this.cicBus = this.gain(0.8);
                 this.cicBus.connect(this.masterGain);
                 this.callouts = {};        // name -> decoded clip (null: unavailable)
-                this.calloutBytes = {};    // name -> promise of its compressed bytes (null: unavailable)
+                this.calloutNames = new Set(); // the clips sounds/callouts.json lists (loadCallouts)
+                this.calloutBytes = {};    // name -> promise of its compressed bytes, once fetched (getCallout)
                 this.decoding = {};        // name -> promise of its clip, while it's being decoded
-                this.lazyCallouts = [];    // lazily decoded names, least recently used first
+                this.lazyCallouts = new Map(); // lazily decoded name -> its seconds, least recently used first
+                this.lazyTotal = 0;        // their seconds
                 this.lazySeconds = LAZY_CALLOUT_SECONDS; // how much of them to keep
-                this.cicBusyUntil = 0;     // end of the last voice scheduled on the net or 1MC
-                this.launchAlarmUntil = 0; // end of the last launch alarm
-                this.paHoldUntil = 0;      // queued 1MC calls wait for this (a launch under way)
-                this.crewUntil = 0;        // end of the last crew reaction
-                this.vampireVoice = [0, 0]; // when the latest vampire callout is on (the crew keep quiet)
+                this.busy = { radio: 0, crew: 0 }; // end of the last voice scheduled on each VOICE line
+                this.launchUntil = 0;      // a launch under way holds the radio till then (holdRadio)
+                this.alarmAt = -Infinity;  // when the general alarm last sounded
+                // VOICE channel -> the end of the last line that hushes it (a bucket's `hush`)
+                this.hushUntil = Object.fromEntries(Object.keys(VOICE).map(channel => [channel, -Infinity]));
                 this.paQueue = [];         // 1MC calls waiting to go out (queuePA)
                 this.ducks = [];           // [from, to, level]: the battle ducked under a voice
-                this.recentCrew = [];      // the last few crew reactions picked
-                this.lastDC = null;
-                this.lastFollowup = null;
-                this.lastVampire = null;
-                this.lastAt = {}; // CIC_TIMING key -> when it last went out
+                this.spokenAt = {};        // clip name -> when it was last heard (speak)
+                // BUCKETS key -> when it last went out (and before that, while a line is on its way:
+                // reserve), the clip it tries next, its clip names if they have no {fields} to fill,
+                // and its last line's [start, end]
+                this.bucketState = Object.fromEntries(Object.entries(BUCKETS).map(([name, B]) => [name, {
+                    last: -Infinity, cursor: Math.floor(Math.random() * B.clips.length),
+                    clips: B.clips.some(clip => clip.includes('{')) ? null : B.clips, voice: [-Infinity, -Infinity]
+                }]));
+                this.killTimes = [];       // recent kills (multi-splash)
+                this.captainKills = 0;     // kills since the Captain last spoke...
+                this.actionSince = 0;      // ...and when the first of them was
+                this.nextChatter = Infinity; // the crew may chat from then (set by a kill, announceKill)
             },
 
-            // Voice callouts are recorded assets (sounds/*.mp3, see tools/make_cic_audio.py). The
-            // compressed files (~4 MB) are all fetched up front; CIC_URGENT are decoded straight
-            // away and the rest on first use (getCallout), so minutes of crew and 1MC lines aren't
-            // held as PCM from the start. The game plays on silently without any of them.
-            // decodeAll: decode and keep the lot (offline renders)
+            // Voice callouts are recorded assets (sounds/*.mp3, listed in sounds/callouts.json; see
+            // tools/make_cic_audio.py). URGENT_CALLOUTS are fetched and decoded straight away and the
+            // rest (~8 MB compressed) on first use (getCallout), so minutes of crew and 1MC lines
+            // aren't downloaded or held as PCM from the start. The game plays on silently without
+            // any of them. decodeAll: fetch, decode and keep the lot (offline renders)
             loadCallouts: async function (decodeAll = false) {
-                const cic = this.debugState.cic;
                 if (decodeAll) this.lazySeconds = Infinity;
-                await Promise.all(CIC_CALLOUTS.map(name => {
-                    this.calloutBytes[name] = fetch(`sounds/${name}.mp3`)
-                        .then(res => {
-                            if (!res.ok) throw new Error(res.status);
-                            return res.arrayBuffer();
-                        })
-                        .then(bytes => { cic.fetched++; return bytes; })
-                        .catch(err => {
-                            console.info(`CIC callout ${name} unavailable`, err.message);
-                            return null;
-                        });
-                    return decodeAll || CIC_URGENT.includes(name) ? this.getCallout(name) : null;
-                }));
+                this.listed = fetch('sounds/callouts.json')
+                    .then(res => res.json())
+                    .catch(err => {
+                        console.info('CIC callout list unavailable', err.message);
+                        return [];
+                    })
+                    .then(names => { this.calloutNames = new Set(names); });
+                await this.listed;
+                const names = [...this.calloutNames].filter(name => decodeAll || URGENT_CALLOUTS.has(name));
+                await Promise.all(names.map(name => this.getCallout(name)));
             },
 
             // A callout's clip if it's decoded (null if it's unavailable), else undefined
             cachedCallout: function (name) {
                 const buffer = this.callouts[name];
-                const i = this.lazyCallouts.indexOf(name);
-                if (i >= 0) this.lazyCallouts.push(...this.lazyCallouts.splice(i, 1)); // most recently used
+                if (buffer && this.lazyCallouts.delete(name)) this.lazyCallouts.set(name, buffer.duration); // most recently used
                 return buffer;
             },
 
-            // Resolves to a callout's clip (null if it's unavailable), decoding it on first use.
-            // Lazily decoded clips beyond lazySeconds are dropped, least recently used first; their
-            // compressed bytes are kept to decode again.
+            // Resolves to a callout's clip (null if it's unavailable or not listed), fetching and
+            // decoding it on first use. Lazily decoded clips beyond lazySeconds are dropped, least
+            // recently used first; their compressed bytes are kept to decode again.
             getCallout: function (name) {
                 const cached = this.cachedCallout(name);
                 if (cached !== undefined) return Promise.resolve(cached);
                 return this.decoding[name] ??= (async () => {
                     let buffer = null;
                     try {
-                        const bytes = await this.calloutBytes[name];
-                        if (bytes) buffer = await this.ctx.decodeAudioData(bytes.slice(0)); // decoding detaches its input
+                        await this.listed;
+                        if (!this.calloutNames.has(name)) throw new Error('not listed');
+                        const bytes = await (this.calloutBytes[name] ??= fetch(`sounds/${name}.mp3`).then(res => {
+                            if (!res.ok) throw new Error(res.status);
+                            this.debugState.cic.fetched++;
+                            return res.arrayBuffer();
+                        }));
+                        buffer = await this.ctx.decodeAudioData(bytes.slice(0)); // decoding detaches its input
                     } catch (err) {
-                        console.info(`CIC callout ${name} undecodable`, err.message);
+                        console.info(`CIC callout ${name} unavailable`, err.message);
                     }
                     delete this.decoding[name];
                     this.callouts[name] = buffer;
-                    if (buffer) {
-                        this.debugState.cic.decoded++;
-                        if (!CIC_URGENT.includes(name)) this.keepLazy(name);
-                    }
+                    if (buffer && !URGENT_CALLOUTS.has(name)) this.keepLazy(name, buffer.duration);
                     return buffer;
                 })();
             },
 
-            // Caches a lazily decoded clip, dropping the least recently used past lazySeconds
-            keepLazy: function (name) {
+            // Caches a lazily decoded clip of `seconds`, dropping the least recently used past lazySeconds
+            keepLazy: function (name, seconds) {
                 const lazy = this.lazyCallouts;
-                lazy.push(name);
-                let seconds = lazy.reduce((sum, n) => sum + this.callouts[n].duration, 0);
-                while (seconds > this.lazySeconds && lazy.length > 1) {
-                    const old = lazy.shift();
-                    seconds -= this.callouts[old].duration;
+                lazy.set(name, seconds);
+                this.lazyTotal += seconds;
+                for (const [old, s] of lazy) {
+                    if (this.lazyTotal <= this.lazySeconds || lazy.size === 1) break;
+                    lazy.delete(old);
+                    this.lazyTotal -= s;
                     delete this.callouts[old];
-                    this.debugState.cic.decoded--;
                 }
             },
 
@@ -1778,184 +1851,246 @@
             },
 
             // Plays a voice clip on the CIC bus at `when` and ducks the battle under it; returns its
-            // end time. kind: a VOICE key.
-            speak: function (name, buffer, when, kind) {
-                const mix = VOICE[kind];
+            // end time. channel: a VOICE key.
+            speak: function (name, buffer, when, channel) {
+                const mix = VOICE[channel];
+                this.spokenAt[name] = when;
                 const { end } = this.playBuffer(buffer, when, mix.level, this.cicBus);
                 this.duckFor(when, end, mix.duck);
-                if (kind === 'radio') this.cicBusyUntil = Math.max(this.cicBusyUntil, end);
+                this.busy[mix.line] = Math.max(this.busy[mix.line], end);
                 this.debugState.cic.last = name;
                 return end;
             },
 
-            // Plays a callout on the net (urgent ones only: it doesn't wait for a decode); returns
-            // its end time, or null if it isn't loaded
-            say: function (name, when) {
-                const buffer = this.callouts[name];
+            // True if bucket `name`'s cooldown has run out at time t
+            ready: function (name, t) {
+                return t - this.bucketState[name].last >= (BUCKETS[name].cooldown ?? 0);
+            },
+
+            // Spends bucket `name`'s cooldown at t for a line on its way, keeping what it was...
+            reserve: function (name, t) {
+                const S = this.bucketState[name];
+                [S.held, S.last] = [S.last, t];
+            },
+
+            // ...and gives it back if that line doesn't go out (unless another has spent it since)
+            release: function (name, t) {
+                const S = this.bucketState[name];
+                if (S.last === t) S.last = S.held;
+            },
+
+            // Bucket `name`'s clips for `params` not heard within its `repeat` s of t, as [index, clip]
+            // in round-robin order from its cursor
+            fresh: function (name, params, t) {
+                const B = BUCKETS[name], S = this.bucketState[name], n = B.clips.length;
+                const clips = S.clips ?? B.clips.map(clip => clip.replace(/\{(\w+)\}/g, (_, key) => params[key]));
+                return clips.map((_, i) => (S.cursor + i) % n).map(i => [i, clips[i]])
+                    .filter(([, clip]) => t - (this.spokenAt[clip] ?? -Infinity) >= (B.repeat ?? VOICE_REPEAT_WINDOW));
+            },
+
+            // Starts fetching and decoding the clips bucket `name` could play next, so an urgent one
+            // has them to hand
+            prepare: function (name, params = {}, t = this.ctx.currentTime) {
+                for (const [, clip] of this.fresh(name, params, t)) this.getCallout(clip);
+            },
+
+            // Plays a line from bucket `name` (BUCKETS) `lead` s (default the bucket's; plus its
+            // jitter) after t on the audio clock (default now), filling its clip's {fields} from
+            // params. Returns its end time, null if it doesn't go out, or a promise of either while
+            // its clip loads or it waits in the 1MC's queue.
+            play: function (name, params = {}, t, lead) {
+                if (!this.isInit || this.isMuted) return null;
+                t ??= this.ctx.currentTime;
+                const B = BUCKETS[name], S = this.bucketState[name];
+                const follow = end => {
+                    if (B.then && (end !== null || B.thenAlways)) this.play(B.then, params, end ?? t);
+                    return end;
+                };
+                if (B.onlyIfClear && this.clearFrom(t) > t) {
+                    this.debugState.cic.skipped++;
+                    return follow(null);
+                }
+                if (!this.ready(name, t) || Math.random() >= (B.chance ?? 1)) return follow(null);
+                const fresh = this.fresh(name, params, t);
+                if (B.urgent) for (const [, clip] of fresh) this.getCallout(clip); // the rest for next time
+                const pool = B.urgent ? fresh.filter(([, clip]) => this.callouts[clip]) : fresh;
+                if (!pool.length) return follow(null);
+                let [i, clip] = pool[0];
+                if (B.rank) {
+                    const scores = pool.map(([, c]) => B.rank(c, params));
+                    [i, clip] = pool[scores.indexOf(Math.min(...scores))]; // the first best: ties go round-robin
+                }
+                S.cursor = (i + 1) % B.clips.length;
+                const due = t + (lead ?? B.lead ?? 0) + rand(0, B.jitter ?? 0);
+                // The cooldown is held while the line waits on its clip or the queue, and given back
+                // if it doesn't go out
+                this.reserve(name, t);
+                const settle = end => {
+                    if (end === null) this.release(name, t);
+                    return follow(end);
+                };
+                const buffer = this.cachedCallout(clip);
+                const out = B.channel === '1mc' ? this.queuePA({ bucket: name, clip, due })
+                    : buffer !== undefined ? this.say(name, clip, buffer, due)
+                    : this.getCallout(clip).then(loaded => this.say(name, clip, loaded, due));
+                return out instanceof Promise ? out.then(settle) : settle(out);
+            },
+
+            // Schedules `clip` from bucket `name` at `due`, or as soon after as its channel is free
+            // (VOICE) and no line that hushes it is on; an aside waits for everyone (clearFrom).
+            // Returns its end time, or null if the clip is unavailable or it would go out more than
+            // its stale limit late.
+            say: function (name, clip, buffer, due) {
                 if (!buffer) return null;
-                return this.speak(name, buffer, when, 'radio');
+                const B = BUCKETS[name], ch = VOICE[B.channel];
+                // A radio aside that comes up while a launch holds the radio is passed over (its
+                // cooldown goes back), rather than booked for after the hold, where it would take the
+                // radio that "Birds away" needs
+                if (B.aside && ch.line === 'radio' && this.ctx.currentTime < this.launchUntil) return null;
+                let start = Math.max(due, this.busy[ch.line] + ch.gap, this.hushUntil[B.channel] + ch.gap, this.ctx.currentTime + 0.02);
+                if (B.aside) start = this.clearFrom(start);
+                if (start - due > (B.stale ?? ch.stale)) return null;
+                const end = this.speak(clip, buffer, start, B.channel);
+                this.bucketState[name].voice = [start, end];
+                if (B.hush) this.hushUntil[B.hush] = Math.max(this.hushUntil[B.hush], end);
+                return end;
             },
 
-            // True if CIC_TIMING[key]'s cooldown has run out at time t, and restarts it
-            ready: function (key, t) {
-                if (t - (this.lastAt[key] ?? -Infinity) < CIC_TIMING[key].cooldown) return false;
-                this.lastAt[key] = t;
-                return true;
-            },
-
-            // A callout (a CIC_TIMING key) that goes out if the net is free and it hasn't lately
-            announce: function (name) {
-                if (!this.isInit || this.isMuted) return;
-                const t = this.ctx.currentTime;
-                if (t >= this.cicBusyUntil && this.ready(name, t)) this.say(name, t + CIC_TIMING[name].lead);
-            },
-
-            // Puts a 1MC call (damage control, rescue) in line to go out at `due` on the audio clock.
-            // Calls go out one at a time in the order queued, each once its clip is decoded and the
-            // net is free, and are dropped if that's more than VOICE.radio.stale late.
-            queuePA: function (name, due) {
-                const item = { name, due, buffer: this.cachedCallout(name) };
+            // Puts a 1MC call ({ bucket, clip, due }) in line. Calls go out one at a time in the
+            // order queued, each once its clip is loaded and no launch holds the radio (pumpPA).
+            // Resolves to its end time, or null if it didn't go out.
+            queuePA: function (item) {
+                const said = new Promise(resolve => { item.done = resolve; });
                 this.paQueue.push(item);
                 this.debugState.cic.queued++;
-                if (item.buffer !== undefined) this.pumpPA();
-                else this.getCallout(name).then(buffer => { item.buffer = buffer; this.pumpPA(); });
+                this.getCallout(item.clip).then(buffer => { item.buffer = buffer; this.pumpPA(); });
+                return said;
             },
 
-            // Schedules the calls at the head of the queue whose clips are ready (in order)
+            // Schedules the calls at the head of the queue whose clips are ready (in order). While a
+            // launch holds the radio they wait unscheduled, so "Birds away" finds it free, and
+            // frame() pumps again.
             pumpPA: function () {
-                const q = this.paQueue, { gap, stale } = VOICE.radio;
+                const q = this.paQueue;
+                if (this.ctx.currentTime < this.launchUntil) return;
                 while (q.length && q[0].buffer !== undefined) {
-                    const item = q.shift();
-                    if (!item.buffer) continue;
-                    const start = Math.max(item.due, this.cicBusyUntil + gap, this.paHoldUntil, this.ctx.currentTime + 0.05);
-                    if (start - item.due > stale) {
-                        this.debugState.cic.dropped++;
-                        continue;
-                    }
-                    this.speak(item.name, item.buffer, start, 'radio');
+                    const { bucket, clip, buffer, due, done } = q.shift();
+                    const end = this.say(bucket, clip, buffer, due);
+                    if (buffer && end === null) this.debugState.cic.dropped++;
+                    done(end);
                 }
             },
 
-            // A crew member next to us, at `due`: one at a time, never over a vampire callout, and
-            // dropped if that's more than VOICE.crew.stale late
-            sayCrew: function (name, due) {
-                const go = buffer => {
-                    if (!buffer || !this.isInit) return;
-                    const { gap, stale } = VOICE.crew;
-                    const [vFrom, vTo] = this.vampireVoice;
-                    let start = Math.max(due, this.crewUntil + gap, this.ctx.currentTime + 0.02);
-                    if (start < vTo && start + buffer.duration > vFrom) start = vTo + gap;
-                    if (start - due > stale) return;
-                    this.crewUntil = this.speak(name, buffer, start, 'crew');
-                };
-                const cached = this.cachedCallout(name);
-                if (cached !== undefined) go(cached);
-                else this.getCallout(name).then(go);
+            // A launch under way holds the 1MC and the flavour lines until `until` (warnVLSLaunch).
+            // An offline render has no frames to let them go again, and never holds them (makeOffline).
+            holdRadio: function (until) {
+                this.launchUntil = Math.max(this.launchUntil, until);
             },
 
-            // One of `names`, avoiding the last few crew reactions picked
-            pickCrew: function (names) {
-                const fresh = names.filter(n => !this.recentCrew.includes(n));
-                const name = pick(fresh.length ? fresh : names);
-                this.recentCrew.push(name);
-                if (this.recentCrew.length > 4) this.recentCrew.shift();
-                return name;
+            // The earliest a line that's only flavour can start, at or after t: once no one is
+            // talking (or about to) on the radio or among the crew, with its line's gap after them,
+            // and no launch holds the radio. Without t: when the last voice scheduled is over.
+            clearFrom: function (t = -Infinity) {
+                return Math.max(t, this.busy.radio + VOICE.net.gap, this.busy.crew + VOICE.crew.gap, this.launchUntil);
             },
 
-            // New anti-ship missile on radar: the general alarm (if it hasn't sounded lately),
-            // "Vampire, vampire, vampire, bearing ...", and every few minutes the 1MC's
-            // "General quarters". Vampires are frequent, so one never interrupts: if anyone is
-            // talking (or about to) on the net, the 1MC or among the crew, or a launch alarm is
-            // sounding, it's skipped outright. `at` schedules it on the audio clock (default: now).
+            // New anti-ship missile on radar: its vampire call (and what follows it), after the general
+            // alarm if that hasn't sounded lately. Vampires are frequent, so one never interrupts
+            // (onlyIfClear). `at` schedules it on the audio clock (default: now).
             announceVampire: function (bearing, at) {
                 if (!this.isInit || this.isMuted) return;
-                const t = at ?? this.ctx.currentTime;
-                if (t < Math.max(this.cicBusyUntil, this.crewUntil, this.launchAlarmUntil)) {
-                    this.debugState.cic.skipped++;
+                const t = at ?? this.ctx.currentTime, { alarm } = VOICE_TRIGGERS, ring = t - this.alarmAt >= alarm.cooldown;
+                const called = CALLED_BEARINGS[Math.round(bearing / 30) % 12]; // as the callouts say it
+                if (this.play('vampire', { bearing: called }, t, ring ? alarm.lead : undefined) === null || !ring) return;
+                this.alarmAt = t;
+                const bell = this.playBuffer(this.buffers.alarm, t, 0.32, this.cicBus);
+                // The alarm keeps ringing under the voice, quieter
+                bell.g.gain.setTargetAtTime(0.12, t + alarm.lead - 0.05, 0.08);
+            },
+
+            // A friendly hit: a crew reaction (usually naming her), the 1MC's rescue call, and
+            // sometimes a follow-up (the RHIB on her side of us, medical or the lookouts). Rescue
+            // calls coalesce: a hit soon after another still gets its own reaction, but at most a
+            // follow-up. key: a FRIENDLY_NAMES key; side: 1 if she's to starboard of us, -1 to port.
+            // `at` schedules it on the audio clock (default: now).
+            announceFriendlyHit: function (key, side, at) {
+                this.play('reaction', { ship: key, named: Math.random() < 0.7 }, at);
+                if (this.play('rescue', { ship: key }, at) === null || Math.random() < 0.5) {
+                    this.play('rescue-followup', { side: side > 0 ? 'stbd' : 'port' }, at);
+                }
+            },
+
+            // A hit on our ship: a shout from the crew, then damage control's call for it and
+            // sometimes their call for reports (BUCKETS' then). side: 1 starboard, -1 port, 0 on the
+            // centreline; frame: where along the hull (DC_CALLS frames); missile: an anti-ship
+            // missile ("Missile impact" lines; otherwise fire and flooding). `at`: as announceVampire's.
+            announceDamage: function (side, frame, missile, at) {
+                this.play('we-hit', { side, frame, missile }, at);
+            },
+
+            // A threat has appeared (addThreat). The first one in a game has the net call weapons
+            // free; an anti-ship missile has the kill calls loaded in case it's shot down; a shell
+            // aimed near us has the crew shout now and then.
+            noteThreat: function (m) {
+                if (!this.isInit || this.isMuted) return;
+                this.play('weapons-free');
+                if (m.type === 'ascm') this.prepare('kill');
+                if (m.type === 'mortar' && m.targetInfo.position.length() < CREW_RANGES.shells) this.play('shells');
+            },
+
+            // A threat of `type` shot down `distance` units from our ship: its kill call on the net,
+            // and the crew's remark on one shot down close in, or else on kills in quick succession.
+            // Kills also count toward the crew's chatter and the Captain's word (updateIdle).
+            announceKill: function (type, distance) {
+                if (!this.isInit || this.isMuted) return;
+                const t = this.ctx.currentTime, { killCallout } = THREAT_TYPES[type];
+                if (this.captainKills++ === 0) this.actionSince = t;
+                if (this.nextChatter === Infinity) this.nextChatter = t + rand(...VOICE_TRIGGERS.chatter.delay);
+                this.killTimes = this.killTimes.filter(k => t - k < VOICE_TRIGGERS.multiSplash.window);
+                this.killTimes.push(t);
+                // The net first, so the crew wait for it
+                if (killCallout) this.play(killCallout, {}, t);
+                // A close call, unless it's turned down outright (one still loading may yet go out)
+                const close = type === 'ascm' && distance < CREW_RANGES.closeCall;
+                if ((!close || this.play('close-call', {}, t) === null) && this.killTimes.length >= 2) this.play('multi-splash', {}, t);
+            },
+
+            // Per frame, in a lull (no voice for a while, no 1MC call waiting and no threat within
+            // CREW_RANGES.quiet of our ship): after a long fight the Captain has a word, or else now
+            // and then a crew member remarks on things (chatter). Not after the game is over.
+            updateIdle: function (missileList) {
+                if (this.isMuted || isGameOver) return;
+                const t = this.ctx.currentTime, { captain, chatter } = VOICE_TRIGGERS;
+                const quiet = t - this.clearFrom();
+                const fought = this.captainKills >= captain.kills || (this.captainKills > 0 && t - this.actionSince >= captain.action);
+                const chat = quiet >= chatter.quiet && t >= this.nextChatter;
+                if (!(fought || chat) || quiet < captain.quiet || this.paQueue.length) return;
+                const range = CREW_RANGES.quiet ** 2;
+                for (const m of missileList) if (m.mesh.position.lengthSq() < range) return;
+                if (fought && this.play('captain', {}, t)) {
+                    this.captainKills = 0;
                     return;
                 }
-                if (!this.ready('vampire', t)) return;
-                let voiceAt = t + CIC_TIMING.vampire.lead;
-                if (this.ready('alarm', t)) {
-                    const alarm = this.playBuffer(this.buffers.alarm, t, 0.32, this.cicBus);
-                    voiceAt = t + CIC_TIMING.alarm.lead;
-                    // The alarm keeps ringing under the voice, quieter
-                    alarm.g.gain.setTargetAtTime(0.12, voiceAt - 0.05, 0.08);
-                }
-                const end = this.say(this.pickVampire(bearing), voiceAt);
-                if (end !== null) this.vampireVoice = [voiceAt, end];
-                if (end !== null && this.ready('gq', t)) this.say('general-quarters', end + CIC_TIMING.gq.lead);
-            },
-
-            // One of the bearing's wordings that's decoded, not the last one used if there's a choice;
-            // the others start decoding so they're ready next time
-            pickVampire: function (bearing) {
-                const names = vampireCallouts(bearing);
-                names.forEach(name => { if (this.callouts[name] === undefined) this.getCallout(name); });
-                const ready = names.filter(name => this.callouts[name]);
-                const fresh = ready.filter(name => name !== this.lastVampire);
-                const pool = fresh.length ? fresh : ready;
-                this.lastVampire = pool.length ? pool[Math.floor(Math.random() * pool.length)] : names[0];
-                return this.lastVampire;
-            },
-
-            // A friendly hit: a crew reaction (usually naming her), a few seconds later the 1MC's
-            // rescue call, and sometimes a follow-up (the RHIB on her side of us, medical or the
-            // lookouts). Rescue calls coalesce: a hit soon after another still gets its own
-            // reaction, but at most a follow-up. key: a FRIENDLY_NAMES key; side: 1 if she's to
-            // starboard of us, -1 to port. `at` schedules it on the audio clock (default: now).
-            announceFriendlyHit: function (key, side, at) {
-                if (!this.isInit || this.isMuted) return;
-                const t = at ?? this.ctx.currentTime, T = CIC_TIMING;
-                const reactAt = t + T.reaction.lead + Math.random() * T.reaction.jitter;
-                this.sayCrew(this.pickCrew(Math.random() < 0.7 ? crewReactions(key) : CREW_GENERIC), reactAt);
-                const rescueAt = reactAt + T.rescue.lead;
-                const rescue = this.ready('rescue', t);
-                if (rescue) this.queuePA(`rescue-${key}`, rescueAt);
-                if ((!rescue || Math.random() < 0.5) && this.ready('rescue-followup', t)) {
-                    const options = [side > 0 ? 'rescue-rhib-stbd' : 'rescue-rhib-port', 'rescue-medical', 'rescue-lookouts']
-                        .filter(n => n !== this.lastFollowup);
-                    this.lastFollowup = pick(options);
-                    this.queuePA(this.lastFollowup, rescueAt + T['rescue-followup'].lead);
-                }
-            },
-
-            // A hit on our ship: damage control's call for it. side: 1 starboard, -1 port, 0 on the
-            // centreline; frame: where along the hull (DC_CALLS frames); missile: an anti-ship
-            // missile ("Missile impact" lines; otherwise fire and flooding). Prefers the side and
-            // kind, then the nearest frame, never the last call twice running if there's another.
-            announceDamage: function (side, frame, missile, at) {
-                if (!this.isInit || this.isMuted) return;
-                const t = at ?? this.ctx.currentTime;
-                if (!this.ready('dc', t)) return;
-                const sided = DC_CALLS.filter(c => c.side === side);
-                const fresh = sided.filter(c => c.name !== this.lastDC);
-                const kind = fresh.filter(c => !!c.missile === missile);
-                const choices = kind.length ? kind : fresh.length ? fresh : sided;
-                const call = choices.reduce((a, b) => (Math.abs(b.frame - frame) < Math.abs(a.frame - frame) ? b : a));
-                this.lastDC = call.name;
-                this.queuePA(call.name, t + CIC_TIMING.dc.lead + Math.random() * CIC_TIMING.dc.jitter);
+                if (!chat) return;
+                this.nextChatter = Infinity;
+                // "Is it over?" as one remark in six; the other kind if this one has none fresh
+                const over = Math.random() * (BUCKETS.chatter.clips.length + 1) < 1;
+                if (this.play(over ? 'chatter-over' : 'chatter', {}, t) === null) this.play(over ? 'chatter' : 'chatter-over', {}, t);
             },
 
             // Our ship is about to fire a VLS round. Routine: the 1MC's "Stand by for missile launch"
             // (if it hasn't gone out lately and the net frees up soon), then the launch alarm;
-            // answering a vampire: the alarm alone, once the vampire callout is over. Queued 1MC
-            // calls hold off until "Birds away". Returns how long (s) the launch should wait: 0 if
-            // nothing was sounded.
+            // answering a vampire: the alarm alone, once the vampire callout is over. The round fires
+            // VLS_HATCH_LEAD (sim) s after the alarm; if "Birds away" can go out then, the 1MC and
+            // the flavour lines hold off till just after it. Returns how long (s) the launch should
+            // wait: 0 if nothing was sounded.
             warnVLSLaunch: function (routine) {
                 if (!this.isInit || this.isMuted) return 0;
-                const now = this.ctx.currentTime, T = CIC_TIMING;
-                let alarmAt = Math.max(now, this.vampireVoice[1]);
-                const call = this.callouts['missile-launch'];
-                if (routine && call) {
-                    const callAt = Math.max(alarmAt + T['missile-launch'].lead, this.cicBusyUntil + VOICE.radio.gap);
-                    if (callAt - now < VOICE.radio.stale && this.ready('missile-launch', now)) {
-                        alarmAt = this.speak('missile-launch', call, callAt, 'radio') + T.launch.lead;
-                    }
-                }
-                const alarm = this.playBuffer(this.buffers.launchAlarm, alarmAt, 0.22, this.cicBus);
-                this.launchAlarmUntil = alarm.end;
-                this.paHoldUntil = Math.max(this.paHoldUntil, alarm.end + T['birds-away'].lead + 1.5);
+                const now = this.ctx.currentTime, alarmAt = Math.max(now, this.bucketState.vampire.voice[1]);
+                const call = routine && this.play('missile-launch', {}, alarmAt);
+                const alarm = this.playBuffer(this.buffers.launchAlarm, call ? call + LAUNCH_ALARM.lead : alarmAt, 0.22, this.cicBus);
+                const fires = alarm.end + VLS_HATCH_LEAD / timeScale;
+                this.holdRadio(this.ready('birds-away', fires) ? fires + 2 : alarm.end);
                 return alarm.end - now;
             },
 
@@ -2307,7 +2442,7 @@
                 }
             },
 
-            // Per-frame: emitter positions, threat voices, near misses, ambience. Runs even after game over.
+            // Per-frame: emitter positions, threat voices, near misses, ambience, idle voices. Runs even after game over.
             frame: function (missileList) {
                 if (!this.isInit) return;
                 this.frameId++;
@@ -2318,6 +2453,8 @@
                 this.updateThreats(missileList);
                 this.updateNearMisses();
                 this.updateAmbient();
+                if (this.paQueue.length) this.pumpPA();
+                this.updateIdle(missileList);
             },
 
             update: function (barrelSpeed, servoSpeed) {
@@ -2398,7 +2535,7 @@ Threats
   near-miss whizzes: ${s.threats.nearMisses}
 
 CIC
-  callouts fetched: ${s.cic.fetched}/${CIC_CALLOUTS.length}, decoded: ${s.cic.decoded}
+  callouts fetched: ${s.cic.fetched}/${A.calloutNames?.size ?? 0}, decoded: ${Object.values(A.callouts ?? {}).filter(Boolean).length}
   1MC queued: ${s.cic.queued} (waiting ${A.paQueue ? A.paQueue.length : 0}, dropped ${s.cic.dropped})
   vampire calls skipped (net busy): ${s.cic.skipped}
   last: ${s.cic.last}
@@ -4230,8 +4367,9 @@ Ambient
                     },
                     get voice() {
                         const A = AudioController;
-                        return { ...A.debugState.cic, waiting: A.paQueue?.length ?? 0,
-                                 lazy: A.lazyCallouts?.slice() ?? [], busyUntil: A.cicBusyUntil, now: A.ctx?.currentTime };
+                        return { ...A.debugState.cic, decoded: Object.values(A.callouts ?? {}).filter(Boolean).length,
+                                 waiting: A.paQueue?.length ?? 0, lazy: [...(A.lazyCallouts?.keys() ?? [])],
+                                 busyUntil: A.busy?.radio, now: A.ctx?.currentTime, repeat: VOICE_REPEAT_WINDOW };
                     }
                 }
             };
@@ -5308,7 +5446,8 @@ Ambient
         // Zen mode: a frigate takes the place of one that's gone down, in her slot. She has a name
         // none of the others has, and comes up from astern of a free station at about 20 m/s,
         // slowing to a stop on it (updateArrivals). Till then nothing aims at her and she doesn't launch.
-        const ARRIVAL = { distance: 600, lane: 300, speed: 0.35, ease: 60 }; // units, and units per step
+        // The crew call her once she's `spotted` units out (the arrive bucket).
+        const ARRIVAL = { distance: 600, lane: 300, speed: 0.35, ease: 60, spotted: 500 }; // units, and units per step
         function sendReplacement(slot) {
             const taken = new Set(friendlies.map(f => f.key));
             const key = pick(Object.keys(FRIENDLY_NAMES).filter(k => !taken.has(k)));
@@ -5433,9 +5572,11 @@ Ambient
                 }
                 const left = f.mesh.position.distanceTo(f.arriving);
                 const step = Math.min(left, ARRIVAL.speed * Math.sqrt(Math.min(1, left / ARRIVAL.ease)) * simSteps);
+                if (left > ARRIVAL.spotted && left - step <= ARRIVAL.spotted) AudioController.play('arrive', { ship: f.key });
                 if (left - step < 0.01) {
                     f.mesh.position.copy(f.arriving);
                     f.arriving = null;
+                    AudioController.play('joined', { ship: f.key, side: f.mesh.position.x >= 0 ? 'starboard' : 'port' });
                 } else {
                     f.mesh.position.addScaledVector(_arrivalDir.subVectors(f.arriving, f.mesh.position), step / left);
                 }
@@ -5719,8 +5860,8 @@ Ambient
         // when it reaches its target by its own test (any threat also goes off within IMPACT_RADIUS
         // of its aim point); name: what the split screen's labels call it; chase: the follow
         // cameras' pose on it (followPose); lockOn: the chase camera stays on one until it's gone,
-        // and a newly detected one takes the camera over; killCallout: what the CIC net calls when
-        // one is shot down
+        // and a newly detected one takes the camera over; killCallout: the BUCKETS line the CIC net
+        // calls when one is shot down
         const THREAT_TYPES = {
             drone: {
                 name: 'DRONE', health: 2, damage: 25,
@@ -5744,7 +5885,7 @@ Ambient
                 chase: { back: 9, up: 2.6, fov: 60 },
                 lockOn: true,
                 fly: flySeaSkimmer,
-                killCallout: 'splash'
+                killCallout: 'kill'
             }
         };
 
@@ -5769,6 +5910,7 @@ Ambient
                 prop: mesh.getObjectByName('prop') || null
             };
             missiles.push(threat);
+            AudioController.noteThreat(threat);
             return threat;
         }
 
@@ -7077,6 +7219,7 @@ Ambient
             wrecks.push({
                 mesh: wreck,
                 slot: f.id,
+                key: f.key,
                 markings: f.markings,
                 bow: wreck.getObjectByName('wreck-bow'),
                 stern: wreck.getObjectByName('wreck-stern'),
@@ -7100,6 +7243,7 @@ Ambient
                 if (plungeK >= 1) {
                     scene.remove(w.mesh);
                     wrecks.splice(i, 1);
+                    AudioController.play('gone', { ship: w.key });
                     // Her paint was hers alone; in zen mode another ship takes her place
                     w.markings.map.dispose();
                     w.markings.dispose();
@@ -7248,7 +7392,8 @@ Ambient
                 });
             });
             AudioController.playVLSLaunch(pos, scale);
-            if (launcher === 'ship') AudioController.announce('birds-away');
+            if (launcher === 'ship') AudioController.play('birds-away');
+            else AudioController.play('shooting', { ship: launcher.key });
         }
 
         // A hatch swings open fast and closes slowly once the missile is clear
@@ -7329,7 +7474,9 @@ Ambient
             const bearing = due ? vlsResponse.bearing + rand(-8, 8) : null;
             const follow = due ? vlsResponse.follow : null;
             vlsResponse = null;
-            vlsCooldown = rand(35, 75);
+            // Answering launches leave the unprompted ones' clock alone, so those (our ship's
+            // routine ones among them) still come in a busy fight
+            if (!due) vlsCooldown = rand(35, 75);
             const alive = friendlies.filter(onStation);
             const launcher = follow && (follow === 'ship' || onStation(follow)) ? follow
                 : Math.random() < 0.35 || !alive.length ? 'ship' : pick(alive);
@@ -8056,6 +8203,12 @@ Ambient
                 missileSpawnRate = Math.max(20, 120 - (wave * 5));
                 document.getElementById('wave-count').innerText = wave;
                 difficultyCooldown = 1000; // Reset for next wave
+                if (Math.random() < 0.5) AudioController.play('raid-size'); // normal play only: zen mode holds the ramp (applyWave)
+            }
+            // ...so there the net calls a fresh raid every few minutes instead
+            if (zen.on && (zen.raidIn -= simSteps / SIM_STEPS_PER_SECOND) <= 0) {
+                zen.raidIn = rand(...ZEN_RAID_SECONDS);
+                AudioController.play('raid-size');
             }
 
             // Cosmetic VLS launches from our ship and the friendlies
@@ -8270,8 +8423,7 @@ Ambient
                                 noteKill(m, mPos);
                                 disposeThreat(m);
                                 missiles.splice(j, 1);
-                                const { killCallout } = THREAT_TYPES[m.type];
-                                if (killCallout) AudioController.announce(killCallout);
+                                AudioController.announceKill(m.type, mPos.length());
                                 engagementStats[p.firedBy].kills++;
                                 score++;
                                 document.getElementById('kill-count').innerText = score;
@@ -8871,10 +9023,12 @@ Ambient
         const ZEN_MIN_SHOT = 6;            // real s before any cut, so shots don't flicker past
         const ZEN_VAMPIRE_MIN = 4;         // real s on the vampire shot before it goes to split screen
         const ZEN_INELIGIBLE_GRACE = 3;    // a follow shot ends only after it's had nothing to follow this long
+        const ZEN_RAID_SECONDS = [180, 300]; // sim s between the net's raid calls (the wave doesn't ramp)
         const zen = {
             on: false,
             saved: null,   // the wave ramp and the orbit view as entering found them, to put back
             exitTimer: 0,  // hides the exit chip again
+            raidIn: 0,     // sim s until the net next calls a fresh raid (updateLogic)
             director: {
                 shot: '',               // the ZEN_SHOTS shot on screen
                 left: 0, age: 0,        // real s before the next cut, and since this one
@@ -8958,6 +9112,7 @@ Ambient
                 setCameraMode('off'); // back to the orbit view as it was left, to come back to
                 zen.saved = { wave, missileSpawnRate, difficultyCooldown, position: camera.position.clone(), target: controls.target.clone() };
                 applyWave(ZEN_WAVE);
+                zen.raidIn = rand(...ZEN_RAID_SECONDS);
                 // Slots whose wrecks went down before now get their replacements too
                 for (const f of friendlies) if (!f.alive && !wrecks.some(w => w.slot === f.id)) sendReplacement(f.id);
                 d.paused = 0;

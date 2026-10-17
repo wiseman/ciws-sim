@@ -7,7 +7,8 @@ Usage from a tool script (run with `uv run tools/<script>.py`, which puts tools/
         ...
     report_errors(errors)
 
-Also timed screenshots, contact sheets, in-page frame capture (FRAME_CAPTURE_JS, save_strip), a
+With audio=True, game_page lets the page play sound unprompted, and enable_audio(page) starts and
+unmutes it. Also timed screenshots, contact sheets, in-page frame capture (FRAME_CAPTURE_JS, save_strip), a
 quiet scene for staged shots (QUIET_SCENE_JS) and the --page option (page_arg). Playwright and
 Pillow are imported where they're used, so a script needs only the dependencies of the helpers it
 calls.
@@ -22,6 +23,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 GPU_ARGS = ["--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"]
+AUTOPLAY_ARGS = ["--autoplay-policy=no-user-gesture-required"]
 
 # Page-side helper: base64-encode an ArrayBuffer in chunks (one huge btoa string overflows)
 B64_ENCODE_JS = """
@@ -96,16 +98,18 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 
 @contextmanager
-def game_page(width=1280, height=760, dpr=1, extra_args=(), console_levels=("error",), page_path="index.html"):
+def game_page(width=1280, height=760, dpr=1, extra_args=(), console_levels=("error",), page_path="index.html",
+              audio=False):
     """Yields (page, errors) with the game loaded (page_path: the page, relative to the repo, say a
-    saved copy of an older build); errors collects page errors and console messages."""
+    saved copy of an older build); errors collects page errors and console messages. audio: let the
+    page play sound without a user gesture (then call enable_audio)."""
     from playwright.sync_api import sync_playwright
 
     server = socketserver.TCPServer(("127.0.0.1", 0), partial(_QuietHandler, directory=str(ROOT)))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(args=GPU_ARGS + list(extra_args))
+            browser = p.chromium.launch(args=GPU_ARGS + (AUTOPLAY_ARGS if audio else []) + list(extra_args))
             page = browser.new_page(viewport={"width": width, "height": height}, device_scale_factor=dpr)
             errors = []
             page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
@@ -117,6 +121,17 @@ def game_page(width=1280, height=760, dpr=1, extra_args=(), console_levels=("err
                 browser.close()
     finally:
         server.shutdown()
+
+
+def enable_audio(page, load=1.5, settle=1.5):
+    """Starts the game's audio on a game_page(audio=True): waits `load` s for the page, clicks low
+    on it (the first gesture initializes audio), unmutes and waits `settle` s (the urgent callouts
+    load)."""
+    time.sleep(load)
+    size = page.viewport_size
+    page.mouse.click(size["width"] // 2, int(size["height"] * 0.8))
+    page.evaluate("() => window.toggleMute()")
+    time.sleep(settle)
 
 
 def report_errors(errors):

@@ -16,6 +16,9 @@ Spawns and unprompted VLS launches are held so only the scripted events happen. 
         through; 89  a launch answering it (alarm only)
   short (~35 s): a friendly hit, then a missile hit on our starboard side; a vampire during its
      damage-control call (skipped), then another once the net is quiet (called)
+  birds (~58 s): a 1MC call queued during each of our launch warnings, which should wait for
+     "Birds away": 1 a routine launch, 2 a drone hit on our port side (a damage-control call);
+     42 a launch answering a vampire, 42.5 a friendly hit (a rescue call)
 Prints the event log (times on the recording's clock; indented lines are voices and alarms, at
 the time they're scheduled to start) and the voice state, and any page errors.
 Convert with ffmpeg and transcribe (e.g. mlx_whisper) to check what was said when.
@@ -23,10 +26,9 @@ Convert with ffmpeg and transcribe (e.g. mlx_whisper) to check what was said whe
 import base64
 import json
 import sys
-import time
 from pathlib import Path
 
-from _harness import B64_ENCODE_JS, game_page, report_errors
+from _harness import B64_ENCODE_JS, enable_audio, game_page, report_errors
 
 out = sys.argv[1]
 scenario = sys.argv[2] if len(sys.argv) > 2 else "full"
@@ -48,6 +50,12 @@ SCENARIOS = {
         [19, "anti-ship missile spawned", "(window.__vc.ascm = d.spawnAntiShipMissile(), 'ok')"],
         [29, "anti-ship missile spawned", "(window.__vc.ascm = d.spawnAntiShipMissile(), 'ok')"],
     ],
+    "birds": [
+        [1, "routine launch", "d.launchVLS('ship', 90, 'routine')"],
+        [2, "drone hit, port", "d.hitOwnShip('port', 'drone').toArray().map(Math.round)"],
+        [42, "vampire-response launch", "d.launchVLS('ship', 200, 'response')"],
+        [42.5, "friendly hit", "(() => { const f = d.friendlies.find(f => f.alive); d.wreckFriendly(f.id); return f.name; })()"],
+    ],
 }
 events = SCENARIOS[scenario]
 seconds = events[-1][0] + 16
@@ -64,8 +72,9 @@ RUN_JS = """async ({ events, seconds }) => {
     rec.ondataavailable = e => chunks.push(e.data);
     const t0 = A.ctx.currentTime;
     const now = () => +(A.ctx.currentTime - t0).toFixed(2);
-    // Log every voice and alarm as it's scheduled (at its start time) and every launch
-    const speak = A.speak, play = A.playBuffer;
+    // Log every voice and alarm as it's scheduled (at its start time) and every launch (our ship's
+    // cells are within a few metres of the origin; the friendlies' far off)
+    const { speak, playBuffer: play, playVLSLaunch } = A;
     A.speak = function (name, buffer, when, ...rest) {
         log.push({ t: +(when - t0).toFixed(2), label: `  voice ${name} (${buffer.duration.toFixed(1)} s)` });
         return speak.call(this, name, buffer, when, ...rest);
@@ -75,7 +84,10 @@ RUN_JS = """async ({ events, seconds }) => {
         if (alarm) log.push({ t: +(when - t0).toFixed(2), label: `  ${alarm}` });
         return play.call(this, buffer, when, ...rest);
     };
-    let launches = d.vlsLaunches.length;
+    A.playVLSLaunch = function (position, ...rest) {
+        log.push({ t: now(), label: `VLS launch, ${position.length() < 50 ? 'our ship' : 'a friendly'}` });
+        return playVLSLaunch.call(this, position, ...rest);
+    };
     rec.start();
     for (const [at, label, expr] of events) {
         setTimeout(() => {
@@ -93,12 +105,10 @@ RUN_JS = """async ({ events, seconds }) => {
     const watch = setInterval(() => {
         const c = A.debugState.cic;
         if (c.skipped !== skipped) { log.push({ t: now(), label: '  vampire call skipped (net busy)' }); skipped = c.skipped; }
-        if (d.vlsLaunches.length > launches) log.push({ t: now(), label: 'VLS launch' });
-        launches = d.vlsLaunches.length;
     }, 50);
     await new Promise(r => setTimeout(r, seconds * 1000));
     clearInterval(poll); clearInterval(watch);
-    A.speak = speak; A.playBuffer = play;
+    Object.assign(A, { speak, playBuffer: play, playVLSLaunch });
     const done = new Promise(r => { rec.onstop = r; });
     rec.stop();
     await done;
@@ -106,11 +116,8 @@ RUN_JS = """async ({ events, seconds }) => {
              names: d.friendlies.map(f => `${f.name}${f.alive ? '' : ' (lost)'}`) };
 }""" % B64_ENCODE_JS
 
-with game_page(extra_args=["--autoplay-policy=no-user-gesture-required"]) as (page, errors):
-    time.sleep(1.5)
-    page.mouse.click(640, 600)   # first gesture initializes audio
-    page.click("#audio-toggle")  # unmute
-    time.sleep(1.5)              # let the urgent callouts decode
+with game_page(audio=True) as (page, errors):
+    enable_audio(page)
     r = page.evaluate(RUN_JS, {"events": events, "seconds": seconds})
     Path(out).write_bytes(base64.b64decode(r.pop("audio")))
     print("wrote", out)

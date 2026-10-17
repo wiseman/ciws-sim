@@ -77,7 +77,7 @@ JS = """async (mode) => {
 
   // General alarm, the callout ducking the battle, and a burst under it. (GQ is marked as
   // recently called so the 1MC's "General quarters" doesn't follow.)
-  A.lastAt.gq = 0;
+  A.bucketState.gq.last = 0;
   A.announceVampire(270, 29.0);
   const g0 = 31.0;
   for (let t = g0; t < 34.0; t += A.shotSpacing(t - g0, 1 / 60)) A.queueShot(t);
@@ -85,7 +85,7 @@ JS = """async (mode) => {
   // A friendly hit: the crew reaction (over a burst) and the rescue call. (The follow-up call is
   // marked as recently made, so the timeline doesn't depend on its coin toss.)
   boom(36.2, place(260, 160, 1), 'impact', true);
-  A.lastAt['rescue-followup'] = 30;
+  A.bucketState['rescue-followup'].last = 30;
   A.announceFriendlyHit('halvorsen', 1, 36.5);
   const g1 = 37.0;
   for (let t = g1; t < 40.0; t += A.shotSpacing(t - g1, 1 / 60)) A.queueShot(t);

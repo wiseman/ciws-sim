@@ -19,10 +19,9 @@ import json
 import subprocess
 import sys
 import tempfile
-import time
 from pathlib import Path
 
-from _harness import B64_ENCODE_JS, game_page, report_errors
+from _harness import B64_ENCODE_JS, enable_audio, game_page, report_errors
 
 keep_webm = "--keep-webm" in sys.argv
 argv = [a for a in sys.argv if a != "--keep-webm"]
@@ -124,13 +123,9 @@ SLICE_JS = """async ([start, end]) => {
     return toBase64(await window.__clipBlob.slice(start, end).arrayBuffer());
 }""" % B64_ENCODE_JS
 
-with game_page(width=width, height=height,
-               extra_args=["--autoplay-policy=no-user-gesture-required"]) as (page, errors):
+with game_page(width=width, height=height, audio=True) as (page, errors):
     page.add_style_tag(content="#hud, #radar { display: none !important; }")
-    time.sleep(1.0)
-    page.mouse.click(width // 2, int(height * 0.8))  # first gesture initializes audio
-    page.evaluate("() => { window.toggleMute(); }")
-    time.sleep(2.0)
+    enable_audio(page, load=1.0, settle=2.0)
     result = page.evaluate(DIRECTOR_JS, [SHOTS, GUN_SHOT])
     size = result["size"]
     data = bytearray()

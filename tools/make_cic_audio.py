@@ -12,7 +12,8 @@ Usage:
 keeps the raw takes in sounds/src/ so the radio processing can be re-tuned without regenerating.
 The API key is read from the environment only; never put it in a file.
 
-`process` gives each take its character and writes the game's assets:
+`process` gives each take its character and writes the game's assets, and lists them in
+sounds/callouts.json (the game loads what it lists):
   net  (CIC tactical net): band-limited 350-3200 Hz, driven and compressed, hiss bed, key-up click
        and a squelch tail
   1mc  (shipboard announcing system): horn-speaker band, a metallic resonance and a slap echo
@@ -50,6 +51,8 @@ def bearing_words(deg):
     return " ".join(DIGITS[int(c)] for c in f"{deg:03d}")
 
 
+# The Captain on the 1MC
+VOICE_CAPTAIN = "TxGEqnHWrfWFTfGW9XjX"   # "Josh": deep, steady American male
 # A second CIC watchstander for some of the vampire variations
 VOICE_NET_2 = "iP95p4xoKVk53GoZ742B"   # "Chris"
 # Delivery direction for the hurried 1MC calls: an eleven_v3 audio tag describing the voice (not
@@ -80,9 +83,27 @@ GENERIC_REACTIONS = {
     "god-help": "[quietly] God help them.",
     "direct-hit": "[shouting] Direct hit! They're hit!",
 }
+# Track numbers the kill calls name (kill-track-1 ...)
+KILL_TRACKS = ["four zero seven", "four one two", "three niner five", "four two one", "three eight eight"]
+
+
+def crew_set(prefix, texts, offset):
+    """Crew lines `prefix`-key for each key -> text in `texts`, voiced by CREW in turn from `offset`"""
+    return {f"{prefix}-{key}": (text, "dry", CREW[(i + offset) % len(CREW)]) for i, (key, text) in enumerate(texts.items())}
+
+
+def each_ship(template):
+    """key -> `template` naming each of SHIPS (as {name})"""
+    return {key: template.format(name=name) for key, name in SHIPS.items()}
+
+
+def kill_tracks(first, last):
+    """The net's kill calls on KILL_TRACKS[first:last]"""
+    return {f"kill-track-{i + 1}": (f"Combat, Sea-whiz: kill on track {KILL_TRACKS[i]}.", "net") for i in range(first, last)}
+
 
 # name -> (text, chain[, voice]); CHAINS (below the processing) gives each chain's default voice,
-# model and processing
+# model and processing. The order seeds each take's processing noise, so new lines go at the end.
 LINES = {
     **{f"vampire-{deg:03d}": (f"Vampire, vampire, vampire! Bearing {bearing_words(deg)}, inbound!", "net")
        for deg in range(0, 360, 30)},
@@ -125,14 +146,62 @@ LINES = {
     # Crew next to us when a friendly is hit: per-ship reactions, then generic ones
     **{f"hit-{key}-{i + 1}": (template.format(ship=name), "dry", CREW[(i + 2 * j) % len(CREW)])
        for j, (key, name) in enumerate(SHIPS.items()) for i, template in enumerate(REACTIONS)},
-    **{f"hit-{key}": (text, "dry", CREW[i % len(CREW)]) for i, (key, text) in enumerate(GENERIC_REACTIONS.items())},
+    **crew_set("hit", GENERIC_REACTIONS, 0),
     # Rescue of a stricken friendly: the rescue and assistance (R and A) team and the boat crew
     **{f"rescue-{key}": (f"{name} has been hit. Away the rescue and assistance team. "
                          "R and A team, lay to the boat deck.", "1mc") for key, name in SHIPS.items()},
-    "rescue-rhib-stbd": ("Away the starboard RHIB. Boat crew and Sar swimmer, lay to the starboard boat deck.", "1mc"),
-    "rescue-rhib-port": ("Away the port RHIB. Boat crew and Sar swimmer, lay to the port boat deck.", "1mc"),
+    "rescue-rhib-stbd": ("Away the starboard rib. Boat crew and Sar swimmer, lay to the starboard boat deck.", "1mc"),
+    "rescue-rhib-port": ("Away the port rib. Boat crew and Sar swimmer, lay to the port boat deck.", "1mc"),
     "rescue-medical": ("Medical, stand by to receive casualties on the flight deck.", "1mc"),
     "rescue-lookouts": ("Lookouts, report all survivors in the water to the bridge.", "1mc"),
+    # Flavor. Crew beside us in quiet stretches (two voices for the "is it over" exchange)...
+    "chat-launchers": ("[tired] Where are they even coming from? Guess the Lincoln's strikes didn't get all the launchers.", "dry", CREW[0]),
+    "chat-bearing": ("[muttering] That's the third one off that bearing. They've got a site out there somewhere.", "dry", CREW[3]),
+    "chat-seawhiz": ("[impressed] Sea-whiz is earning its pay today.", "dry", CREW[1]),
+    "chat-mikemike": ("[dry] Somebody tell supply we're gonna need a lot more twenty mike-mike.", "dry", CREW[6]),
+    "chat-ears": ("[tired] My ears are still ringing from that mount.", "dry", CREW[2]),
+    "chat-over": ("[quietly] ...Is it over?", "dry", CREW[5]),
+    "chat-jinx": ("[tense] Don't jinx it.", "dry", CREW[4]),
+    # ...and on events: a ship coming over the horizon, a friendly firing, a wreck going under
+    **crew_set("arrive", each_ship("[relieved] Here comes the {name}. About damn time."), 1),
+    **crew_set("shooting", each_ship("[excited] {name}'s shooting."), 3),
+    **crew_set("gone", each_ship("[quietly] She's gone... {name}'s gone."), 5),
+    "close-call": ("[shaken] Jesus, that one was close. I felt it.", "dry", CREW[7]),
+    "multi-splash": ("[excited] Splash... and splash! Keep 'em coming!", "dry", CREW[1]),
+    "we-hit": ("[shouting] We're hit! Hang on!", "dry", CREW[0]),
+    "shells-incoming": ("[shouting] Incoming! Those are shells, get down!", "dry", CREW[3]),
+    # The CIC net
+    "weapons-free": ("All stations, Combat: weapons free, weapons free.", "net"),
+    **kill_tracks(0, 3),
+    "raid-size": ("Combat, all stations: multiple new contacts, raid size increasing.", "net"),
+    # The 1MC: Zebra after general quarters, a new ship taking station, the Captain, damage control
+    "set-zebra": (HURRIED + "Set material condition Zebra throughout the ship.", "1mc-hurried"),
+    **{f"joined-{key}-{side}": (f"U S S {name} has joined the formation, taking station two thousand yards off our {side} quarter.", "1mc")
+       for key, name in SHIPS.items() for side in ("port", "starboard")},
+    "captain": ("All hands, this is the Captain. Good work. Stay sharp, this isn't over.", "1mc", VOICE_CAPTAIN),
+    "dc-report": ("Damage control parties, report status to D C Central.", "1mc"),
+    # More wordings for the lines that come round often, so none repeats verbatim for minutes
+    **crew_set("close-call", dict(enumerate([
+        "[shaken] Whoa... that was way too close.",
+        "[breathless] Holy hell, that was right on top of us.",
+        "[shaken] I felt that one in my teeth.",
+        "[nervous laugh] Okay... okay. That one almost had our name on it.",
+        "[shaken] Too close. Way too close."], 2)), 2),
+    **crew_set("multi-splash", dict(enumerate([
+        "[excited] Two down! Keep it up!",
+        "[excited] Got 'em both!",
+        "[excited] Splash two! Nice shooting!",
+        "[excited] Look at that thing go! Back to back!",
+        "[excited] Another one... and another one!"], 2)), 4),
+    **crew_set("shells-incoming", dict(enumerate([
+        "[shouting] Shells inbound! Heads down!",
+        "[urgent] More shells coming in!",
+        "[shouting] Incoming rounds, take cover!"], 2)), 5),
+    "kill-splash-one": ("Splash one.", "net"),
+    "kill-splashed": ("Vampire splashed.", "net"),
+    "kill-destroyed": ("Combat, Sea-whiz: target destroyed.", "net"),
+    "kill-good": ("Good kill, good kill.", "net"),
+    **kill_tracks(3, 5),
 }
 # General quarters, damage control and rescue calls go out hurried
 for _name, (_text, _chain, *_voice) in LINES.items():
@@ -309,6 +378,7 @@ def finish(y, peak_db=-1.0, rms_db=-15.0):
 
 
 def process():
+    names = []
     for i, (name, (_, chain, *_)) in enumerate(LINES.items()):
         src = SRC / f"{name}.mp3"
         if not src.exists():
@@ -318,6 +388,10 @@ def process():
         y = finish(c["process"](trim(decode(src)), i), rms_db=c["rms_db"])
         encode(y, OUT / f"{name}.mp3")
         print(f"wrote sounds/{name}.mp3  {len(y) / SR:.2f} s  peak {20 * np.log10(np.max(np.abs(y))):.1f} dBFS")
+        names.append(name)
+    # The game loads the clips this lists (index.html, loadCallouts)
+    (OUT / "callouts.json").write_text(json.dumps(names, indent=1) + "\n")
+    print(f"wrote sounds/callouts.json  {len(names)} clips")
 
 
 if __name__ == "__main__":

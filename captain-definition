@@ -4,6 +4,7 @@
     "FROM socialengine/nginx-spa:latest", 
     "COPY ./index.html /app/index.html", 
     "COPY ./sounds/*.mp3 /app/sounds/", 
+    "COPY ./sounds/callouts.json /app/sounds/", 
     "RUN chmod -R 777 /app"
   ]
 }
