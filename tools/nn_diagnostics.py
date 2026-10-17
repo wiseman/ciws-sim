@@ -4,7 +4,7 @@
 # ///
 """Let the net learn live, probe its accuracy, and optionally let it fly the gun.
 
-Usage: uv run tools/nn_diagnostics.py [learn_seconds] [drive_seconds] [--save FILE | --frozen FILE]
+Usage: uv run tools/nn_diagnostics.py [learn_seconds] [drive_seconds] [--save FILE | --frozen FILE] [--page FILE]
 Reports input ranges, fire-label balance, aim accuracy (degrees and miss distance at the
 target versus a no-lead baseline), fire-call accuracy, and per-controller rounds/hits/kills.
 With drive_seconds > 0 the net then aims the gun (learning stays on) for that long.
@@ -12,16 +12,19 @@ With drive_seconds > 0 the net then aims the gun (learning stays on) for that lo
 --frozen FILE starts from that saved net instead of a fresh one and never trains it: the
 learning time only gathers examples from the solver, so the probe measures how the saved net
 does in the current build (say, after a geometry change).
+--page FILE plays another copy of the game (a path relative to the repo, say a saved older build).
 """
 import json
 import sys
 import time
 from pathlib import Path
 
-from _harness import game_page, report_errors
+from _harness import game_page, page_arg, report_errors
 
+argv = sys.argv[1:]
+page_path = page_arg(argv)
 args, opts = [], {}
-argv = iter(sys.argv[1:])
+argv = iter(argv)
 for a in argv:
     if a in ("--save", "--frozen"):
         opts[a] = Path(next(argv))
@@ -79,7 +82,7 @@ PROBE = r"""() => {
 }"""
 
 
-with game_page(console_levels=("error", "warning")) as (page, errors):
+with game_page(console_levels=("error", "warning"), page_path=page_path) as (page, errors):
     time.sleep(2)
     if "--frozen" in opts:
         page.evaluate("""(state) => {

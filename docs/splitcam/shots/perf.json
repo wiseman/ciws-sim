@@ -1,0 +1,82 @@
+{
+ "orbit-cpu": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 1.16,
+  "renderP95": 1.5,
+  "frameIntervalMedian": 16.6,
+  "calls": 298,
+  "tris": 74154,
+  "threats": 4
+ },
+ "gun-cpu": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 1.09,
+  "renderP95": 1.6,
+  "frameIntervalMedian": 16.7,
+  "calls": 322,
+  "tris": 74339,
+  "threats": 5
+ },
+ "split-cpu": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 1.85,
+  "renderP95": 2.6,
+  "frameIntervalMedian": 16.7,
+  "calls": 609,
+  "tris": 143458,
+  "threats": 4
+ },
+ "split-shadowonce-cpu": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 2.09,
+  "renderP95": 3.1,
+  "frameIntervalMedian": 16.6,
+  "calls": 607,
+  "tris": 147031,
+  "threats": 4
+ },
+ "orbit-finish": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 1.43,
+  "renderP95": 1.9,
+  "frameIntervalMedian": 16.7,
+  "calls": 311,
+  "tris": 92089,
+  "threats": 4
+ },
+ "gun-finish": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 1.16,
+  "renderP95": 1.6,
+  "frameIntervalMedian": 16.6,
+  "calls": 336,
+  "tris": 92011,
+  "threats": 5
+ },
+ "split-finish": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 2.12,
+  "renderP95": 3,
+  "frameIntervalMedian": 16.6,
+  "calls": 618,
+  "tris": 191548,
+  "threats": 4
+ },
+ "split-shadowonce-finish": {
+  "frames": 180,
+  "fps": 60,
+  "renderMs": 2.06,
+  "renderP95": 2.7,
+  "frameIntervalMedian": 16.6,
+  "calls": 749,
+  "tris": 224963,
+  "threats": 3
+ }
+}

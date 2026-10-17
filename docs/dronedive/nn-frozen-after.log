@@ -1,0 +1,125 @@
+== after gathering examples for 90.0 s ==
+{
+ "examples": 5401,
+ "trainSteps": 10804,
+ "lossEma": 0.011,
+ "inputs": [
+  {
+   "name": "range",
+   "min": -0.929,
+   "max": 0.907,
+   "absMean": 0.34
+  },
+  {
+   "name": "closing",
+   "min": -0.985,
+   "max": -0.054,
+   "absMean": 0.598
+  },
+  {
+   "name": "sideways",
+   "min": -0.724,
+   "max": 0.522,
+   "absMean": 0.086
+  },
+  {
+   "name": "vertical",
+   "min": -0.699,
+   "max": 0.778,
+   "absMean": 0.19
+  },
+  {
+   "name": "sinEl",
+   "min": -0.106,
+   "max": 0.774,
+   "absMean": 0.286
+  },
+  {
+   "name": "cosEl",
+   "min": 0.266,
+   "max": 1,
+   "absMean": 0.859
+  },
+  {
+   "name": "mortar",
+   "min": -1,
+   "max": 1,
+   "absMean": 1
+  }
+ ],
+ "fireLabelInReachPct": 85,
+ "aim": {
+  "netAll": {
+   "n": 1080,
+   "medianDeg": 0.365,
+   "p90Deg": 1.49,
+   "medianMissUnits": 2.24,
+   "within1UnitPct": 13.2
+  },
+  "zeroLeadAll": {
+   "n": 1080,
+   "medianDeg": 5.266,
+   "p90Deg": 15.006,
+   "medianMissUnits": 38.62,
+   "within1UnitPct": 0
+  },
+  "netInReach": {
+   "n": 918,
+   "medianDeg": 0.382,
+   "p90Deg": 1.721,
+   "medianMissUnits": 2.09,
+   "within1UnitPct": 14.6
+  },
+  "zeroLeadInReach": {
+   "n": 918,
+   "medianDeg": 4.863,
+   "p90Deg": 11.659,
+   "medianMissUnits": 33.26,
+   "within1UnitPct": 0
+  }
+ },
+ "fireCallAccuracyPct": 99.7,
+ "byType": {
+  "drone": {
+   "n": 459,
+   "medianDeg": 0.306,
+   "p90Deg": 1.804,
+   "medianMissUnits": 1.65,
+   "within1UnitPct": 25.5
+  },
+  "mortar": {
+   "n": 459,
+   "medianDeg": 0.46,
+   "p90Deg": 1.698,
+   "medianMissUnits": 2.64,
+   "within1UnitPct": 3.7
+  },
+  "under150": {
+   "n": 86,
+   "medianDeg": 1.348,
+   "p90Deg": 4.125,
+   "medianMissUnits": 2.66,
+   "within1UnitPct": 17.4
+  },
+  "from150to480": {
+   "n": 832,
+   "medianDeg": 0.354,
+   "p90Deg": 1.279,
+   "medianMissUnits": 2.07,
+   "within1UnitPct": 14.3
+  }
+ },
+ "session": {
+  "classic": {
+   "rounds": 2666,
+   "hits": 118,
+   "kills": 53
+  },
+  "neural": {
+   "rounds": 0,
+   "hits": 0,
+   "kills": 0
+  }
+ }
+}
+game over: False | wave: 7 | time: 01:32

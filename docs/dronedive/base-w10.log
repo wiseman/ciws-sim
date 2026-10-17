@@ -1,0 +1,13 @@
+t=  10s done=5
+t=  20s done=14
+t=  30s done=22
+t=  40s done=30
+t=  50s done=39
+t=  60s done=47
+t=  70s done=55
+t=  80s done=64
+t=  90s done=69
+t= 100s done=69
+t= 110s done=69
+t= 120s done=69
+wrote base-w10.json

@@ -1,0 +1,126 @@
+== after learning 90.0 s ==
+{
+ "examples": 5401,
+ "trainSteps": 10802,
+ "lossEma": 0.011,
+ "inputs": [
+  {
+   "name": "range",
+   "min": -0.949,
+   "max": 0.912,
+   "absMean": 0.344
+  },
+  {
+   "name": "closing",
+   "min": -1.02,
+   "max": 0.77,
+   "absMean": 0.553
+  },
+  {
+   "name": "sideways",
+   "min": -0.736,
+   "max": 0.514,
+   "absMean": 0.051
+  },
+  {
+   "name": "vertical",
+   "min": -1.062,
+   "max": 0.78,
+   "absMean": 0.179
+  },
+  {
+   "name": "sinEl",
+   "min": -0.118,
+   "max": 0.999,
+   "absMean": 0.221
+  },
+  {
+   "name": "cosEl",
+   "min": -0.926,
+   "max": 1,
+   "absMean": 0.884
+  },
+  {
+   "name": "mortar",
+   "min": -1,
+   "max": 1,
+   "absMean": 1
+  }
+ ],
+ "fireLabelInReachPct": 82.4,
+ "aim": {
+  "netAll": {
+   "n": 1080,
+   "medianDeg": 0.192,
+   "p90Deg": 0.517,
+   "medianMissUnits": 1.34,
+   "within1UnitPct": 42.2
+  },
+  "zeroLeadAll": {
+   "n": 1080,
+   "medianDeg": 4.396,
+   "p90Deg": 16.488,
+   "medianMissUnits": 32.54,
+   "within1UnitPct": 0.9
+  },
+  "netInReach": {
+   "n": 889,
+   "medianDeg": 0.188,
+   "p90Deg": 0.546,
+   "medianMissUnits": 1.01,
+   "within1UnitPct": 49.5
+  },
+  "zeroLeadInReach": {
+   "n": 889,
+   "medianDeg": 3.466,
+   "p90Deg": 11.027,
+   "medianMissUnits": 23.99,
+   "within1UnitPct": 1.1
+  }
+ },
+ "fireCallAccuracyPct": 99.6,
+ "byType": {
+  "drone": {
+   "n": 533,
+   "medianDeg": 0.132,
+   "p90Deg": 0.379,
+   "medianMissUnits": 0.74,
+   "within1UnitPct": 67.5
+  },
+  "mortar": {
+   "n": 356,
+   "medianDeg": 0.343,
+   "p90Deg": 0.784,
+   "medianMissUnits": 2.07,
+   "within1UnitPct": 22.5
+  },
+  "under150": {
+   "n": 93,
+   "medianDeg": 0.351,
+   "p90Deg": 0.751,
+   "medianMissUnits": 0.64,
+   "within1UnitPct": 77.4
+  },
+  "from150to480": {
+   "n": 796,
+   "medianDeg": 0.175,
+   "p90Deg": 0.505,
+   "medianMissUnits": 1.18,
+   "within1UnitPct": 46.2
+  }
+ },
+ "session": {
+  "classic": {
+   "rounds": 2531,
+   "hits": 111,
+   "kills": 51
+  },
+  "neural": {
+   "rounds": 0,
+   "hits": 0,
+   "kills": 0
+  }
+ }
+}
+saved the net to docs/dronedive/nn-before.json
+game over: False | wave: 7 | time: 01:32

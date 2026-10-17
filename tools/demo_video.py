@@ -14,8 +14,9 @@ Shot list (seconds into the recording):
   10-13.5 missile-follow camera (new spawns pause here so the gun is free for the vampire)
   13.5-  low view behind the ship, looking down the threat axis: an anti-ship missile inbound
          ("vampire" + general alarm), a VLS launch
-  ~3 s   split screen as the vampire closes: a gunsight view down the barrels on the left, a
-         chase camera behind the missile on the right, held a beat past the kill; spawns resume
+  ~3 s   the game's split screen as the vampire closes: the gunsight down the barrels on the
+         left, the chase camera pinned on the vampire on the right, through the kill and the
+         chase camera's hold on it (pulling back from the fireball); spawns resume
   then   ~12 s static high overview of the whole group: late-wave saturation, a friendly hit
          and burning, more vampires, friendly VLS launches. Anti-ship missiles are staggered so
          the gun is still killing them at the end, and the take ends a beat after the last kill.
@@ -41,26 +42,21 @@ OVERVIEW_MIN, OVERVIEW_MAX = 10.5, 14.0  # the overview ends a beat after its la
 LEAD_IN = 5.0  # game time before recording starts, so the first drones are already inbound
 
 DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
-    const { scene, camera, controls, renderer, layout } = window.__ciws;
+    const { scene, camera, controls, renderer, layout, setCameraMode } = window.__ciws;
     const d = window.__ciws.debug;
     const T = camera.position.constructor;
 
     // The orbit controls won't look up at their target (maxPolarAngle keeps the camera above the
     // water), so every pose keeps its target below the camera or the controls move the camera
     const pose = (pos, target) => {
-        if (window.__ciwsCameraMode()) return;
+        if (window.__ciws.cameraMode !== 'off') return;
         camera.position.set(...pos);
         controls.target.set(...target);
         controls.update();
     };
-    const setCameraMode = mode => { while (window.__ciwsCameraMode() !== mode) window.toggleCameraFollow(); };
 
     // An anti-ship missile from a chosen direction (angle in radians, x = cos, z = sin)
-    const spawnASCM = (angle, friendlyIndex = null) => {
-        const random = Math.random;
-        Math.random = () => angle / (Math.PI * 2);
-        try { return d.spawnAntiShipMissile(friendlyIndex); } finally { Math.random = random; }
-    };
+    const spawnASCM = (angle, friendlyIndex = null) => d.spawnAntiShipMissile({ angle, targetIndex: friendlyIndex });
     // Bearing clockwise from our bow (-z), as the VLS and callouts use it
     const bearingOf = angle => ((Math.atan2(Math.cos(angle), -Math.sin(angle)) * 180 / Math.PI) + 360) % 360;
 
@@ -74,7 +70,7 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
         [0, () => {
             // Behind and off to the side of the mount relative to where the gun is aiming, so the
             // whole turret is in frame with its line of fire running out into the sky
-            setCameraMode(0);
+            setCameraMode('off');
             const barrels = scene.getObjectByName('barrels');
             const mount = barrels.getWorldPosition(new T());
             const aim = new T(0, 0, 1).transformDirection(barrels.matrixWorld).setY(0).normalize();
@@ -83,12 +79,12 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
             const look = mount.clone().addScaledVector(aim, 4).add(new T(0, -1.5, 0));
             pose(cam.toArray(), look.toArray());
         }],
-        [5.5, () => setCameraMode(1)],
-        [10, () => setCameraMode(2)],
+        [5.5, () => setCameraMode('phalanx')],
+        [10, () => setCameraMode('missile')],
         [10.5, () => { d.setWave(5); d.holdSpawns(); }],
         [12.5, () => { window.__vampire = spawnASCM(VAMPIRE_ANGLE); }],
         [13.5, () => {
-            setCameraMode(0);
+            setCameraMode('off');
             const cam = dir.clone().multiplyScalar(-36).add(new T(-8, layout.mountY + 12, 5));
             const look = dir.clone().multiplyScalar(70).add(new T(0, layout.mountY + 6, 0));
             pose(cam.toArray(), look.toArray());
@@ -96,56 +92,6 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
         [15.3, () => d.launchVLS('ship', bearingOf(VAMPIRE_ANGLE))],
     ];
 
-    // Split screen: a gunsight view down the barrels on the left half, a chase camera behind the
-    // vampire on the right. The chase camera holds its last pose once the missile is gone, to watch
-    // the kill. The gunsight rides the gun block (the barrels themselves spin).
-    const chase = new camera.constructor(60, 1, 0.25, 4000);
-    const sight = new camera.constructor(45, 1, 0.25, 4000);
-    const gunBlock = scene.getObjectByName('barrels').parent;
-    const SIGHT_EYE = new T(0, 0.95, 0.6), SIGHT_AHEAD = new T(0, 0.95, 200);
-    const SHIP = new T(0, layout.mountY + 4, 0);
-    const updateSight = () => {
-        gunBlock.updateWorldMatrix(true, false);
-        sight.position.copy(SIGHT_EYE).applyMatrix4(gunBlock.matrixWorld);
-        sight.lookAt(SIGHT_AHEAD.clone().applyMatrix4(gunBlock.matrixWorld));
-    };
-    const updateChase = () => {
-        const m = window.__vampire;
-        if (!d.missiles.includes(m)) return;
-        const pos = m.mesh.position;
-        const back = pos.clone().sub(SHIP).setY(0).normalize();
-        chase.position.copy(pos).addScaledVector(back, 9).add(new T(0, 2.6, 0));
-        chase.lookAt(SHIP);
-    };
-    let split = false;
-    const render = renderer.render.bind(renderer);
-    renderer.render = (sc, cam) => {
-        if (!split) return render(sc, cam);
-        updateChase();
-        updateSight();
-        const size = renderer.getSize(new T());
-        const half = size.x / 2, gap = 3;
-        // The sky dome is re-centered on the main camera each frame; move it with the chase view
-        const sky = sc.children.find(o => o.isMesh && o.position.equals(cam.position));
-        renderer.setScissorTest(true);
-        renderer.setScissor(0, 0, size.x, size.y);
-        renderer.setClearColor(0x101418);
-        renderer.clear();
-        sight.aspect = chase.aspect = (half - gap) / size.y;
-        sight.updateProjectionMatrix();
-        chase.updateProjectionMatrix();
-        if (sky) sky.position.copy(sight.position);
-        renderer.setViewport(0, 0, half - gap, size.y);
-        renderer.setScissor(0, 0, half - gap, size.y);
-        render(sc, sight);
-        if (sky) sky.position.copy(chase.position);
-        renderer.setViewport(half + gap, 0, half - gap, size.y);
-        renderer.setScissor(half + gap, 0, half - gap, size.y);
-        render(sc, chase);
-        if (sky) sky.position.copy(cam.position);
-        renderer.setViewport(0, 0, size.x, size.y);
-        renderer.setScissorTest(false);
-    };
     // Anti-ship missiles take ~7 s from spawn to the kill zone, so these keep the gun busy to the end
     const finale = [];
     const finaleASCM = (angle, friendlyIndex = null) => () => finale.push(spawnASCM(angle, friendlyIndex));
@@ -183,19 +129,23 @@ DIRECTOR_JS = """([minSeconds, maxSeconds]) => new Promise(resolve => {
         const t0 = performance.now();
         rec.start(1000);
         timeline(openingAndVampire);
-        // Cut to the split screen as the vampire closes; hold it a beat past the kill
+        // Cut to the split screen as the vampire closes; hold it through the kill
         await wait(14);
         const deadline = t0 + 23000;
         const alive = () => d.missiles.includes(window.__vampire);
         while (alive() && window.__vampire.mesh.position.length() > 520 && performance.now() < deadline) await wait(0.02);
-        setCameraMode(1);   // the audio listener rides with the gun camera
-        split = true;
+        // Side by side even if the recording is portrait; the audio listener rides with the gunsight
+        d.setChaseTrack(window.__vampire);
+        d.setSplitLayout('side');
+        setCameraMode('split');
         d.setWave(11);
         d.resumeSpawns();   // new threats are ~7 s out, so they don't distract the gun yet
         while (alive() && performance.now() < deadline) await wait(0.02);
-        await wait(1.4);
-        split = false;
-        setCameraMode(0);
+        // Out just before the chase camera's hold on the kill ends (about when the boom reaches the
+        // gun), so it doesn't cut to the next track on camera
+        const holdEnd = performance.now() + 3000;
+        do await wait(0.01); while (d.splitState.holdLeft > 0.05 && performance.now() < holdEnd);
+        setCameraMode('off');
         const overviewStart = performance.now();
         timeline(overview);
         // End a beat after the last finale missile is shot down (or gets through)
@@ -215,17 +165,11 @@ SLICE_JS = """async ([start, end]) => {
 
 with game_page(width=width, height=height,
                extra_args=["--autoplay-policy=no-user-gesture-required"]) as (page, errors):
-    # Expose the camera mode for the director, hide the HTML overlays (they aren't recorded anyway)
+    # Hide the HTML overlays (they aren't recorded anyway)
     page.add_style_tag(content="#hud, #radar { display: none !important; }")
     time.sleep(1.0)
     page.mouse.click(width // 2, int(height * 0.8))  # first gesture initializes audio
     page.evaluate("() => { window.toggleMute(); }")
-    page.evaluate("""() => {
-        let mode = 0;
-        const toggle = window.toggleCameraFollow;
-        window.toggleCameraFollow = () => { mode = (mode + 1) % 3; toggle(); };
-        window.__ciwsCameraMode = () => mode;
-    }""")
     time.sleep(LEAD_IN)
     size = page.evaluate(DIRECTOR_JS, [OVERVIEW_MIN, OVERVIEW_MAX])
     data = bytearray()

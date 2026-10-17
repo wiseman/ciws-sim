@@ -420,6 +420,25 @@
             border-radius: 50%;
         }
 
+        /* Split-screen pane labels, placed against the divider each time the panes move */
+        #split-labels {
+            display: none;
+        }
+
+        .split-label {
+            position: absolute;
+            background: rgba(38, 50, 56, 0.88);
+            border: 2px solid #56676e;
+            border-radius: 6px;
+            box-shadow: 0 3px 0 rgba(0, 0, 0, 0.25);
+            padding: 4px 9px;
+            color: #9df2b5;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            white-space: nowrap;
+        }
+
         #game-over {
             display: none;
             position: absolute;
@@ -492,8 +511,8 @@
         </div>
 
         <div id="controls">
-            <div id="camera-toggle" class="toggle-btn" onclick="toggleCameraFollow()">
-                <span>CAMERA FOLLOW</span>
+            <div id="camera-toggle" class="toggle-btn" onclick="toggleCameraFollow()" title="Camera [C], split screen [V]">
+                <span>CAMERA</span>
                 <span id="follow-status">OFF</span>
             </div>
 
@@ -573,6 +592,11 @@
             </div>
         </div>
         <div id="center-reticle"></div>
+
+        <div id="split-labels">
+            <div id="split-label-sight" class="split-label">GUNSIGHT</div>
+            <div id="split-label-chase" class="split-label">NO TRACK</div>
+        </div>
 
         <div id="radar">
             <div id="radar-sweep"></div>
@@ -665,11 +689,27 @@
         const ASCM_DAMAGE = 35;               // integrity lost when one hits our ship
         const ASCM_FIRST_WAVE = 3;            // wave 2 starts on the first frame, so this is ~17 s in
         const ASCM_CHANCE = 0.2;
+        // Delta-wing drones (docs/dronedive/PLAN.md): they cruise level at their spawn height, then
+        // push over into a dive at their target's aim point and speed up down it
+        const DRONE_SPAWN_DISTANCE = 600;
+        const DRONE_CRUISE_Y_MIN = 30, DRONE_CRUISE_Y_MAX = 90;
+        const DRONE_DIVE_DEG_MIN = 30, DRONE_DIVE_DEG_MAX = 45; // each drone's dive angle, at every wave
+        const DRONE_TURN_RATE = THREE.MathUtils.degToRad(45) / SIM_STEPS_PER_SECOND; // rad/step, pitch and yaw
+        const DRONE_DIVE_FIT = 0.6;       // the pushover arc may use at most this share of the drop, so low drones dive shallower
+        const DRONE_DIVE_SPEEDUP = 0.6;   // speed builds toward cruise x (1 + this x sin(pitch)): x1.42 at 45°
+        const DRONE_SPEEDUP_STEPS = 42;   // its time constant (0.7 s)
+        const DRONE_ALIGN_RAD = THREE.MathUtils.degToRad(1); // this close to the line of sight, the dive is set
+        const DRONE_BANK_MAX = THREE.MathUtils.degToRad(60);
+        const DRONE_BANK_STEPS = 8;       // the bank's time constant
+        const DRONE_BANK_G = 9.8 / (SIM_STEPS_PER_SECOND * SIM_STEPS_PER_SECOND); // 1 g, units/step²
+        const DRONE_FRIENDLY_AIM_Y = 2.5; // above a friendly's origin: her upper works
+        const IMPACT_RADIUS = 5;          // a threat goes off this close to its aim point
         // Damaged friendlies break, list and settle over this many (sim) seconds, then go under
         const WRECK_SINK_SECONDS = 95;
         const WRECK_PLUNGE_SECONDS = 20;
         // World height of the 01-level deck the CIWS stands on (the sea is at WATER_LEVEL)
         const MOUNT_Y = 4;
+        const BRIDGE_ROOF_Y = 8.5; // our ship's bridge roof, under the gun's line of fire
 
         // --- STATE ---
         let scene, camera, renderer, controls;
@@ -685,7 +725,7 @@
         let isGameOver = false;
         let frameCount = 0;
         let missileSpawnRate = 120; // Frames between spawns
-        let cameraMode = 0; // 0: OFF, 1: PHALANX, 2: MISSILE
+        let cameraMode = 0; // an index into CAMERA_MODES: 0 OFF, 1 PHALANX, 2 MISSILE, 3 SPLIT
         let cameraShake = 0;
         let startTime = 0;
         let elapsedTime = 0;
@@ -1049,7 +1089,7 @@
             },
 
             // A band of the shared noise loop at `level` into dest, started at a random point in
-            // the loop; returns the source and its band filter
+            // the loop; returns the source, its band filter and its gain
             noiseBand: function (frequency, q, level, dest) {
                 const src = this.loopSource(this.noiseLoop);
                 const filter = this.filter('bandpass', frequency, q);
@@ -1058,7 +1098,7 @@
                 filter.connect(g);
                 g.connect(dest);
                 src.start(0, Math.random() * (this.noiseLoop.duration - 0.1));
-                return { src, filter };
+                return { src, filter, gain: g };
             },
 
             // Plays a buffer once at an audio-clock time, through its own gain into dest
@@ -2070,8 +2110,8 @@
                 spatial.output.connect(this.mixBus);
                 // airMax: brightest the distance filter opens up to; level: its steady level (a
                 // mortar's varies); dopplerFilter: a noise band that follows the Doppler shift
-                // like the oscillators do
-                const voice = { out, air, spatial, oscs: [], type, airMax: spec.airMax, level: spec.level, dopplerFilter: null };
+                // like the oscillators do; rush: a drone's dive rush, by its engine load
+                const voice = { out, air, spatial, oscs: [], type, airMax: spec.airMax, level: spec.level, dopplerFilter: null, rush: null };
 
                 if (type === 'ascm') {
                     // Anti-ship missile: a turbojet's screaming turbine whine over a tearing
@@ -2109,6 +2149,11 @@
                     shaper.connect(tone);
                     tone.connect(flutter);
                     flutter.connect(out);
+                    // Air rushing past in the dive: silent in cruise
+                    const rush = this.noiseBand(1400, 1.2, 0, out);
+                    voice.oscs.push({ osc: rush.src, isNoise: true });
+                    voice.dopplerFilter = { filter: rush.filter, base: 1400 };
+                    voice.rush = rush.gain;
                 }
                 return voice;
             },
@@ -2147,6 +2192,10 @@
                         const falling = THREE.MathUtils.clamp(-m.velocity.y / 2.5, 0, 1);
                         freq *= 1 - 0.35 * falling;
                         level = 0.35 * falling;
+                    } else if (voice.type === 'drone') {
+                        // Diving, the engine winds up, the prop over-speeds and the air rush comes in
+                        freq *= 1 + 0.25 * m.engineLoad;
+                        this.setParam(voice.rush.gain, 0.3 * m.engineLoad, 0.1);
                     }
                     for (const o of voice.oscs) {
                         if (!o.isNoise) this.setParam(o.osc.frequency, freq * o.mult, 0.05);
@@ -3052,6 +3101,10 @@ Ambient
                 toggleAudioDebug();
             } else if (key === 'm') {
                 toggleMLPanel();
+            } else if (key === 'c') {
+                toggleCameraFollow();
+            } else if (key === 'v') {
+                toggleSplitView();
             }
         }
 
@@ -3119,8 +3172,14 @@ Ambient
         });
 
         function updateOutlineThickness() {
-            const viewHeightPerDepth = 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-            outlineMaterial.uniforms.thickness.value = OUTLINE_PX * viewHeightPerDepth / window.innerHeight;
+            setOutlineScale(camera.fov, window.innerHeight);
+        }
+
+        // For a view of vertical fov `fov` (degrees) drawn `heightPx` CSS pixels tall. The puffs'
+        // ink shares the uniform.
+        function setOutlineScale(fov, heightPx) {
+            const viewHeightPerDepth = 2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2);
+            outlineMaterial.uniforms.thickness.value = OUTLINE_PX * viewHeightPerDepth / heightPx;
         }
 
         const outlineGeometryCache = new WeakMap();
@@ -3414,8 +3473,9 @@ Ambient
         };
 
         // Half the hull's width at a point along its length (the outline is symmetric)
+        const HULL_SIDE = SHIP_OUTLINE.filter(([x]) => x >= 0).sort((a, b) => a[1] - b[1]);
         function hullHalfWidthAt(z) {
-            const side = SHIP_OUTLINE.filter(([x]) => x >= 0).sort((a, b) => a[1] - b[1]);
+            const side = HULL_SIDE;
             if (z <= side[0][1]) return side[0][0];
             for (let i = 1; i < side.length; i++) {
                 const [x0, z0] = side[i - 1], [x1, z1] = side[i];
@@ -3451,18 +3511,35 @@ Ambient
             return geo;
         }
 
-        // The station at a point along the hull, interpolated between its neighbours (clamped to the ends)
-        function stationAt(z) {
+        // Column n of the station at a point along the hull, interpolated between its neighbours
+        // (clamped to the ends)
+        function stationValue(z, n) {
             const s = HULL_STATIONS;
-            if (z <= s[0][0]) return s[0];
-            const i = s.findIndex(([sz]) => sz >= z);
-            if (i < 0) return s[s.length - 1];
-            const k = (z - s[i - 1][0]) / (s[i][0] - s[i - 1][0]);
-            return s[i - 1].map((a, n) => a + (s[i][n] - a) * k);
+            if (z <= s[0][0]) return s[0][n];
+            for (let i = 1; i < s.length; i++) {
+                if (s[i][0] >= z) {
+                    const k = (z - s[i - 1][0]) / (s[i][0] - s[i - 1][0]);
+                    return s[i - 1][n] + (s[i][n] - s[i - 1][n]) * k;
+                }
+            }
+            return s[s.length - 1][n];
         }
 
-        // Height of the main deck at a point along the hull
-        const deckHeightAt = z => stationAt(z)[1];
+        // The whole station there
+        function stationAt(z) {
+            const out = [];
+            for (let n = 0; n < HULL_STATIONS[0].length; n++) out.push(stationValue(z, n));
+            return out;
+        }
+
+        // Height of the main deck at a point along the hull, and the highest it gets
+        const deckHeightAt = z => stationValue(z, 1);
+        const DECK_Y_MAX = Math.max(...HULL_STATIONS.map(s => s[1]));
+
+        // Over our hull in plan, within `margin` outside its deck edge (negative: inside it)
+        function overOurHull(p, margin = 0) {
+            return p.z > SHIP_BOUNDS.bow && p.z < SHIP_BOUNDS.stern && Math.abs(p.x) < hullHalfWidthAt(p.z) + margin;
+        }
 
         // One station's starboard half-section, keel to bulwark, as [x, y, z] points: the same count
         // at every station, so neighbours stitch straight across. Forward, the section breaks at a
@@ -3699,7 +3776,7 @@ Ambient
             // (MOUNT_Y + 5 at the muzzle): the bridge roof is at 8.5.
             const level01 = { hx: 6, z0: -6, z1: 48, side: 0.28, front: 1.1 };
             const deckTop = { hx: 6 - 0.28 - 0.04, z0: -6 + 1.1 + 0.04, z1: level01.z1 - 0.04 };
-            const bridgeY0 = MOUNT_Y - 0.06, bridgeRoof = 8.5;
+            const bridgeY0 = MOUNT_Y - 0.06, bridgeRoof = BRIDGE_ROOF_Y;
             const bridgeBase = levelLoop(deckTop.hx, 7.5, 2.2, bridgeY0, 0, 16.5);
             const bridgeTop = levelLoop(5.09, 6.65, 2.0, bridgeRoof, 0, 16.85);
             const bridgeFace = i => loftFace(bridgeBase, bridgeTop, i); // 5 is the front, 4 and 6 the forward corners
@@ -4029,6 +4106,9 @@ Ambient
             // Handle for console / screenshot tooling
             window.__ciws = {
                 scene, camera, controls, renderer, createExplosion,
+                // 'off', 'phalanx', 'missile' or 'split'; setCameraMode takes those or 0..3
+                get cameraMode() { return CAMERA_MODES[cameraMode].toLowerCase(); },
+                setCameraMode,
                 // Where things are, so the tools can pose cameras relative to the ship and mount
                 layout: { mountY: MOUNT_Y, deckHeightAt, shipBounds: SHIP_BOUNDS },
                 // Test hooks for the tools: spawn a given threat, wreck a friendly, fire a VLS round, hit our ship
@@ -4039,9 +4119,12 @@ Ambient
                     get vlsLaunches() { return vlsLaunches; },
                     get smokePuffs() { return smokePuffs.length; },
                     get barrelSpeed() { return currentBarrelSpeed; },
+                    get simTime() { return elapsedTime; }, // sim seconds, what the FX run on
+                    get fx() { return { ...fxCounts }; },
                     get stats() { return { score, health, wave, engagementStats }; },
                     holdSpawns() { spawnCooldown = Infinity; },
                     holdVLS() { vlsCooldown = Infinity; }, // no unprompted launches
+                    holdFire() { fireCooldown = Infinity; }, // the gun tracks but never fires
                     resumeSpawns() { spawnCooldown = 0; },
                     clearThreats() {
                         missiles.forEach(disposeThreat);
@@ -4054,9 +4137,31 @@ Ambient
                         document.getElementById('wave-count').innerText = wave;
                     },
                     setTimeScale(k) { timeScale = k; }, // for fast-forwarding long effects in tests
-                    // targetIndex: a friendly to aim at (default: our ship)
-                    spawnAntiShipMissile(targetIndex = null) {
-                        return spawnAntiShipMissile(targetInfoFor(targetIndex === null ? null : friendlies[targetIndex]));
+                    // Split screen: pin the chase camera on threat m (null: back to choosing for
+                    // itself), force 'side' or 'stack' (or 'auto'), and what it's showing
+                    setChaseTrack(m) {
+                        splitView.pinned = m;
+                        if (m && cameraMode === CAMERA_SPLIT) cutChaseTo(m);
+                    },
+                    setSplitLayout(layout) { splitView.layout = layout; },
+                    get splitState() {
+                        const s = splitView;
+                        return { layout: s.resolved, holdLeft: Math.max(0, s.hold.left),
+                                 label: ui('split-label-chase').textContent, sightLabel: ui('split-label-sight').textContent,
+                                 chase: s.chase, panes: s.panes.map(p => ({ ...p })) };
+                    },
+                    // targetIndex: a friendly to aim at (default: our ship); angle: its bearing
+                    // (radians; x = cos, z = sin). Also takes targetIndex on its own.
+                    spawnAntiShipMissile(opts = {}) {
+                        const { targetIndex = null, ...rest } = typeof opts === 'object' && opts !== null ? opts : { targetIndex: opts };
+                        return spawnAntiShipMissile(targetInfoFor(targetIndex === null ? null : friendlies[targetIndex]), rest);
+                    },
+                    // A drone (spawnDrone's opts: angle, height, gamma); invulnerable: rounds
+                    // hit it but never bring it down, so a whole dive can be watched
+                    spawnDrone({ targetIndex = null, invulnerable = false, ...opts } = {}) {
+                        const m = spawnDrone(targetInfoFor(targetIndex === null ? null : friendlies[targetIndex]), opts);
+                        if (invulnerable) m.health = Infinity;
+                        return m;
                     },
                     wreckFriendly(index) {
                         const f = friendlies[index];
@@ -4581,7 +4686,7 @@ Ambient
         const FRIENDLY_BREAK_Z = 0.8;        // where a hit breaks her back, between the bridge and the funnel
         const toShipZ = z => z / FRIENDLY_HULL_SCALE.z + SHIP_MID_Z;
         const friendlyDeckY = z => WATER_LEVEL + (deckHeightAt(toShipZ(z)) - WATER_LEVEL) * FRIENDLY_HULL_SCALE.y;
-        const friendlyHalfBeam = z => stationAt(toShipZ(z))[2] * FRIENDLY_HULL_SCALE.x;
+        const friendlyHalfBeam = z => stationValue(toShipZ(z), 2) * FRIENDLY_HULL_SCALE.x;
         // A friendly's hull lofted through sections of ours: sides, boot-top and bottom, deck
         const friendlyHull = sections => buildHull(sections).map(geo => geo.applyMatrix4(FRIENDLY_HULL_MATRIX));
         const piece = (geo, mat, matrix = null, noOutline = false) => ({ geo, mat, matrix, noOutline });
@@ -5062,12 +5167,17 @@ Ambient
             }));
         }
 
-        // Over a friendly's (or her wreck's) hull, in plan
+        // Over a friendly's (or her wreck's) hull, in plan. Anything further off her centre than
+        // her corners is ruled out before turning it into her frame.
+        const FRIENDLY_REACH_SQ = FRIENDLY_HALF_LENGTH ** 2 + FRIENDLY_HALF_BEAM ** 2;
         function overFriendly(position) {
-            return friendlies.some(f => {
+            for (const f of friendlies) {
+                const dx = position.x - f.position.x, dz = position.z - f.position.z;
+                if (dx * dx + dz * dz >= FRIENDLY_REACH_SQ) continue;
                 const local = _v3a.subVectors(position, f.position).applyAxisAngle(_yAxis, -f.mesh.rotation.y);
-                return Math.abs(local.z) < FRIENDLY_HALF_LENGTH && Math.abs(local.x) < FRIENDLY_HALF_BEAM;
-            });
+                if (Math.abs(local.z) < FRIENDLY_HALF_LENGTH && Math.abs(local.x) < FRIENDLY_HALF_BEAM) return true;
+            }
+            return false;
         }
 
         function createFriendlies() {
@@ -5123,9 +5233,11 @@ Ambient
             updateFriendlyUI();
         }
 
+        // Odds of 2:1 that an incoming threat goes for our ship rather than a friendly
+        const SHIP_TARGET_CHANCE = 2 / 3;
         function pickTargetForIncoming() {
             const aliveFriendlies = friendlies.filter(f => f.alive);
-            const targetCiws = Math.random() < 0.5 || aliveFriendlies.length === 0;
+            const targetCiws = Math.random() < SHIP_TARGET_CHANCE || aliveFriendlies.length === 0;
             return targetInfoFor(targetCiws ? null : aliveFriendlies[Math.floor(Math.random() * aliveFriendlies.length)]);
         }
 
@@ -5133,6 +5245,11 @@ Ambient
         function targetInfoFor(f) {
             if (!f) return { type: 'ciws', position: new THREE.Vector3(0, MOUNT_Y + 2, 0) };
             return { type: 'friendly', position: f.position.clone(), friendlyId: f.id };
+        }
+
+        // The friendly a targetInfo is aimed at, or null (our ship, or she's gone)
+        function friendlyOf(targetInfo) {
+            return friendlies.find(f => f.id === targetInfo.friendlyId) ?? null;
         }
 
         // Models are built once on first use; later spawns are clones sharing geometry and materials
@@ -5359,26 +5476,35 @@ Ambient
         // Per-type threat data. health: hits to kill; damage: integrity lost when one reaches our
         // ship; voice: its spatializer's reference distance, the brightest its distance filter
         // opens up to and its level (a mortar's varies in flight); radar: blip colour and shape
-        // (vampires: a larger amber diamond); steer: points (and for sea-skimmers, flies) it each
-        // step; killCallout: what the CIC net calls when one is shot down
+        // (vampires: a larger amber diamond); fly: moves and steers it for a frame, returning true
+        // when it reaches its target by its own test (any threat also goes off within IMPACT_RADIUS
+        // of its aim point); name: what the split screen's labels call it; chase: the follow
+        // cameras' pose on it (followPose); lockOn: the chase camera stays on one until it's gone,
+        // and a newly detected one takes the camera over; killCallout: what the CIC net calls when
+        // one is shot down
         const THREAT_TYPES = {
             drone: {
-                health: 2, damage: 25,
+                name: 'DRONE', health: 2, damage: 25,
                 voice: { refDistance: 28, airMax: 2400, level: 0.45 },
                 radar: { color: '#f00', blip: RADAR_DOT },
-                steer: m => m.mesh.lookAt(m.targetInfo.position) // at its assigned target
+                chase: { back: 12, up: 3, fov: 60, dive: true },
+                fly: flyDrone
             },
             mortar: {
-                health: 2, damage: 25,
+                name: 'SHELL', health: 2, damage: 25,
                 voice: { refDistance: 40, airMax: 2400 },
                 radar: { color: '#f00', blip: RADAR_DOT },
-                steer: m => m.mesh.lookAt(m.mesh.position.clone().add(m.velocity.clone().normalize())) // along its arc
+                // A shell climbs, so the chase camera rides higher to keep it in view
+                chase: { back: 16, up: 7, fov: 55 },
+                fly: flyMortar
             },
             ascm: {
-                health: ASCM_HEALTH, damage: ASCM_DAMAGE,
+                name: 'VAMPIRE', health: ASCM_HEALTH, damage: ASCM_DAMAGE,
                 voice: { refDistance: 36, airMax: 7000, level: 0.32 },
                 radar: { color: '#ffb000', blip: RADAR_DIAMOND },
-                steer: updateSeaSkimmer,
+                chase: { back: 9, up: 2.6, fov: 60 },
+                lockOn: true,
+                fly: flySeaSkimmer,
                 killCallout: 'splash'
             }
         };
@@ -5414,9 +5540,10 @@ Ambient
         }
 
         // Anti-ship missile, appearing at the radar horizon a little above the sea and descending to
-        // sea-skimming height as it runs in
-        function spawnAntiShipMissile(targetInfo) {
-            const angle = Math.random() * Math.PI * 2;
+        // sea-skimming height as it runs in. opts.angle, for the tools: its bearing (radians; x =
+        // cos, z = sin)
+        function spawnAntiShipMissile(targetInfo, opts = {}) {
+            const angle = opts.angle ?? Math.random() * Math.PI * 2;
             const mesh = createAntiShipMissile();
             mesh.position.set(Math.cos(angle) * ASCM_SPAWN_DISTANCE, rand(12, 20), Math.sin(angle) * ASCM_SPAWN_DISTANCE);
             scene.add(mesh);
@@ -5442,7 +5569,7 @@ Ambient
             const p = new THREE.Vector3();
             for (let d = Math.max(0, range - 150); d < range; d += 0.5) {
                 p.set(from.x, 0, from.z).addScaledVector(toMount, d);
-                if (p.z > SHIP_BOUNDS.bow && p.z < SHIP_BOUNDS.stern && Math.abs(p.x) < hullHalfWidthAt(p.z) - 1) break;
+                if (overOurHull(p, -1)) break;
             }
             p.addScaledVector(toMount, 4); // it goes off within 5 of its aim point: at the hull
             return p.setY(deckHeightAt(p.z) + 2);
@@ -5465,16 +5592,169 @@ Ambient
         }
         const _ascmLook = new THREE.Vector3();
 
-        // Each step: fly the sea-skimming path, flicker the turbojet flame, and raise the alarm
-        // once it clears the radar horizon
-        function updateSeaSkimmer(m) {
+        // A frame: along its velocity, then steer the sea-skimming path, flicker the turbojet flame,
+        // and raise the alarm once it clears the radar horizon. It only arrives within IMPACT_RADIUS.
+        function flySeaSkimmer(m, simSteps) {
+            m.mesh.position.addScaledVector(m.velocity, simSteps);
             steerSeaSkimmer(m);
             flickerFlame(m.flame);
             if (!m.detected && m.mesh.position.length() < ASCM_DETECT_RANGE) {
                 m.detected = true;
                 onVampireDetected(m);
             }
+            return false;
         }
+
+        // A mortar round's frame: along its velocity, then gravity for the next, pointing along its
+        // arc. It also goes off within 8 of its aim point in plan and below 2 over it, which catches
+        // one passing through on its steep descent.
+        function flyMortar(m, simSteps) {
+            const pos = m.mesh.position, aim = m.targetInfo.position;
+            pos.addScaledVector(m.velocity, simSteps);
+            m.velocity.y -= GRAVITY * simSteps;
+            m.mesh.lookAt(_mortarLook.copy(m.velocity).normalize().add(pos));
+            const dx = pos.x - aim.x, dz = pos.z - aim.z;
+            return Math.sqrt(dx * dx + dz * dz) < 8 && pos.y < aim.y + 2;
+        }
+        const _mortarLook = new THREE.Vector3();
+
+        // Where a drone diving on our ship aims: anywhere over her decks near the gun, so where it
+        // goes off (IMPACT_RADIUS short of here, back up its dive) and the damage-control call vary.
+        // Zones along the hull, weighted by length: the forecastle aft of the 5-inch gun, the 01
+        // level round the mount, the bridge roof. Each is [z from, z to, height (null: the main
+        // deck's), half-width (null: the hull's)], less 2 at the edges.
+        const DRONE_STRIKE_ZONES = [[-30, -8, null, null], [-4, 8, MOUNT_Y, 5.7], [11, 22, BRIDGE_ROOF_Y, 5.1]];
+        const DRONE_STRIKE_LENGTH = DRONE_STRIKE_ZONES.reduce((sum, [z0, z1]) => sum + z1 - z0, 0);
+        function droneStrikePoint() {
+            let along = Math.random() * DRONE_STRIKE_LENGTH;
+            for (const [z0, z1, y, half] of DRONE_STRIKE_ZONES) {
+                const z = z0 + along;
+                if (z <= z1) {
+                    const w = (half ?? hullHalfWidthAt(z)) - 2;
+                    return new THREE.Vector3(rand(-w, w), y ?? deckHeightAt(z), z);
+                }
+                along -= z1 - z0;
+            }
+        }
+
+        // A drone at a bearing and height, heading level for its target's aim point: on our ship a
+        // droneStrikePoint, on a friendly her upper works amidships. Its dive angle is picked now,
+        // no steeper than lets the pushover arc fit, and so is where the pushover starts: where an
+        // arc of radius speed / DRONE_TURN_RATE from level flight meets the dive line through the
+        // aim point. opts, for the tools: angle (radians; x = cos, z = sin), height and gamma (the
+        // dive angle in degrees, before the fit).
+        function spawnDrone(targetInfo, opts = {}) {
+            const { degToRad, clamp } = THREE.MathUtils;
+            const angle = opts.angle ?? Math.random() * Math.PI * 2;
+            const height = opts.height ?? rand(DRONE_CRUISE_Y_MIN, DRONE_CRUISE_Y_MAX);
+            const mesh = createDeltaWingDrone();
+            mesh.position.set(Math.cos(angle) * DRONE_SPAWN_DISTANCE, height, Math.sin(angle) * DRONE_SPAWN_DISTANCE);
+            scene.add(mesh);
+            const aim = targetInfo.type === 'ciws' ? droneStrikePoint() : targetInfo.position.clone().setY(targetInfo.position.y + DRONE_FRIENDLY_AIM_Y);
+            const cruise = MISSILE_SPEED_BASE + wave * 0.05;
+            const velocity = new THREE.Vector3(aim.x - mesh.position.x, 0, aim.z - mesh.position.z).setLength(cruise);
+            const m = addThreat(mesh, velocity, 'drone', { ...targetInfo, position: aim });
+            const drop = height - aim.y, radius = cruise / DRONE_TURN_RATE;
+            const fit = Math.acos(clamp(1 - DRONE_DIVE_FIT * drop / radius, -1, 1));
+            const gamma = Math.min(degToRad(opts.gamma ?? rand(DRONE_DIVE_DEG_MIN, DRONE_DIVE_DEG_MAX)), fit);
+            m.dive = {
+                phase: 'cruise', cruise, gamma,
+                pushoverRange: drop / Math.tan(gamma) + radius * Math.tan(gamma / 2),
+                fullLoad: cruise * DRONE_DIVE_SPEEDUP * Math.sin(gamma), // the speed it gains down its dive
+                bank: 0, right: new THREE.Vector3()
+            };
+            m.engineLoad = 0; // 0 cruising to 1 at full dive speed, for its sound
+            orientDrone(m, velocity, 0);
+            return m;
+        }
+
+        // A drone's frame, in sub-steps of about one sim step (under 1.5, and a 60 Hz frame is one),
+        // so the arc's shape hardly depends on the frame rate. CRUISE: level, on the aim point's
+        // bearing, until it reaches pushoverRange. PUSHOVER: the nose comes down toward the line of sight to the aim
+        // point at DRONE_TURN_RATE, speeding up as it pitches down. TERMINAL, once on that line:
+        // straight down it. It reaches the target on the step that enters IMPACT_RADIUS of the aim
+        // point, and stops where it enters it (so a frame hitch can't carry it through), or diving
+        // below it.
+        function flyDrone(m, simSteps) {
+            const pos = m.mesh.position, aim = m.targetInfo.position;
+            const from = _droneFrom.copy(m.velocity), n = Math.max(1, Math.round(simSteps));
+            const dt = simSteps / n, speedup = 1 - Math.exp(-dt / DRONE_SPEEDUP_STEPS);
+            let arrived = false;
+            for (let i = 0; i < n && !arrived; i++) {
+                _droneStep.copy(pos);
+                pos.addScaledVector(m.velocity, dt);
+                const k = segmentSphereEntry(_droneStep, pos, aim, IMPACT_RADIUS);
+                if (k >= 0) pos.lerpVectors(_droneStep, pos, k);
+                arrived = k >= 0 || (m.dive.phase === 'terminal' && pos.y < aim.y - 1);
+                if (!arrived) steerDrone(m, dt, speedup);
+            }
+            orientDrone(m, from, simSteps);
+            return arrived;
+        }
+        const _droneFrom = new THREE.Vector3(), _droneStep = new THREE.Vector3();
+
+        // speedup: the share of the way to its goal speed it gets in dt
+        function steerDrone(m, dt, speedup) {
+            const d = m.dive;
+            const to = _droneTo.subVectors(m.targetInfo.position, m.mesh.position);
+            if (d.phase === 'cruise') {
+                if (Math.hypot(to.x, to.z) <= d.pushoverRange) d.phase = 'pushover';
+                else to.y = 0;
+            }
+            let speed = m.velocity.length();
+            const dir = _droneDir.copy(m.velocity).divideScalar(speed);
+            const off = turnToward(dir, to.normalize(), DRONE_TURN_RATE * dt);
+            if (d.phase !== 'cruise') {
+                // Gravity and the throttle: faster the steeper it points down
+                const goal = d.cruise * (1 + DRONE_DIVE_SPEEDUP * Math.max(0, -dir.y));
+                speed += (goal - speed) * speedup;
+                if (d.phase === 'pushover' && off < DRONE_ALIGN_RAD) d.phase = 'terminal';
+            }
+            m.velocity.copy(dir).multiplyScalar(speed);
+            m.engineLoad = THREE.MathUtils.clamp((speed - d.cruise) / d.fullLoad, 0, 1);
+        }
+
+        // Turns unit vector dir toward unit vector goal by at most maxAngle; returns the angle it was off
+        function turnToward(dir, goal, maxAngle) {
+            const angle = dir.angleTo(goal);
+            if (angle <= maxAngle) dir.copy(goal);
+            else dir.applyAxisAngle(_droneAxis.crossVectors(dir, goal).normalize(), maxAngle);
+            return angle;
+        }
+
+        // Nose along the velocity, banked into a turn: atan of the sideways acceleration (since the
+        // frame began at velocity `from`) over 1 g, smoothed. Near the vertical there's no level to
+        // bank from, so it keeps the last right-hand direction it had.
+        function orientDrone(m, from, simSteps) {
+            const d = m.dive;
+            const fwd = _droneDir.copy(m.velocity).normalize();
+            if (Math.abs(fwd.y) < 0.98) d.right.crossVectors(fwd, _yAxis).normalize();
+            else d.right.addScaledVector(fwd, -d.right.dot(fwd)).normalize();
+            if (simSteps > 0) {
+                const sideways = _droneTo.subVectors(m.velocity, from).dot(d.right) / simSteps;
+                const bank = THREE.MathUtils.clamp(Math.atan(sideways / DRONE_BANK_G), -DRONE_BANK_MAX, DRONE_BANK_MAX);
+                d.bank += (bank - d.bank) * (1 - Math.exp(-simSteps / DRONE_BANK_STEPS));
+            }
+            // Up, rolled toward the right by the bank, and the left wing (the mesh's +x)
+            const up = _droneUp.crossVectors(d.right, fwd).multiplyScalar(Math.cos(d.bank)).addScaledVector(d.right, Math.sin(d.bank));
+            m.mesh.quaternion.setFromRotationMatrix(_droneBasis.makeBasis(_droneAxis.crossVectors(up, fwd), up, fwd));
+        }
+        const _droneTo = new THREE.Vector3(), _droneDir = new THREE.Vector3(), _droneAxis = new THREE.Vector3();
+        const _droneUp = new THREE.Vector3(), _droneBasis = new THREE.Matrix4();
+
+        // Where segment a->b first comes within r of c, as a fraction along it (0 if a is already
+        // within), or -1 if it never does
+        function segmentSphereEntry(a, b, c, r) {
+            const seg = _segDir.subVectors(b, a), off = _segOff.subVectors(a, c);
+            const outside = off.lengthSq() - r * r;
+            if (outside <= 0) return 0;
+            const lengthSq = seg.lengthSq(), closing = off.dot(seg);
+            const disc = closing * closing - lengthSq * outside;
+            if (closing >= 0 || disc < 0) return -1;
+            const k = (-closing - Math.sqrt(disc)) / lengthSq;
+            return k <= 1 ? k : -1;
+        }
+        const _segDir = new THREE.Vector3(), _segOff = new THREE.Vector3();
 
         // Bearing of a world position from our ship, degrees clockwise from the bow (-z)
         function bearingFromShip(position) {
@@ -5491,12 +5771,13 @@ Ambient
             AudioController.announceDamage(side, frame, type === 'ascm');
         }
 
-        // Only every other detection gets a callout: with one for each, they came too thick to
+        // Only one detection in four gets a callout: with one for each, they came too thick to
         // stay interesting
+        const VAMPIRE_CALL_EVERY = 4;
         let vampireDetections = 0;
         function onVampireDetected(m) {
             const bearing = bearingFromShip(m.mesh.position);
-            if (vampireDetections++ % 2 === 0) AudioController.announceVampire(bearing);
+            if (vampireDetections++ % VAMPIRE_CALL_EVERY === 0) AudioController.announceVampire(bearing);
             requestVLSResponse(bearing);
         }
 
@@ -5506,81 +5787,51 @@ Ambient
                 spawnAntiShipMissile(targetInfo);
                 return;
             }
+            // Half the rest are drones, half mortar rounds
+            if (Math.random() < 0.5) {
+                spawnDrone(targetInfo);
+                return;
+            }
             const targetPos = targetInfo.position.clone();
 
-            // Spawn randomly in the sky
+            // Mortars spawn near ground level, at a random bearing, for a high-arc trajectory
             const angle = Math.random() * Math.PI * 2;
+            const distance = 900;
+            const missile = createMortarShell();
+            missile.position.set(Math.cos(angle) * distance, 2 + Math.random() * 5, Math.sin(angle) * distance);
 
-            // Determine if this is a mortar round (50% chance)
-            const isMortar = Math.random() < 0.5;
-            // Increase spawn distance by 50% for both mortars and missiles
-            const distance = isMortar ? 900 : 600;
+            // Calculate 45-degree high-angle ballistic arc trajectory that hits the target
+            const toTarget = targetPos.clone().sub(missile.position);
+            const horizontalDist = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
+            const heightDiff = missile.position.y - targetPos.y; // positive if mortar is above target
 
-            let height, x, z;
+            // For projectile motion with launch angle θ = 45°:
+            // v² = g * x² / (x + y0 - yTarget)  where x is horizontal dist
+            // This solves the ballistic equations to hit the exact target
+            const denominator = horizontalDist + heightDiff;
 
-            if (isMortar) {
-                // Mortars spawn near ground level for high-arc trajectory
-                height = 2 + Math.random() * 5;
-                x = Math.cos(angle) * distance;
-                z = Math.sin(angle) * distance;
+            // Ensure we have a valid trajectory (denominator must be positive)
+            let launchSpeed;
+            if (denominator > 10) {
+                launchSpeed = Math.sqrt(GRAVITY * horizontalDist * horizontalDist / denominator);
             } else {
-                // Regular missiles spawn at medium height
-                height = 20 + Math.random() * 40;
-                x = Math.cos(angle) * distance;
-                z = Math.sin(angle) * distance;
+                // Fallback for edge cases - use a reasonable arc speed
+                launchSpeed = Math.sqrt(horizontalDist * GRAVITY * 2);
             }
 
-            let missile;
-            if (isMortar) {
-                missile = createMortarShell();
-            } else {
-                missile = createDeltaWingDrone();
-            }
+            // At 45 degrees, horizontal and vertical components are equal
+            const horizontalSpeed = launchSpeed * Math.SQRT1_2;
+            const verticalSpeed = launchSpeed * Math.SQRT1_2;
 
-            missile.position.set(x, height, z);
+            // Direction towards target (horizontal only)
+            const horizontalDir = new THREE.Vector3(toTarget.x, 0, toTarget.z).normalize();
 
-            let velocity;
-            if (isMortar) {
-                // Calculate 45-degree high-angle ballistic arc trajectory that hits the target
-                const toTarget = targetPos.clone().sub(missile.position);
-                const horizontalDist = Math.sqrt(toTarget.x * toTarget.x + toTarget.z * toTarget.z);
-                const heightDiff = missile.position.y - targetPos.y; // positive if mortar is above target
-                
-                // For projectile motion with launch angle θ = 45°:
-                // v² = g * x² / (x + y0 - yTarget)  where x is horizontal dist
-                // This solves the ballistic equations to hit the exact target
-                const denominator = horizontalDist + heightDiff;
-                
-                // Ensure we have a valid trajectory (denominator must be positive)
-                let launchSpeed;
-                if (denominator > 10) {
-                    launchSpeed = Math.sqrt(GRAVITY * horizontalDist * horizontalDist / denominator);
-                } else {
-                    // Fallback for edge cases - use a reasonable arc speed
-                    launchSpeed = Math.sqrt(horizontalDist * GRAVITY * 2);
-                }
-                
-                // At 45 degrees, horizontal and vertical components are equal
-                const cos45 = Math.cos(Math.PI / 4); // ≈ 0.707
-                const sin45 = Math.sin(Math.PI / 4); // ≈ 0.707
-                const horizontalSpeed = launchSpeed * cos45;
-                const verticalSpeed = launchSpeed * sin45;
-                
-                // Direction towards target (horizontal only)
-                const horizontalDir = new THREE.Vector3(toTarget.x, 0, toTarget.z).normalize();
-                
-                velocity = horizontalDir.multiplyScalar(horizontalSpeed);
-                velocity.y = verticalSpeed;
+            const velocity = horizontalDir.multiplyScalar(horizontalSpeed);
+            velocity.y = verticalSpeed;
 
-                missile.lookAt(missile.position.clone().add(velocity));
-            } else {
-                // Regular missile - straight line to target
-                missile.lookAt(targetPos);
-                velocity = new THREE.Vector3().subVectors(targetPos, missile.position).normalize().multiplyScalar(MISSILE_SPEED_BASE + (wave * 0.05));
-            }
-
+            missile.lookAt(missile.position.clone().add(velocity));
             scene.add(missile);
-            addThreat(missile, velocity, isMortar ? 'mortar' : 'drone', targetInfo);
+            addThreat(missile, velocity, 'mortar', targetInfo);
         }
 
         // --- Explosion FX ---
@@ -5590,6 +5841,23 @@ Ambient
         const SUN_DIRECTION = new THREE.Vector3(-40, 90, 55).normalize();
         const FX_GRAVITY = 22; // units/s², visual only
         const FX_WIND = new THREE.Vector3(2.4, 0, -1.1); // units/s; drifts lingering smoke
+        // How much of a destroyed threat's motion each part of its explosion carries on with
+        // (docs/debris/PLAN.md). f: the fraction of its velocity added at spawn; cap: the most it can
+        // inherit (units/s), so mortars and late waves don't fling things off screen. Debris keeps
+        // its share in its own `carry`, which decays at k (1/s); puffs and sparks lose theirs to
+        // their own drag. The flash, shock ring and light belong to the still air and get none.
+        const FX_CARRY = {
+            debris: { f: 0.7, cap: 110, k: 1.2 },
+            spark: { f: 0.45, cap: 70 },
+            core: { f: 0.25, cap: 40 },
+            fireball: { f: 0.2, cap: 40 },
+            smoke: { f: 0.08, cap: 15 },
+            hitSpark: { f: 0.6, cap: 90 },
+            hitPuff: { f: 0.3, cap: 40 },
+            impactPuff: { f: 0.12, cap: 25 },  // impacts: horizontal only; the hull takes the rest
+            impactDebris: { f: 0.25, cap: 40 }, // and its sparks
+            flakSpark: { f: 0.1, cap: 50 }
+        };
 
         // Ashima simplex noise (MIT)
         const NOISE_GLSL = `
@@ -5827,9 +6095,12 @@ Ambient
             }
         `;
 
-        // Smoke trail: a camera-facing ribbon with a faked round normal, inked edges
+        // Smoke trail: a camera-facing ribbon with a faked round normal, inked edges. Both edges of
+        // the ribbon carry the point on its path; they're spread across it here, facing whichever
+        // camera draws it (each split-screen pane sees it face on).
         const TRAIL_VERTEX = `
-            attribute vec3 aSideDir;
+            attribute vec3 aTangent;
+            attribute float aWidth;
             attribute float aSide;
             attribute float aAge;
             varying vec3 vWorld;
@@ -5838,11 +6109,13 @@ Ambient
             varying float vAge;
             #include <fog_pars_vertex>
             void main() {
-                vWorld = position;
-                vSideDir = aSideDir;
+                vec3 side = cross(aTangent, cameraPosition - position);
+                side = dot(side, side) < 1e-8 ? vec3(1.0, 0.0, 0.0) : normalize(side);
+                vWorld = position + side * aSide * aWidth;
+                vSideDir = side;
                 vSide = aSide;
                 vAge = aAge;
-                vec4 mvPosition = viewMatrix * vec4(position, 1.0);
+                vec4 mvPosition = viewMatrix * vec4(vWorld, 1.0);
                 gl_Position = projectionMatrix * mvPosition;
                 #include <fog_vertex>
             }
@@ -5901,8 +6174,30 @@ Ambient
         const puffPool = [], flashPool = [], ringPool = [], flatRingPool = [], trailPool = [], debrisPool = [];
         const rocketTrailPool = [];
         let sparkMesh = null;
-        let fxShake = 0;
+        const fxCounts = { clangs: 0, skips: 0 }; // for the tools
         let debrisTemplate = null;
+
+        // An explosion shake on one camera: each blast within `range` kicks it by `amount`, less with
+        // distance, to 1.5 at most; it dies away at 6/s of real time, and offset() jitters the camera
+        // by up to 0.35 x its strength x `scale` (null while it's still)
+        function makeShake() {
+            return {
+                value: 0,
+                add(blast, eye, amount, range) {
+                    const falloff = 1 - blast.distanceTo(eye) / range;
+                    if (falloff > 0) this.value = Math.min(1.5, this.value + amount * falloff);
+                },
+                decay(realDt) {
+                    this.value *= Math.exp(-6 * realDt);
+                    if (this.value < 0.01) this.value = 0;
+                },
+                offset(out, scale = 1) {
+                    if (this.value <= 0) return null;
+                    return out.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(this.value * 0.35 * scale);
+                }
+            };
+        }
+        const viewShake = makeShake(); // the main camera's
 
         function fogUniforms() {
             return THREE.UniformsUtils.clone(THREE.UniformsLib.fog);
@@ -5973,7 +6268,8 @@ Ambient
             const vertCount = maxPoints * 2;
             const geo = new THREE.BufferGeometry();
             geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3).setUsage(THREE.DynamicDrawUsage));
-            geo.setAttribute('aSideDir', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3).setUsage(THREE.DynamicDrawUsage));
+            geo.setAttribute('aTangent', new THREE.BufferAttribute(new Float32Array(vertCount * 3), 3).setUsage(THREE.DynamicDrawUsage));
+            geo.setAttribute('aWidth', new THREE.BufferAttribute(new Float32Array(vertCount), 1).setUsage(THREE.DynamicDrawUsage));
             geo.setAttribute('aSide', new THREE.BufferAttribute(new Float32Array(vertCount), 1));
             geo.setAttribute('aAge', new THREE.BufferAttribute(new Float32Array(vertCount), 1).setUsage(THREE.DynamicDrawUsage));
             const side = geo.getAttribute('aSide');
@@ -6019,7 +6315,7 @@ Ambient
             if (!debrisTemplate) {
                 debrisTemplate = addOutlines(new THREE.Mesh(DEBRIS_GEO, toonMat(0x2f2b28)));
             }
-            return { mesh: debrisTemplate.clone(), vel: new THREE.Vector3(), spin: new THREE.Vector3() };
+            return { mesh: debrisTemplate.clone(), vel: new THREE.Vector3(), carry: new THREE.Vector3(), spin: new THREE.Vector3() };
         }
 
         function initExplosionFX() {
@@ -6063,8 +6359,31 @@ Ambient
             return out.set(r * Math.cos(theta), u, r * Math.sin(theta));
         }
 
+        // The share of an explosion's carry (units/s) that one FX_CARRY part inherits, into `out`
+        function carryShare(out, carry, part) {
+            return out.copy(carry).multiplyScalar(part.f).clampLength(0, part.cap);
+        }
+
+        // A threat's or round's velocity (units per sim step) in units per sim second, the FX units
+        // (so slow motion is already in it)
+        const perSecond = (out, velocity) => out.copy(velocity).multiplyScalar(SIM_STEPS_PER_SECOND);
+
+        // An airburst's fireball puffs drag at this (1/s), so one carrying `share` (units/s) has
+        // moved share x (1 - e^-kt) / k from `pos` by `age` (sim s): where the cameras look
+        const FIREBALL_DRAG = 3;
+        function fireballCentre(out, pos, share, age) {
+            return out.copy(share).multiplyScalar((1 - Math.exp(-FIREBALL_DRAG * age)) / FIREBALL_DRAG).add(pos);
+        }
+
+        const _fxPos = new THREE.Vector3(), _fxVel = new THREE.Vector3();
+        const _fxShare = new THREE.Vector3(), _fxShare2 = new THREE.Vector3();
+        const _noCarry = new THREE.Vector3();
+
         // Starts a puff's simulation at `position` from spawn options; vel, smoke and the rates are
         // optional. Shared by the pooled puffs (spawnPuff) and the smoke columns (emitSmokePuff).
+        // carry: a share of an explosion's motion (units/s), carryAmount (default 1) of which it
+        // takes on: it starts where the carried cloud will be after its delay, with what its drag
+        // leaves of the share, so a late puff doesn't pop in behind a fireball that has moved on.
         function initPuff(p, position, o) {
             p.pos.copy(position);
             if (o.vel) p.vel.copy(o.vel); else p.vel.set(0, 0, 0);
@@ -6077,6 +6396,11 @@ Ambient
             p.heatRate = o.heatRate ?? 1;
             p.dissolveStart = o.dissolveStart ?? 0.55;
             p.drag = o.drag ?? 2.5;
+            if (o.carry) {
+                const amount = o.carryAmount ?? 1, left = Math.exp(-p.drag * (o.delay || 0));
+                p.pos.addScaledVector(o.carry, amount * (1 - left) / p.drag);
+                p.vel.addScaledVector(o.carry, amount * left);
+            }
             p.buoyancy = o.buoyancy ?? 2;
             p.gravity = o.gravity ?? 0;
             p.wind = o.wind ?? 0;
@@ -6153,16 +6477,23 @@ Ambient
             fxSparks.push({ pos: position.clone(), vel: velocity, age: 0, life, width, length });
         }
 
-        function spawnDebris(position, velocity, { life, trailWidth, trailLife = 1.6, smoke = 0xc9c5bd }) {
+        // carry: the threat's motion it carries on with (units/s), on top of its own spray, decaying
+        // at FX_CARRY.debris.k
+        function spawnDebris(position, velocity, { life, trailWidth, trailLife = 1.6, smoke = 0xc9c5bd, carry = _noCarry }) {
             const d = debrisPool.pop() || makeDebris();
             d.mesh.position.copy(position);
-            d.mesh.scale.setScalar(rand(0.6, 1.3));
+            d.size = rand(0.6, 1.3);
+            d.mesh.scale.setScalar(d.size);
             d.vel.copy(velocity);
+            d.carry.copy(carry);
+            d.clear = false; // set once it's outside every hull
             d.spin.set(rand(-12, 12), rand(-12, 12), rand(-12, 12));
             d.age = 0;
             d.life = life;
             scene.add(d.mesh);
-            d.trail = spawnTrail(d.mesh.position, { width: trailWidth, life: trailLife, spacing: Math.max(0.35, trailWidth * 1.2), smoke });
+            // Space the ribbon's points out with the carried speed, so its 40 points span most of the throw
+            const spacing = Math.max(0.35, trailWidth * 1.2, carry.length() * trailLife / TRAIL_MAX_POINTS * 0.6);
+            d.trail = spawnTrail(d.mesh.position, { width: trailWidth, life: trailLife, spacing, smoke });
             fxDebris.push(d);
         }
 
@@ -6200,8 +6531,9 @@ Ambient
         }
 
         function addShake(position, amount, range) {
-            const falloff = 1 - position.distanceTo(camera.position) / range;
-            if (falloff > 0) fxShake = Math.min(1.5, fxShake + amount * falloff);
+            viewShake.add(position, camera.position, amount, range);
+            // In split screen the chase camera, often right by the blast, shakes on its own
+            if (cameraMode === CAMERA_SPLIT) splitView.shake.add(position, splitView.chase.position, amount, range);
         }
 
         // Low enough for an impact to throw up water, and not over our hull or a friendly's
@@ -6209,8 +6541,10 @@ Ambient
             return !nearShip(position, 1.5) && !overFriendly(position) && position.y < 4;
         }
 
-        // Drone kill: big airburst that blooms, cools into smoke and throws burning debris
-        function spawnAirburst(pos, scale = 1) {
+        // Drone kill: big airburst that blooms, cools into smoke and throws burning debris.
+        // carry: the threat's velocity (units/s); the fireball, smoke, debris and sparks carry on
+        // with their FX_CARRY shares of it
+        function spawnAirburst(pos, scale = 1, carry = _noCarry) {
             spawnFlash(pos, 9 * scale, 0.2, 12);
             spawnShockRing(pos, 20 * scale, 0.45);
             flashLight(pos, 600 * scale, 0.45);
@@ -6218,57 +6552,75 @@ Ambient
 
             const dir = new THREE.Vector3();
             spawnPuff(pos, {
+                vel: carryShare(_fxShare, carry, FX_CARRY.core),
                 s0: 0.8 * scale, s1: 3.8 * scale, growRate: 6, heat: 1.6, heatRate: 1.0,
-                life: 4.5, dissolveStart: 0.5, drag: 3, buoyancy: 1.5
+                life: 4.5, dissolveStart: 0.5, drag: FIREBALL_DRAG, buoyancy: 1.5
             });
+            carryShare(_fxShare, carry, FX_CARRY.fireball);
             for (let i = 0; i < 10; i++) {
                 randomDirection(dir);
-                spawnPuff(pos.clone().addScaledVector(dir, rand(0.3, 1.2) * scale), {
-                    vel: dir.clone().multiplyScalar(rand(6, 15) * scale),
+                _fxPos.copy(pos).addScaledVector(dir, rand(0.3, 1.2) * scale);
+                _fxVel.copy(dir).multiplyScalar(rand(6, 15) * scale);
+                spawnPuff(_fxPos, {
+                    // Each puff takes a different amount, so the fireball stretches out along the path
+                    vel: _fxVel, carry: _fxShare, carryAmount: rand(0.4, 1.6),
                     s0: 0.5 * scale, s1: rand(2.0, 3.4) * scale, growRate: 5,
                     heat: rand(1.2, 1.45), heatRate: rand(0.75, 0.95),
-                    life: rand(3.5, 5), dissolveStart: 0.5, drag: 3, buoyancy: 2.5,
+                    life: rand(3.5, 5), dissolveStart: 0.5, drag: FIREBALL_DRAG, buoyancy: 2.5,
                     delay: i * 0.012
                 });
             }
             // Darker secondary smoke rolling out behind the fireball
+            carryShare(_fxShare, carry, FX_CARRY.smoke);
             for (let i = 0; i < 4; i++) {
                 randomDirection(dir);
-                spawnPuff(pos.clone().addScaledVector(dir, 1.5 * scale), {
-                    vel: dir.clone().multiplyScalar(rand(2, 5) * scale),
+                const delay = rand(0.2, 0.4);
+                _fxPos.copy(pos).addScaledVector(dir, 1.5 * scale);
+                _fxVel.copy(dir).multiplyScalar(rand(2, 5) * scale);
+                spawnPuff(_fxPos, {
+                    vel: _fxVel, carry: _fxShare,
                     s0: 1.0 * scale, s1: rand(3, 4.2) * scale, growRate: 2.5,
                     heat: 0.5, heatRate: 0.5, life: rand(4.5, 6), dissolveStart: 0.45,
-                    drag: 1.5, buoyancy: 1.2, smoke: 0x4f4a46, delay: rand(0.2, 0.4)
+                    drag: 1.5, buoyancy: 1.2, smoke: 0x4f4a46, delay
                 });
             }
+            carryShare(_fxShare, carry, FX_CARRY.debris);
             for (let i = 0; i < 6; i++) {
                 randomDirection(dir);
                 dir.y = Math.abs(dir.y) * 0.8 + 0.2;
                 spawnDebris(pos, dir.normalize().multiplyScalar(rand(18, 32) * scale), {
-                    life: rand(1.2, 2.0), trailWidth: 0.35 * scale
+                    life: rand(1.2, 2.0), trailWidth: 0.35 * scale, carry: _fxShare
                 });
             }
+            // Sparks streak along their velocity, so the carried share rakes them into a forward cone
+            carryShare(_fxShare, carry, FX_CARRY.spark);
             for (let i = 0; i < 34; i++) {
-                spawnSpark(pos, randomDirection().multiplyScalar(rand(25, 65) * scale), rand(0.25, 0.7), 0.12 * scale, 2.2 * scale);
+                spawnSpark(pos, randomDirection().multiplyScalar(rand(25, 65) * scale).add(_fxShare), rand(0.25, 0.7), 0.12 * scale, 2.2 * scale);
             }
         }
 
         // Missile reaching its target: a ground-hugging fireball, smoke column and,
-        // on open water, a splash
-        function spawnImpact(pos, onWater) {
+        // on open water, a splash. carry: the threat's velocity (units/s); most of it goes into the
+        // hull, so only its horizontal part, and only a little, carries the fireball, debris and
+        // sparks on (never down into the deck or water)
+        function spawnImpact(pos, onWater, carry = _noCarry) {
             spawnFlash(pos, 10, 0.24, 14);
             if (onWater) spawnFoamRing(pos.x, pos.z, 26, 1.1);
             else spawnShockRing(pos, 26, 0.5);
             flashLight(pos, 700, 0.6);
             addShake(pos, 1.0, 120);
 
+            const flat = _fxShare2.set(carry.x, 0, carry.z);
             const dir = new THREE.Vector3();
+            carryShare(_fxShare, flat, FX_CARRY.impactPuff);
             for (let i = 0; i < 12; i++) {
                 randomDirection(dir);
                 dir.y = Math.abs(dir.y) * 1.4 + 0.3;
                 dir.normalize();
-                spawnPuff(pos.clone().addScaledVector(dir, rand(0.5, 1.5)), {
-                    vel: dir.clone().multiplyScalar(rand(7, 16)),
+                _fxPos.copy(pos).addScaledVector(dir, rand(0.5, 1.5));
+                _fxVel.copy(dir).multiplyScalar(rand(7, 16));
+                spawnPuff(_fxPos, {
+                    vel: _fxVel, carry: _fxShare,
                     s0: 0.8, s1: rand(3, 4.6), growRate: 4.5,
                     heat: rand(1.25, 1.5), heatRate: rand(0.6, 0.8),
                     life: rand(5, 6.5), dissolveStart: 0.5, drag: 2.5, buoyancy: 4,
@@ -6297,57 +6649,66 @@ Ambient
                     });
                 }
             }
+            carryShare(_fxShare, flat, FX_CARRY.impactDebris);
             for (let i = 0; i < 8; i++) {
                 randomDirection(dir);
                 dir.y = Math.abs(dir.y) + 0.4;
                 spawnDebris(pos, dir.normalize().multiplyScalar(rand(16, 30)), {
-                    life: rand(1.4, 2.2), trailWidth: 0.45, smoke: 0xb9b4ab
+                    life: rand(1.4, 2.2), trailWidth: 0.45, smoke: 0xb9b4ab, carry: _fxShare
                 });
             }
             for (let i = 0; i < 40; i++) {
                 const v = randomDirection();
                 v.y = Math.abs(v.y);
-                spawnSpark(pos, v.multiplyScalar(rand(25, 60)), rand(0.3, 0.8), 0.14, 2.6);
+                spawnSpark(pos, v.multiplyScalar(rand(25, 60)).add(_fxShare), rand(0.3, 0.8), 0.14, 2.6);
             }
         }
 
-        // Round strikes the target without killing it
-        function spawnHit(pos) {
+        // Round strikes the target without killing it. carry: the threat's velocity (units/s); the
+        // fragments knocked off it briefly ride with it, and the puff drifts a little and is left behind
+        function spawnHit(pos, carry = _noCarry) {
             spawnFlash(pos, 2.4, 0.09, 8);
             spawnPuff(pos, {
-                vel: randomDirection().multiplyScalar(2),
+                vel: randomDirection(_fxVel).multiplyScalar(2).add(carryShare(_fxShare, carry, FX_CARRY.hitPuff)),
                 s0: 0.3, s1: 1.0, growRate: 7, heat: 1.1, heatRate: 2.2,
                 life: 1.3, dissolveStart: 0.4, drag: 3, buoyancy: 0.5, lowDetail: true
             });
+            carryShare(_fxShare, carry, FX_CARRY.hitSpark);
             for (let i = 0; i < 12; i++) {
-                spawnSpark(pos, randomDirection().multiplyScalar(rand(20, 45)), rand(0.15, 0.4), 0.07, 1.2);
+                spawnSpark(pos, randomDirection().multiplyScalar(rand(20, 45)).add(_fxShare), rand(0.15, 0.4), 0.07, 1.2);
             }
         }
 
-        // Expiring round self-destructs: a pinpoint flash and a black flak puff
-        function spawnFlak(pos) {
+        // Expiring round self-destructs: a pinpoint flash and a black flak puff. carry: the round's
+        // velocity (units/s); only its sparks keep a little of it, as real flak puffs hang
+        function spawnFlak(pos, carry = _noCarry) {
             spawnFlash(pos, 1.5, 0.07, 8);
             spawnPuff(pos, {
                 s0: 0.2, s1: rand(0.9, 1.3), growRate: 9, heat: 0.75, heatRate: 2.6,
                 life: rand(2.0, 2.6), dissolveStart: 0.5, drag: 4, buoyancy: 0.3,
                 smoke: 0x2c2a29, lowDetail: true, outline: false
             });
+            carryShare(_fxShare, carry, FX_CARRY.flakSpark);
             for (let i = 0; i < 3; i++) {
-                spawnSpark(pos, randomDirection().multiplyScalar(rand(15, 30)), rand(0.1, 0.25), 0.06, 0.9);
+                spawnSpark(pos, randomDirection().multiplyScalar(rand(15, 30)).add(_fxShare), rand(0.1, 0.25), 0.06, 0.9);
             }
         }
 
         // kind: 'airburst' (drone kill), 'impact' (missile reaches its target),
-        // 'hit' (round strikes without killing), 'flak' (round self-destructs)
-        function createExplosion(position, kind) {
+        // 'hit' (round strikes without killing), 'flak' (round self-destructs).
+        // velocity: the destroyed object's velocity in units per sim step (as m.velocity and
+        // p.velocity are), which parts of the explosion carry on with; null for a burst at rest
+        const _explosionCarry = new THREE.Vector3();
+        function createExplosion(position, kind, velocity = null) {
             const pos = position.clone();
             const water = kind === 'impact' && isOverOpenWater(pos);
-            AudioController.playExplosion(pos, kind, { water });
+            AudioController.playExplosion(pos, kind, { water }); // a fixed source: the sound leaves at the burst
+            const carry = velocity ? perSecond(_explosionCarry, velocity) : _explosionCarry.set(0, 0, 0);
 
-            if (kind === 'airburst') spawnAirburst(pos);
-            else if (kind === 'impact') spawnImpact(pos, water);
-            else if (kind === 'flak') spawnFlak(pos);
-            else spawnHit(pos);
+            if (kind === 'airburst') spawnAirburst(pos, 1, carry);
+            else if (kind === 'impact') spawnImpact(pos, water, carry);
+            else if (kind === 'flak') spawnFlak(pos, carry);
+            else spawnHit(pos, carry);
         }
 
         // --- Smoke columns ---
@@ -6723,8 +7084,6 @@ Ambient
         const _yAxis = new THREE.Vector3(0, 1, 0);
         const _tmpDir = new THREE.Vector3();
         const _tangent = new THREE.Vector3();
-        const _toCamera = new THREE.Vector3();
-        const _side = new THREE.Vector3();
 
         function releaseFrom(list, i, pool, item) {
             scene.remove(item.mesh);
@@ -6732,31 +7091,86 @@ Ambient
             pool.push(item);
         }
 
+        // Uploads only the first `count` vertices of a trail attribute, the ones in use
+        function uploadFirst(attribute, count) {
+            attribute.clearUpdateRanges();
+            attribute.addUpdateRange(0, count * attribute.itemSize);
+            attribute.needsUpdate = true;
+        }
+
         function updateTrail(t) {
             const n = t.count;
             const pos = t.geo.getAttribute('position');
-            const sideDir = t.geo.getAttribute('aSideDir');
+            const tangent = t.geo.getAttribute('aTangent');
+            const width = t.geo.getAttribute('aWidth');
             const age = t.geo.getAttribute('aAge');
+            // Each point twice, one for each edge; TRAIL_VERTEX spreads them across the path
             for (let i = 0; i < n; i++) {
                 const pt = trailPoint(t, i);
                 _tangent.subVectors(trailPoint(t, Math.min(i + 1, n - 1)).pos, trailPoint(t, Math.max(i - 1, 0)).pos);
-                _toCamera.subVectors(camera.position, pt.pos);
-                _side.crossVectors(_tangent, _toCamera);
-                if (_side.lengthSq() < 1e-8) _side.set(1, 0, 0);
-                _side.normalize();
                 const k = Math.min(1, pt.age / t.life);
                 const w = t.width * (0.3 + 1.2 * Math.sqrt(k)) * pt.wobble;
-                pos.setXYZ(i * 2, pt.pos.x - _side.x * w, pt.pos.y - _side.y * w, pt.pos.z - _side.z * w);
-                pos.setXYZ(i * 2 + 1, pt.pos.x + _side.x * w, pt.pos.y + _side.y * w, pt.pos.z + _side.z * w);
-                sideDir.setXYZ(i * 2, _side.x, _side.y, _side.z);
-                sideDir.setXYZ(i * 2 + 1, _side.x, _side.y, _side.z);
-                age.setX(i * 2, k);
-                age.setX(i * 2 + 1, k);
+                for (let j = i * 2; j < i * 2 + 2; j++) {
+                    pos.setXYZ(j, pt.pos.x, pt.pos.y, pt.pos.z);
+                    tangent.setXYZ(j, _tangent.x, _tangent.y, _tangent.z);
+                    width.setX(j, w);
+                    age.setX(j, k);
+                }
             }
-            pos.needsUpdate = true;
-            sideDir.needsUpdate = true;
-            age.needsUpdate = true;
+            if (n > 0) {
+                uploadFirst(pos, n * 2);
+                uploadFirst(tangent, n * 2);
+                uploadFirst(width, n * 2);
+                uploadFirst(age, n * 2);
+            }
             t.geo.setDrawRange(0, Math.max(0, n - 1) * 6);
+        }
+
+        // Inside our hull or a friendly's (or her wreck's), up to about her deck. Heights first:
+        // most pieces are above every deck.
+        function insideHull(p) {
+            return (p.y < DECK_Y_MAX + 0.5 && p.y < deckHeightAt(p.z) + 0.5 && overOurHull(p)) ||
+                (p.y < FRIENDLY_Y + 2.5 && overFriendly(p));
+        }
+
+        // A piece of debris lands in the sea: a small white splash, and, when it's still running fast
+        // (it carries on from a moving kill), a second, lower one further on and a ring of foam as it skips
+        function debrisSplash(p, vel) {
+            const splash = (rise, s0, s1, life, delay = 0) => spawnPuff(_splashAt, {
+                vel: _splashVel.set(0, rise, 0), s0, s1, growRate: 5,
+                heat: -1, heatRate: 0, life, dissolveStart: 0.3, drag: 1, buoyancy: 0,
+                gravity: 20, smoke: 0xeef5f8, lowDetail: true, delay
+            });
+            _splashAt.set(p.x, WATER_LEVEL + 0.3, p.z);
+            splash(rand(6, 10), 0.3, 0.9, 0.9);
+            const speed = Math.hypot(vel.x, vel.z);
+            if (speed < 25) return;
+            const ahead = Math.min(8, speed * 0.08);
+            _splashAt.x += vel.x / speed * ahead;
+            _splashAt.z += vel.z / speed * ahead;
+            splash(rand(3, 6), 0.25, 0.7, 0.7, rand(0.06, 0.12));
+            spawnFoamRing(p.x, p.z, 3, 0.6);
+            fxCounts.skips++;
+        }
+        const _splashAt = new THREE.Vector3(), _splashVel = new THREE.Vector3();
+
+        // A piece of debris strikes a hull, ours or a friendly's: a clang of sparks glancing on along
+        // its path and a puff of dark smoke. Cosmetic only; it does no damage.
+        function debrisClang(p, vel) {
+            fxCounts.clangs++;
+            for (let i = 0; i < 5; i++) {
+                const v = randomDirection(); // spawnSpark keeps it
+                v.y = Math.abs(v.y) + 0.3;
+                v.multiplyScalar(rand(10, 22));
+                v.x += vel.x * 0.25;
+                v.z += vel.z * 0.25;
+                spawnSpark(p, v, rand(0.15, 0.35), 0.09, 1.1);
+            }
+            spawnPuff(p, {
+                vel: _fxShare.set(vel.x * 0.05, 1.5, vel.z * 0.05), s0: 0.4, s1: rand(1.2, 1.7), growRate: 6,
+                heat: 0.8, heatRate: 1.8, life: 1.6, dissolveStart: 0.4, drag: 3, buoyancy: 0.8,
+                smoke: 0x3d3936, lowDetail: true
+            });
         }
 
         function updateExplosionFX(dt, realDt) {
@@ -6796,24 +7210,30 @@ Ambient
                 b.uniforms.uAge.value = b.age / b.duration;
             }
 
+            const debrisDrag = Math.exp(-0.4 * dt), carryDecay = Math.exp(-FX_CARRY.debris.k * dt);
             for (let i = fxDebris.length - 1; i >= 0; i--) {
                 const d = fxDebris[i];
+                const p = d.mesh.position;
                 d.age += dt;
                 d.vel.y -= FX_GRAVITY * dt;
-                d.vel.multiplyScalar(Math.exp(-0.4 * dt));
-                d.mesh.position.addScaledVector(d.vel, dt);
+                d.vel.multiplyScalar(debrisDrag);
+                // The threat's carried motion decays on its own, so the spray keeps its pop in the threat's frame
+                d.carry.multiplyScalar(carryDecay);
+                p.addScaledVector(d.vel, dt).addScaledVector(d.carry, dt);
                 d.mesh.rotation.x += d.spin.x * dt;
                 d.mesh.rotation.y += d.spin.y * dt;
                 d.mesh.rotation.z += d.spin.z * dt;
-                const hitWater = d.mesh.position.y < WATER_LEVEL;
-                if (d.age >= d.life || hitWater) {
-                    if (hitWater) {
-                        spawnPuff(new THREE.Vector3(d.mesh.position.x, WATER_LEVEL + 0.3, d.mesh.position.z), {
-                            vel: new THREE.Vector3(0, rand(6, 10), 0), s0: 0.3, s1: 0.9, growRate: 5,
-                            heat: -1, heatRate: 0, life: 0.9, dissolveStart: 0.3, drag: 1, buoyancy: 0,
-                            gravity: 20, smoke: 0xeef5f8, lowDetail: true
-                        });
-                    }
+                // Shrink away over the last moment rather than pop out of the air
+                const left = d.life - d.age;
+                if (left < 0.15) d.mesh.scale.setScalar(d.size * Math.max(0, left) / 0.15);
+                const hitWater = p.y < WATER_LEVEL;
+                // A hull only stops a piece that came from outside it (an impact's can start in one)
+                const inHull = !hitWater && insideHull(p);
+                const hitHull = inHull && d.clear;
+                if (!inHull) d.clear = true;
+                if (d.age >= d.life || hitWater || hitHull) {
+                    if (hitWater) debrisSplash(p, _fxVel.copy(d.vel).add(d.carry));
+                    else if (hitHull) debrisClang(p, _fxVel.copy(d.vel).add(d.carry));
                     d.trail.head = null;
                     releaseFrom(fxDebris, i, debrisPool, d);
                 }
@@ -6881,14 +7301,7 @@ Ambient
                 l.light.intensity = k < 1 ? l.peak * Math.pow(1 - k, 2) : 0;
             }
 
-            fxShake *= Math.exp(-6 * realDt);
-            if (fxShake < 0.01) fxShake = 0;
-        }
-
-        const _shakeOffset = new THREE.Vector3();
-        function getExplosionShakeOffset() {
-            if (fxShake <= 0) return null;
-            return _shakeOffset.set(rand(-1, 1), rand(-1, 1), rand(-1, 1)).multiplyScalar(fxShake * 0.35);
+            viewShake.decay(realDt);
         }
 
         function shoot() {
@@ -6923,7 +7336,7 @@ Ambient
             engagementStats[controllerMode].rounds++;
 
             AudioController.noteShot();
-            if (cameraMode === 1) cameraShake = 0.3;
+            if (cameraMode === 1 || cameraMode === CAMERA_SPLIT) cameraShake = 0.3;
         }
 
         function updateRadar() {
@@ -7219,35 +7632,15 @@ Ambient
             for (let i = missiles.length - 1; i >= 0; i--) {
                 const m = missiles[i];
 
-                // Move Missile first (using current velocity)
-                m.mesh.position.addScaledVector(m.velocity, simSteps);
-
-                // Then apply gravity to mortar rounds for next frame
-                if (m.type === 'mortar') {
-                    m.velocity.y -= GRAVITY * simSteps;
-                }
-
-                // Update orientation based on type (sea-skimmers also steer their own path)
-                THREAT_TYPES[m.type].steer(m);
+                // Each type moves and steers itself, and says if it reached its target by its own test
+                const arrived = THREAT_TYPES[m.type].fly(m, simSteps);
                 if (m.prop) spinVisual(m.prop, PROP_SPIN_RATE * simSteps, 4);
 
                 updateRadarTrack(m, simSteps);
 
-                const distToTarget = m.mesh.position.distanceTo(m.targetInfo.position);
-                
-                // For mortars, also check horizontal distance and if below target height
-                // This catches mortars that pass through on steep descent
-                const horizontalDist = Math.sqrt(
-                    Math.pow(m.mesh.position.x - m.targetInfo.position.x, 2) +
-                    Math.pow(m.mesh.position.z - m.targetInfo.position.z, 2)
-                );
-                const passedThroughTarget = m.type === 'mortar' &&
-                    horizontalDist < 8 && 
-                    m.mesh.position.y < m.targetInfo.position.y + 2;
-
                 // Impact Check
-                if (distToTarget < 5 || passedThroughTarget) {
-                    createExplosion(m.mesh.position, 'impact');
+                if (arrived || m.mesh.position.distanceTo(m.targetInfo.position) < IMPACT_RADIUS) {
+                    createExplosion(m.mesh.position, 'impact', m.velocity);
                     disposeThreat(m);
                     missiles.splice(i, 1);
                     if (m.targetInfo.type === 'ciws') {
@@ -7259,7 +7652,7 @@ Ambient
                             callDamageControl(m.mesh.position, m.type);
                         }
                     } else if (m.targetInfo.type === 'friendly') {
-                        const f = friendlies.find(fr => fr.id === m.targetInfo.friendlyId);
+                        const f = friendlyOf(m.targetInfo);
                         if (f && f.alive) destroyFriendly(f);
                     }
                     continue;
@@ -7389,7 +7782,7 @@ Ambient
                 const p = projectiles[i];
                 p.life -= simSteps;
                 if (p.life <= 0) {
-                    createExplosion(p.mesh.position, 'flak');
+                    createExplosion(p.mesh.position, 'flak', p.velocity);
                     scene.remove(p.mesh);
                     projectiles.splice(i, 1);
                     continue;
@@ -7421,7 +7814,7 @@ Ambient
                         const distToRay = ray.distanceSqToPoint(mPos);
                         if (distToRay < 1.0) {
                             // HIT
-                            createExplosion(mPos, 'hit');
+                            createExplosion(mPos, 'hit', m.velocity);
                             m.health--;
                             engagementStats[p.firedBy].hits++;
 
@@ -7431,7 +7824,8 @@ Ambient
                             hit = true;
 
                             if (m.health <= 0) {
-                                createExplosion(mPos, 'airburst');
+                                createExplosion(mPos, 'airburst', m.velocity);
+                                noteKill(m, mPos);
                                 disposeThreat(m);
                                 missiles.splice(j, 1);
                                 const { killCallout } = THREAT_TYPES[m.type];
@@ -7456,24 +7850,42 @@ Ambient
 
         }
 
-        function toggleCameraFollow() {
-            cameraMode = (cameraMode + 1) % 3;
-            const toggleBtn = document.getElementById('camera-toggle');
-            const statusText = document.getElementById('follow-status');
+        // The camera button and C step through these; V jumps straight to SPLIT and back
+        const CAMERA_MODES = ['OFF', 'PHALANX', 'MISSILE', 'SPLIT'];
+        const CAMERA_SPLIT = 3;
+        const orbitPose = { position: new THREE.Vector3(), target: new THREE.Vector3() };
 
-            if (cameraMode === 1) {
-                toggleBtn.classList.add('active');
-                statusText.innerText = 'PHALANX';
-                controls.enabled = false;
-            } else if (cameraMode === 2) {
-                toggleBtn.classList.add('active');
-                statusText.innerText = 'MISSILE';
-                controls.enabled = false;
-            } else {
-                toggleBtn.classList.remove('active');
-                statusText.innerText = 'OFF';
-                controls.enabled = true;
+        // mode: an index into CAMERA_MODES or its name, in any case. The one place the mode changes.
+        function setCameraMode(mode) {
+            if (typeof mode === 'string') mode = CAMERA_MODES.indexOf(mode.toUpperCase());
+            if (!CAMERA_MODES[mode]) throw new Error(`no camera mode ${mode}`);
+            if (mode === cameraMode) return;
+            // The orbit view comes back where it was left, not wherever the follow camera got to
+            if (cameraMode === 0) {
+                orbitPose.position.copy(camera.position);
+                orbitPose.target.copy(controls.target);
             }
+            if (cameraMode === CAMERA_SPLIT) exitSplitView();
+            if (mode === CAMERA_SPLIT) splitView.prevMode = cameraMode;
+            cameraMode = mode;
+            if (mode === CAMERA_SPLIT) enterSplitView();
+            if (mode === 0) {
+                camera.position.copy(orbitPose.position);
+                controls.target.copy(orbitPose.target);
+                controls.update();
+            }
+            ui('camera-toggle').classList.toggle('active', mode !== 0);
+            setText(ui('follow-status'), CAMERA_MODES[mode]);
+            controls.enabled = mode === 0;
+        }
+
+        function toggleCameraFollow() {
+            setCameraMode((cameraMode + 1) % CAMERA_MODES.length);
+        }
+
+        // Into split screen and back out to the mode it came from
+        function toggleSplitView() {
+            setCameraMode(cameraMode === CAMERA_SPLIT ? splitView.prevMode : CAMERA_SPLIT);
         }
 
         function toggleMute() {
@@ -7507,6 +7919,7 @@ Ambient
 
         // Expose to global scope for onclick handler
         window.toggleCameraFollow = toggleCameraFollow;
+        window.toggleSplitView = toggleSplitView;
         window.toggleMute = toggleMute;
         window.toggleSlowMo = toggleSlowMo;
         window.cycleSpatialMode = () => {
@@ -7519,46 +7932,105 @@ Ambient
         window.toggleMLPanel = toggleMLPanel;
         window.rebootSystem = rebootSystem;
 
+        // The missile camera holds for a moment on a kill it was following, watching the fireball
+        // carry on along the threat's path, before it moves on. Sim seconds, so slow motion holds longer.
+        const KILL_CAMERA_HOLD = 0.6;
+        // Sim seconds as the cameras see them (unlike elapsedTime, it runs on through a game over)
+        let cameraSimTime = 0;
+        // The kill it's holding on, its offset's direction (followPose) and where it looks
+        const missileCam = { kill: null, back: new THREE.Vector3(1, 0, 0), look: new THREE.Vector3(0, MOUNT_Y + 2, 0) };
+
+        // A threat shot down: where, the share of its motion its fireball carries on with, and when,
+        // for the cameras that hold on it (the missile camera when it was the gun's target, the
+        // chase camera when it was following it)
+        function noteKill(m, position) {
+            const share = carryShare(new THREE.Vector3(), perSecond(_killCarry, m.velocity), FX_CARRY.fireball);
+            m.kill = { pos: position.clone(), share, time: cameraSimTime };
+            if (m === target) missileCam.kill = m.kill;
+        }
+        const _killCarry = new THREE.Vector3();
+
+        // Where a kill's fireball has got to, into out
+        const killFireball = (out, kill) => fireballCentre(out, kill.pos, kill.share, cameraSimTime - kill.time);
+
+        // The pose both follow cameras take on threat m: its type's chase.back units behind it on
+        // its line from what it's aimed at (level, unless chase.dive: then back up its dive, so a
+        // drone's dive runs down the frame onto its target) and chase.up above, into outPos.
+        // Returns what to look at, the aim point. `back` is the camera's own unit direction for
+        // the offset, which holds once the threat is nearly over its aim (a shell coming down, a
+        // vampire's last metres) rather than spinning round.
+        function followPose(m, back, outPos) {
+            const chase = THREAT_TYPES[m.type].chase;
+            if (awayFromAim(m, _followAway).lengthSq() > 4) back.copy(_followAway).normalize();
+            outPos.copy(m.mesh.position).addScaledVector(back, chase.back);
+            outPos.y += chase.up;
+            return m.targetInfo.position;
+        }
+        const _followAway = new THREE.Vector3();
+
+        // From what m is aimed at to m, into out: level, unless its chase pose follows a dive
+        function awayFromAim(m, out) {
+            out.subVectors(m.mesh.position, m.targetInfo.position);
+            return THREAT_TYPES[m.type].chase.dive ? out : out.setY(0);
+        }
+
+        // Gun-fire shake (cameraShake, kicked by each shot in the gun cameras): a random pitch and
+        // yaw, x and y of out, of up to half GUN_SHAKE_RAD x its strength, decaying it by 15% a
+        // frame (scaled for slow motion); null while it's still
+        const GUN_SHAKE_RAD = 0.0125;
+        function gunShakeKick(out) {
+            if (cameraShake <= 0) return null;
+            out.set((Math.random() - 0.5) * cameraShake * GUN_SHAKE_RAD, (Math.random() - 0.5) * cameraShake * GUN_SHAKE_RAD);
+            cameraShake *= 1 - 0.15 * timeScale;
+            return out;
+        }
+        const _gunKick = new THREE.Vector2();
+
+        // The main camera at `eye` in a gun part's frame (rotated with it), looking along the part
+        function cameraOnGun(part, eye) {
+            part.updateWorldMatrix(true, false);
+            part.matrixWorld.decompose(_gunPos, camera.quaternion, _gunScale);
+            camera.position.copy(eye).applyQuaternion(camera.quaternion).add(_gunPos);
+            camera.rotateY(Math.PI); // the gun looks along +z, a camera along -z
+        }
+        const _gunPos = new THREE.Vector3(), _gunScale = new THREE.Vector3();
+        const PHALANX_CAM_EYE = new THREE.Vector3(4.0, 2.5, -6.0); // over the shoulder
+
         function updateCameraFollow() {
+            cameraSimTime += deltaTime * timeScale;
             if (cameraMode === 0) return;
 
             // --- MODE 1: PHALANX FOLLOW ---
             if (cameraMode === 1) {
                 if (!turretPitch || !turretYaw) return;
 
-                // Apply Rotational Shake to the GUN
-                if (cameraShake > 0) {
-                    const shakeIntensity = 0.0125; // Radians
-                    const rx = (Math.random() - 0.5) * cameraShake * shakeIntensity;
-                    const ry = (Math.random() - 0.5) * cameraShake * shakeIntensity;
-
-                    turretPitch.rotation.x += rx;
-                    turretPitch.rotation.y += ry;
-
-                    lastShake.x = rx;
-                    lastShake.y = ry;
-
-                    cameraShake *= (1 - (0.15 * timeScale)); // Decay scaled by time
+                // The gun-fire shake turns the gun itself (animate takes it off again)
+                const kick = gunShakeKick(_gunKick);
+                if (kick) {
+                    turretPitch.rotation.x += kick.x;
+                    turretPitch.rotation.y += kick.y;
+                    lastShake.x = kick.x;
+                    lastShake.y = kick.y;
                 }
 
-                // Gunsight camera: positioned next to the gun barrels, pointing parallel
-                const gunPos = new THREE.Vector3();
-                turretPitch.getWorldPosition(gunPos);
-
-                const gunQuaternion = new THREE.Quaternion();
-                turretPitch.getWorldQuaternion(gunQuaternion);
-
-                // Action camera: "Over the shoulder" view
-                const offset = new THREE.Vector3(4.0, 2.5, -6.0);
-                offset.applyQuaternion(gunQuaternion);
-
-                camera.position.copy(gunPos).add(offset);
-                camera.quaternion.copy(gunQuaternion);
-                camera.rotateY(Math.PI);
+                // Action camera: "Over the shoulder" view, pointing along the barrels
+                cameraOnGun(turretPitch, PHALANX_CAM_EYE);
             }
 
             // --- MODE 2: MISSILE FOLLOW ---
             else if (cameraMode === 2) {
+                const kill = missileCam.kill;
+                if (kill && cameraSimTime - kill.time < KILL_CAMERA_HOLD) {
+                    // Ease back from where it died, so the fireball doesn't fill the frame, looking at
+                    // the fireball as the debris runs on toward the gun. The lerp is per frame, so
+                    // scale it for slow motion.
+                    const camPos = _v3a.subVectors(kill.pos, _v3b.set(0, MOUNT_Y + 2, 0)).setLength(24).add(kill.pos);
+                    camPos.y += 6;
+                    camera.position.lerp(camPos, 1 - Math.pow(0.88, timeScale));
+                    camera.lookAt(killFireball(_v3b, kill));
+                    return;
+                }
+
                 // If no target, fallback to a "Searching" view (high up, looking at Phalanx)
                 // Or just stick to the last known position? 
                 // Let's do a high-up view of the base if no target.
@@ -7571,27 +8043,368 @@ Ambient
                     return;
                 }
 
-                // Target exists - track it
-                const tPos = target.mesh.position.clone();
-                const phalanxPos = new THREE.Vector3(0, MOUNT_Y + 2, 0);
-
-                // Calculate direction FROM target TO Phalanx
-                const toPhalanx = new THREE.Vector3().subVectors(phalanxPos, tPos).normalize();
-
-                // Position camera "over the shoulder"
-                // We want to be behind the missile (further away from Phalanx) and slightly up
-                // "Behind" means -toPhalanx direction
-                const camOffset = toPhalanx.clone().multiplyScalar(-8); // 8 units behind
-                camOffset.y += 3; // 3 units up
-
-                const camPos = tPos.clone().add(camOffset);
-
-                // Smoothly update camera position
-                camera.position.lerp(camPos, 0.2); // Smooth follow
-
-                // Look at Phalanx
-                camera.lookAt(phalanxPos);
+                // Target exists - track it from its follow pose, easing in; the look eases over
+                // when the gun changes targets
+                const look = followPose(target, missileCam.back, _v3a);
+                camera.position.lerp(_v3a, 0.2); // Smooth follow
+                camera.lookAt(missileCam.look.lerp(look, 0.2));
             }
+
+            // --- MODE 3: SPLIT SCREEN ---
+            else if (cameraMode === CAMERA_SPLIT) {
+                updateSightCamera();
+                updateChaseCamera(deltaTime);
+                updateSplitLabels(deltaTime);
+            }
+        }
+
+        // --- SPLIT VIEW ---
+        // Two panes: on the left (or below, on a portrait window) a gunsight looking down the
+        // barrels, on the right (or above) a chase camera riding behind a threat. The gunsight is
+        // the main camera, so the audio listener, the shake falloff and everything else that
+        // follows `camera` stays with the gun. All of this only reads the game's state.
+        const SPLIT_GAP_PX = 3; // the divider, in CSS pixels
+        const SPLIT_DIVIDER = 0x101418;
+        // A narrow pane widens its view to keep at least this much across, up to SPLIT_MAX_FOV tall
+        const SPLIT_MIN_HFOV = THREE.MathUtils.degToRad(40);
+        const SPLIT_MAX_FOV = 75;
+        // The sight rides the gun block, which doesn't spin with the barrels: just above the bore,
+        // looking along it, so the aim point is the middle of the pane
+        const SIGHT_EYE = new THREE.Vector3(0, 0.95, 0.6);
+        const SIGHT_FOV = 45;
+        // From there the muzzle flash is a few units away and would cover the aim point: cap the
+        // star (as a fraction of its depth) and the blast ring (radius, gun-block units) in that pane
+        const SIGHT_FLASH_MAX = 0.15, SIGHT_RING_MAX = 0.45;
+        // The chase camera rides each type's follow pose (THREAT_TYPES chase, followPose)
+        const CHASE_SWITCH_DELAY = 1.0; // real s the gun must stay on another threat before the chase follows
+        const CHASE_SHAKE = 0.6;        // explosion shake on the chase camera, against the gunsight's
+        // After a kill or an impact the chase holds on it, easing back to pullBack units in pullTime
+        // real seconds, until about when the boom reaches the gun (min..max real seconds; it
+        // stretches in slow motion, as the sound does)
+        const TRACK_HOLD = { min: 1.2, max: 6, pullBack: 28, pullTime: 0.35 };
+        // Nothing inbound: a slow turn round our ship and the formation, from outside it (the
+        // friendlies are within 100 of us) on the last threat's side
+        const NO_TRACK = { range: 190, height: 30, turn: THREE.MathUtils.degToRad(2), fov: 45 };
+
+        const splitView = {
+            layout: 'auto', resolved: 'side', // 'side' or 'stack'; auto picks by the window's shape
+            chase: null,                      // the chase camera, made on first use
+            track: null,                      // the threat it follows; null while holding or idle
+            pinned: null,                     // one a tool pinned (debug.setChaseTrack)
+            disagree: 0,                      // real s the gun has been on another threat
+            shown: new WeakSet(),             // vampires that have had the chase camera
+            // After a kill or an impact: real s left and gone, where it was (and its kill, for the
+            // fireball), and the camera's direction and distance from there when it began
+            hold: { left: 0, age: 0, label: '', from: 0, pos: new THREE.Vector3(), kill: null, dir: new THREE.Vector3() },
+            back: new THREE.Vector3(1, 0, 0), // the chase offset's direction (followPose)
+            idleAngle: 0,                     // NO TRACK's bearing round the ship; the last track's while tracking
+            fov: 60,
+            shake: makeShake(),
+            // Sight, then chase, and the divider between them: CSS pixels from the top left
+            panes: [{ x: 0, top: 0, w: 1, h: 1 }, { x: 0, top: 0, w: 1, h: 1 }],
+            gap: { x: 0, top: 0, w: 0, h: 0 },
+            placed: { w: 0, h: 0, layout: '' },
+            labelClock: 0,
+            firingUntil: 0,
+            prevMode: 0
+        };
+        const _chaseVec = new THREE.Vector3(), _chaseShake = new THREE.Vector3();
+        const _splitSize = new THREE.Vector2(), _splitClear = new THREE.Color();
+
+        function enterSplitView() {
+            const s = splitView;
+            s.chase ??= new THREE.PerspectiveCamera(60, 1, 0.25, 4000);
+            s.track = null;
+            s.hold.left = 0;
+            s.shake.value = 0;
+            s.placed.layout = '';
+            s.labelClock = 0;
+            ui('split-labels').style.display = 'block';
+        }
+
+        // renderSplitView leaves the main camera and ink width as the single view had them
+        function exitSplitView() {
+            splitView.pinned = null;
+            ui('split-labels').style.display = '';
+            const reticle = ui('center-reticle').style;
+            reticle.left = reticle.top = '';
+        }
+
+        // The main camera on the gun block, with the gun-fire shake mode 1 puts on the turret
+        // applied to the view instead
+        function updateSightCamera() {
+            cameraOnGun(barrels.parent, SIGHT_EYE);
+            const kick = gunShakeKick(_gunKick);
+            if (kick) {
+                camera.rotateX(kick.x);
+                camera.rotateY(kick.y);
+            }
+        }
+
+        const isLive = m => !!m && m.mesh.parent !== null; // removed threats leave the scene
+
+        // The live threat nearest our ship that passes `test`, or null
+        function nearestThreat(test) {
+            let best = null, bestRange = Infinity;
+            for (const m of missiles) {
+                const range = m.mesh.position.lengthSq();
+                if (range < bestRange && test(m)) {
+                    best = m;
+                    bestRange = range;
+                }
+            }
+            return best;
+        }
+        const anyThreat = () => true;
+        const isNewVampire = m => THREAT_TYPES[m.type].lockOn && m.detected && !splitView.shown.has(m);
+
+        // Which threat the chase camera should be on now. It stays locked on one until it's gone,
+        // except that a newly detected vampire takes over from anything but another vampire, and
+        // the gun staying on a different threat for CHASE_SWITCH_DELAY pulls it over (the gun
+        // re-picks by ETA every step, so on its own it would flick between near ties).
+        function pickChaseTrack(realDt) {
+            const s = splitView, current = s.track;
+            if (s.pinned) return s.pinned;
+            if (current && THREAT_TYPES[current.type].lockOn) return current;
+            const vampire = nearestThreat(isNewVampire);
+            if (vampire) return vampire;
+            const gunTarget = isLive(target) ? target : null; // a kill this frame leaves `target` stale
+            if (!current) return gunTarget || nearestThreat(anyThreat);
+            s.disagree = gunTarget && gunTarget !== current ? s.disagree + realDt : 0;
+            return s.disagree >= CHASE_SWITCH_DELAY ? gunTarget : current;
+        }
+
+        // Straight to a new track (or to the NO TRACK view): a cut, never a swoop across the sky
+        function cutChaseTo(m) {
+            const s = splitView;
+            s.track = m;
+            s.disagree = 0;
+            s.hold.left = 0;
+            if (m) {
+                if (THREAT_TYPES[m.type].lockOn) s.shown.add(m);
+                if (awayFromAim(m, _chaseVec).lengthSq() > 1e-6) s.back.copy(_chaseVec).normalize();
+            }
+            s.labelClock = 0;
+            ui('split-label-chase').animate([{ borderColor: '#a9fff2', color: '#ffffff' }, {}], 600);
+        }
+
+        // The followed threat is gone. Shot down (its health ran out) or reached its target, the
+        // chase holds on the blast and pulls back; anything else (cleared by a tool) just moves on.
+        function holdChase(m) {
+            const s = splitView, h = s.hold, chase = s.chase;
+            const killed = m.health <= 0;
+            s.track = null;
+            if (!killed && m.mesh.position.distanceTo(m.targetInfo.position) > 12) return;
+            h.pos.copy(m.mesh.position);
+            h.dir.subVectors(chase.position, h.pos);
+            h.from = h.dir.length();
+            h.dir.divideScalar(h.from || 1);
+            // A kill's fireball carries on along the threat's path (noteKill); an impact's stays put
+            h.kill = m.kill ?? null;
+            const boom = h.pos.distanceTo(camera.position) / SPEED_OF_SOUND / timeScale;
+            h.left = THREE.MathUtils.clamp(boom + 0.3, TRACK_HOLD.min, TRACK_HOLD.max);
+            h.age = 0;
+            h.label = killed ? `SPLASH · ${threatCallsign(m)}` : `IMPACT · ${targetName(m)}`;
+            s.labelClock = 0;
+        }
+
+        function updateChaseCamera(realDt) {
+            const s = splitView, h = s.hold, cam = s.chase;
+            s.shake.decay(realDt);
+            if (s.pinned && !isLive(s.pinned)) s.pinned = null;
+            if (s.track && !isLive(s.track)) holdChase(s.track);
+
+            if (h.left > 0) {
+                h.left -= realDt;
+                h.age += realDt;
+                if (h.left > 0) {
+                    const k = 1 - Math.pow(1 - Math.min(1, h.age / TRACK_HOLD.pullTime), 3);
+                    cam.position.copy(h.pos).addScaledVector(h.dir, h.from + (TRACK_HOLD.pullBack - h.from) * k);
+                    cam.lookAt(h.kill ? killFireball(_chaseVec, h.kill) : h.pos);
+                    return;
+                }
+                cutChaseTo(pickChaseTrack(realDt)); // the hold is over
+            } else {
+                const next = pickChaseTrack(realDt);
+                if (next !== s.track) cutChaseTo(next);
+            }
+
+            const m = s.track;
+            if (m) {
+                // Rigid to the threat's follow pose (no lag, so it holds steady in slow motion)
+                cam.lookAt(followPose(m, s.back, cam.position));
+                s.fov = THREAT_TYPES[m.type].chase.fov;
+                s.idleAngle = Math.atan2(m.mesh.position.z, m.mesh.position.x); // NO TRACK starts on its side
+            } else {
+                s.idleAngle += NO_TRACK.turn * realDt;
+                const centre = (SHIP_BOUNDS.bow + SHIP_BOUNDS.stern) / 2;
+                cam.position.set(Math.cos(s.idleAngle) * NO_TRACK.range, NO_TRACK.height, centre + Math.sin(s.idleAngle) * NO_TRACK.range);
+                cam.lookAt(0, 0, centre);
+                s.fov = NO_TRACK.fov;
+            }
+        }
+
+        // e.g. 'VAMPIRE 090': its type and bearing from our ship, three digits as the callouts say it
+        function threatCallsign(m) {
+            const bearing = Math.round(bearingFromShip(m.mesh.position)) % 360;
+            return `${THREAT_TYPES[m.type].name} ${String(bearing).padStart(3, '0')}`;
+        }
+
+        function targetName(m) {
+            if (m.targetInfo.type !== 'friendly') return 'OWN SHIP';
+            return friendlyOf(m.targetInfo)?.name.toUpperCase() ?? 'FRIENDLY';
+        }
+
+        function formatRange(units) {
+            return units >= 1000 ? `${(units / 1000).toFixed(1)} km` : `${Math.round(units / 10) * 10} m`;
+        }
+
+        function chaseLabel() {
+            const s = splitView, m = s.track;
+            if (isGameOver) return ui('status-text').textContent;
+            if (s.hold.left > 0) return s.hold.label;
+            if (!m) return 'NO TRACK';
+            return `TRACK · ${threatCallsign(m)} → ${targetName(m)} · ${formatRange(m.mesh.position.length())}`;
+        }
+
+        // The pane labels' text, about ten times a second (and straight away after a cut)
+        function updateSplitLabels(realDt) {
+            const s = splitView;
+            if (isFiring) s.firingUntil = clock.elapsedTime + 0.3; // bridges the gaps in a burst
+            s.labelClock -= realDt;
+            if (s.labelClock > 0) return;
+            s.labelClock = 0.1;
+            setText(ui('split-label-sight'), clock.elapsedTime < s.firingUntil ? 'GUNSIGHT · FIRING' : 'GUNSIGHT');
+            setText(ui('split-label-chase'), chaseLabel());
+        }
+
+        function setPane(pane, x, top, w, h) {
+            pane.x = x;
+            pane.top = top;
+            pane.w = w;
+            pane.h = h;
+        }
+
+        // Lays the panes out in a w x h (CSS pixel) canvas. Auto layout switches with some
+        // hysteresis, so dragging a window edge across square doesn't flip it back and forth.
+        function layoutSplitPanes(w, h) {
+            const s = splitView, sight = s.panes[0], chase = s.panes[1];
+            if (s.layout !== 'auto') s.resolved = s.layout;
+            else if (w / h < 0.95) s.resolved = 'stack';
+            else if (w / h > 1.05) s.resolved = 'side';
+            if (s.resolved === 'side') {
+                const half = Math.floor((w - SPLIT_GAP_PX) / 2);
+                setPane(sight, 0, 0, half, h);
+                setPane(chase, half + SPLIT_GAP_PX, 0, w - half - SPLIT_GAP_PX, h);
+                setPane(s.gap, half, 0, SPLIT_GAP_PX, h);
+            } else {
+                const half = Math.floor((h - SPLIT_GAP_PX) / 2);
+                setPane(chase, 0, 0, w, half);
+                setPane(sight, 0, half + SPLIT_GAP_PX, w, h - half - SPLIT_GAP_PX);
+                setPane(s.gap, 0, half, w, SPLIT_GAP_PX);
+            }
+            if (s.placed.w !== w || s.placed.h !== h || s.placed.layout !== s.resolved) placeSplitLabels(w, h);
+        }
+
+        // The labels go against the divider at the top (side by side; the stats and controls
+        // have the outer corners) or at the left edge either side of it (stacked). The reticle
+        // marks the sight's aim point, the middle of its pane.
+        function placeSplitLabels(w, h) {
+            const s = splitView, [sight, chase] = s.panes;
+            Object.assign(s.placed, { w, h, layout: s.resolved });
+            const place = (id, left, top, transform) => Object.assign(ui(id).style, { left: `${left}px`, top: `${top}px`, transform });
+            if (s.resolved === 'side') {
+                place('split-label-sight', sight.w - 12, 20, 'translateX(-100%)');
+                place('split-label-chase', chase.x + 12, 20, 'none');
+            } else {
+                place('split-label-chase', 20, chase.h - 12, 'translateY(-100%)');
+                place('split-label-sight', 20, sight.top + 12, 'none');
+            }
+            const reticle = ui('center-reticle').style;
+            reticle.left = `${sight.x + sight.w / 2}px`;
+            reticle.top = `${sight.top + sight.h / 2}px`;
+        }
+
+        // Scissors and viewports to a pane-shaped rectangle of a canvas `height` tall (GL counts y
+        // up from the bottom)
+        function setPaneRect(pane, height) {
+            const y = height - pane.top - pane.h;
+            renderer.setViewport(pane.x, y, pane.w, pane.h);
+            renderer.setScissor(pane.x, y, pane.w, pane.h);
+        }
+
+        // One pane: its aspect and fov (the projection only recomputed when they change), the sky
+        // dome around its camera, ink lines the right width for its fov and height, then draw into
+        // its rectangle
+        function renderPane(pane, cam, fov, height) {
+            const aspect = pane.w / pane.h;
+            const fitFov = THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(SPLIT_MIN_HFOV / 2) / aspect));
+            const paneFov = Math.min(SPLIT_MAX_FOV, Math.max(fov, fitFov));
+            if (cam.aspect !== aspect || cam.fov !== paneFov) {
+                cam.aspect = aspect;
+                cam.fov = paneFov;
+                cam.updateProjectionMatrix();
+            }
+            skyDome.position.copy(cam.position);
+            skyDome.updateMatrixWorld();
+            setOutlineScale(cam.fov, pane.h);
+            setPaneRect(pane, height);
+            renderer.render(scene, cam);
+        }
+
+        // Both panes and the divider. Leaves the renderer, the main camera's fov and aspect, the
+        // ink width, the sky dome and the muzzle flash as the single view expects them.
+        function renderSplitView() {
+            const s = splitView, sightPane = s.panes[0], chasePane = s.panes[1];
+            const size = renderer.getSize(_splitSize);
+            layoutSplitPanes(size.x, size.y);
+            const singleFov = camera.fov;
+
+            // The divider: the strip the panes don't cover
+            renderer.getClearColor(_splitClear);
+            const clearAlpha = renderer.getClearAlpha();
+            renderer.setScissorTest(true);
+            setPaneRect(s.gap, size.y);
+            renderer.setClearColor(SPLIT_DIVIDER, 1);
+            renderer.clear();
+            renderer.setClearColor(_splitClear, clearAlpha);
+
+            // The sun's shadow map doesn't depend on the view, so draw it for the first pane only;
+            // and bring the scene's matrices up to date once rather than once per pane
+            renderer.shadowMap.autoUpdate = false;
+            renderer.shadowMap.needsUpdate = true;
+            scene.updateMatrixWorld();
+            scene.matrixWorldAutoUpdate = false;
+
+            // The muzzle flash, while there is one, capped in the sight pane
+            const flashing = gunFX.flash.visible;
+            const flash = gunFX.star.material.uniforms.uViewRange.value, ring = gunFX.ring;
+            const flashMax = flash.y, ringScale = ring.scale.x;
+            if (flashing) {
+                flash.y = SIGHT_FLASH_MAX;
+                ring.scale.setScalar(Math.min(ringScale, SIGHT_RING_MAX));
+                ring.updateMatrixWorld();
+            }
+            renderPane(sightPane, camera, SIGHT_FOV, size.y);
+            if (flashing) {
+                flash.y = flashMax;
+                ring.scale.setScalar(ringScale);
+                ring.updateMatrixWorld();
+            }
+
+            const shake = s.shake.offset(_chaseShake, CHASE_SHAKE);
+            if (shake) s.chase.position.add(shake);
+            renderPane(chasePane, s.chase, s.fov, size.y);
+            if (shake) s.chase.position.sub(shake);
+
+            scene.matrixWorldAutoUpdate = true;
+            renderer.shadowMap.autoUpdate = true;
+            skyDome.position.copy(camera.position);
+            skyDome.updateMatrixWorld();
+            renderer.setViewport(0, 0, size.x, size.y);
+            renderer.setScissorTest(false);
+            camera.fov = singleFov;
+            applyMainViewport();
         }
 
         function animate() {
@@ -7626,17 +8439,25 @@ Ambient
 
             waterMaterial.uniforms.time.value = clock.elapsedTime;
             skyDome.position.copy(camera.position);
-            const shake = getExplosionShakeOffset();
+            const shake = viewShake.offset(_shakeOffset);
             if (shake) camera.position.add(shake);
-            renderer.render(scene, camera);
+            if (cameraMode === CAMERA_SPLIT) renderSplitView();
+            else renderer.render(scene, camera);
             if (shake) camera.position.sub(shake);
         }
 
+        const _shakeOffset = new THREE.Vector3();
+
         function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
             renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
             renderer.setSize(window.innerWidth, window.innerHeight);
+            applyMainViewport();
+        }
+
+        // The main camera and the ink width for the whole window (split screen changes both per pane)
+        function applyMainViewport() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
             updateOutlineThickness();
         }
 

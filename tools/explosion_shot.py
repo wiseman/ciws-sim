@@ -5,8 +5,9 @@
 """Trigger each explosion kind in front of a fixed camera and capture a timed sequence.
 
 Usage: uv run tools/explosion_shot.py <out_prefix> [scenario]
-Scenarios: airburst (default), water, deck, flak. Poses near the gun are relative to its deck
-height (window.__ciws.layout.mountY, `m` below); the water scenario is at sea level.
+Scenarios: airburst (default), airburst-moving, water, deck, flak. Poses near the gun are relative
+to its deck height (window.__ciws.layout.mountY, `m` below); the water scenario is at sea level.
+Only airburst-moving passes a velocity, so the others show explosions at rest.
 """
 import sys
 import time
@@ -19,6 +20,11 @@ scenario = sys.argv[2] if len(sys.argv) > 2 else "airburst"
 SCENARIOS = {
     "airburst": ("c.camera.position.set(-9, m + 9, 16); c.controls.target.set(0, m + 14, -25);",
                  "c.createExplosion(new V(0, m + 16, -32), 'airburst');"),
+    # A kill on a threat flying at 2.6 units/step (about 156 m/s) to the right: debris, sparks and
+    # the fireball carry on along its path
+    "airburst-moving": ("c.camera.position.set(-14, m + 12, 26); c.controls.target.set(24, m + 13, -36);",
+                        "c.createExplosion(new V(0, m + 16, -32), 'hit', new V(2.6, 0, 0));"
+                        " c.createExplosion(new V(0, m + 16, -32), 'airburst', new V(2.6, 0, 0));"),
     "water": ("c.camera.position.set(-20, 8, 20); c.controls.target.set(-25, 3, -25);",
               "c.createExplosion(new V(-25, 0.75, -30), 'impact');"),
     "deck": ("c.camera.position.set(-22, m + 12, 22); c.controls.target.set(0, m + 3, 0);",
