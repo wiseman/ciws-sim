@@ -5910,6 +5910,57 @@ Ambient
             return witch;
         }
 
+        // Dracula for an anti-ship missile (the net calls them vampires already): flying flat out,
+        // arms ahead, eyes glowing, his cape spread behind like a bat's wings and beating (flapCape)
+        const createDracula = cachedTemplate(() => {
+            const dracula = new THREE.Group();
+            const suit = toonMat(0x1d1a22), pale = toonMat(0xdfe2d6), v = (x, y, z) => new THREE.Vector3(x, y, z);
+            mergeByMaterial([
+                { geo: alongZ(new THREE.CapsuleGeometry(0.21, 0.55, 4, 10)), mat: suit, matrix: at(0, 0, 0.08) },
+                { geo: new THREE.BoxGeometry(0.2, 0.06, 0.32), mat: toonMat(0xf0eee6), matrix: at(0, -0.17, 0.3) },
+                ...[-1, 1].flatMap(x => [
+                    { geo: alongZ(new THREE.CapsuleGeometry(0.09, 0.7, 4, 8)), mat: suit, matrix: at(x * 0.11, -0.02, -0.62) },
+                    { geo: new THREE.BoxGeometry(0.12, 0.1, 0.22), mat: toonMat(0x0f0d12), matrix: at(x * 0.11, -0.04, -1.08) },
+                    { ...strut(v(x * 0.2, 0.02, 0.3), v(x * 0.12, 0.06, 1.0), 0.14, true), mat: suit },
+                    { geo: new THREE.SphereGeometry(0.05, 8, 6), mat: pale, matrix: at(x * 0.12, 0.06, 1.04) }
+                ]),
+                // Head, slicked-back hair with its widow's peak, and the high collar behind it
+                { geo: new THREE.SphereGeometry(0.15, 12, 10), mat: pale, matrix: at(0, 0.08, 0.6) },
+                { geo: new THREE.SphereGeometry(0.155, 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), mat: suit, matrix: at(0, 0.1, 0.56, -0.95) },
+                { geo: new THREE.ConeGeometry(0.04, 0.1, 4), mat: suit, matrix: at(0, 0.17, 0.72, 2.2) },
+                ...[-1, 1].map(x => ({ geo: new THREE.BoxGeometry(0.3, 0.32, 0.03), mat: toonMat(0x8e1020), matrix: at(x * 0.17, 0.2, 0.44, -0.5, x * 0.5) }))
+            ]).forEach(m => dracula.add(m));
+            // Red eyes, lit
+            const eyes = mergeByMaterial([-1, 1].map(x => ({ geo: new THREE.SphereGeometry(0.035, 6, 4), mat: new THREE.MeshBasicMaterial({ color: 0xff2a1a }),
+                matrix: at(x * 0.055, 0.1, 0.73), noOutline: true })));
+            eyes.forEach(m => dracula.add(m));
+            // The cape: two halves hinged along his back, black over a red lining, with a bat-wing edge
+            const edge = [[0.1, 0.4], [0.5, 0.38], [1.35, -0.3], [1.05, -0.45], [1.02, -0.95], [0.74, -0.95], [0.62, -1.38], [0.3, -1.25], [0.08, -1.58], [0, -1.42], [0, 0.4]];
+            const half = new THREE.ShapeGeometry(new THREE.Shape(edge.map(([x, z]) => new THREE.Vector2(x, -z)))).rotateX(-Math.PI / 2);
+            const cape = new THREE.Group();
+            cape.name = 'cape';
+            cape.position.y = 0.16;
+            [1, -1].forEach(side => {
+                const wing = new THREE.Group();
+                mergeByMaterial([{ geo: half, mat: toonMat(0x17141b, { side: THREE.DoubleSide }), matrix: at(0, 0.015, 0) },
+                    { geo: half, mat: toonMat(0x8e1020, { side: THREE.DoubleSide }), noOutline: true }]).forEach(m => wing.add(m));
+                wing.scale.x = side;
+                cape.add(wing);
+            });
+            dracula.add(cape);
+            addOutlines(dracula);
+            dracula.scale.setScalar(2.6);
+            return dracula;
+        });
+
+        // Beats Dracula's cape like wings: t, a running clock (sim steps)
+        function flapCape(cape, t) {
+            const a = 0.12 + 0.28 * Math.sin(t * 0.25);
+            const [left, right] = cape.children;
+            left.rotation.z = a;
+            right.rotation.z = -a;
+        }
+
         // A jack-o'-lantern for a shell: carved face forward (+z) and glowing, trailing flames
         const createJackOLantern = cachedTemplate(() => {
             const R = 1.5, lantern = new THREE.Group();
@@ -6130,18 +6181,22 @@ Ambient
         // cos, z = sin)
         function spawnAntiShipMissile(targetInfo, opts = {}) {
             const angle = opts.angle ?? Math.random() * Math.PI * 2;
-            const mesh = createAntiShipMissile();
+            const dracula = HOLIDAY === 'halloween';
+            const mesh = dracula ? createDracula() : createAntiShipMissile();
             mesh.position.set(Math.cos(angle) * ASCM_SPAWN_DISTANCE, rand(12, 20), Math.sin(angle) * ASCM_SPAWN_DISTANCE);
             scene.add(mesh);
             if (targetInfo.type === 'ciws') targetInfo = { ...targetInfo, position: shipStrikePoint(mesh.position) };
             const m = addThreat(mesh, new THREE.Vector3(), 'ascm', targetInfo);
             m.speed = ASCM_SPEED_BASE + wave * 0.03;
-            m.flame = mesh.getObjectByName('flame');
+            m.flame = mesh.getObjectByName('flame') ?? null;
+            m.cape = mesh.getObjectByName('cape') ?? null;
+            m.flap = Math.random() * 25;
             m.exhaustPos = new THREE.Vector3();
             m.detected = false;
             steerSeaSkimmer(m);
             m.trackedVelocity.copy(m.velocity);
-            m.trail = spawnTrail(m.exhaustPos, { width: 0.32, life: 1.5, spacing: 2.4, smoke: 0xdedad2, long: true, drift: 0.3, hot: 0.15 });
+            // Dracula leaves a dark mist
+            m.trail = spawnTrail(m.exhaustPos, { width: 0.32, life: 1.5, spacing: 2.4, smoke: dracula ? 0x4d3f55 : 0xdedad2, long: true, drift: 0.3, hot: dracula ? 0 : 0.15 });
             return m;
         }
 
@@ -6183,7 +6238,8 @@ Ambient
         function flySeaSkimmer(m, simSteps) {
             m.mesh.position.addScaledVector(m.velocity, simSteps);
             steerSeaSkimmer(m);
-            flickerFlame(m.flame);
+            if (m.flame) flickerFlame(m.flame);
+            if (m.cape) flapCape(m.cape, m.flap += simSteps);
             if (!m.detected && m.mesh.position.length() < ASCM_DETECT_RANGE) {
                 m.detected = true;
                 onVampireDetected(m);
