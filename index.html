@@ -978,6 +978,8 @@
             sailboat: { ...LONG_ASIDE, clips: numbered('sailboat', 3), stale: 8 },
             duck: { ...LONG_ASIDE, clips: numbered('duck', 3), stale: 8 },
             flyby: { clips: numbered('flyby', 3), channel: 'net', aside: true, lead: 0.3, stale: 6 },
+            // The mount tracking the Seahawk as she passes (FLYBY.lock): the crew, at once
+            'no-bad': { clips: numbered('no-bad', 3), channel: 'crew', lead: 0.4, stale: 2 },
             bird: { clips: numbered('bird', 3), channel: 'net', aside: true, lead: 0.3, stale: 4 },
             // Holidays (HOLIDAY): the crew on the Fourth of July's fireworks and Halloween's pumpkins
             // (a kill now and then), and Christmas Eve's visitor on the net, then the crew
@@ -4429,6 +4431,8 @@ Ambient
                     get vlsLaunches() { return vlsLaunches; },
                     get smokePuffs() { return smokePuffs.length; },
                     get barrelSpeed() { return currentBarrelSpeed; },
+                    get mount() { return { yaw: turretYaw.rotation.y, pitch: turretPitch.rotation.x }; }, // radians
+                    get rounds() { return projectiles.length; }, // in flight
                     get simTime() { return elapsedTime; }, // sim seconds, what the FX run on
                     get fx() { return { ...fxCounts }; },
                     get stats() { return { score, health, wave, engagementStats }; },
@@ -8535,11 +8539,31 @@ Ambient
 
             target = bestTarget ? bestTarget.missile : null;
 
+            // The Seahawk close aboard (FLYBY.lock), while nothing's due: the mount tracks her
+            const helo = !bestTarget || bestTarget.eta > FLYBY.lock.clear
+                ? longRun.live.find(s => s.name === 'flyby' && s.near) : null;
+
             // 2. Turret Tracking
             let servoSpeed = 0;
             isFiring = false;
 
-            if (target) {
+            if (helo) {
+                if (!helo.scolded) {
+                    helo.scolded = true;
+                    AudioController.play('no-bad');
+                    // Zen mode stays on her till she's past
+                    const d = zen.director;
+                    if (zen.on && d.shot === 'sighting' && d.sighting === helo) d.left = Math.max(d.left, 2 * FLYBY.lock.range / FLYBY.speed + 1.5);
+                }
+                const sight = computeSightAngles(helo.mesh.position, getMuzzlePosition());
+                const yawTraverse = stepTraverseAxis(turretYaw.rotation.y, sight.targetYaw, turretYawRate, simSteps, true);
+                turretYaw.rotation.y = yawTraverse.angle;
+                turretYawRate = yawTraverse.rate;
+                const pitchTraverse = stepTraverseAxis(turretPitch.rotation.x, sight.targetPitch, turretPitchRate, simSteps);
+                turretPitch.rotation.x = pitchTraverse.angle;
+                turretPitchRate = pitchTraverse.rate;
+                servoSpeed = Math.abs(turretYawRate) + Math.abs(turretPitchRate);
+            } else if (target) {
                 const targetPos = (target.trackedPosition || target.mesh.position).clone();
                 const targetVelocity = (target.trackedVelocity || target.velocity).clone();
                 const muzzlePos = getMuzzlePosition();
@@ -9671,8 +9695,10 @@ Ambient
             return null;
         }
 
-        // A Seahawk from somewhere in the group, low down one side of us bow to stern
-        const FLYBY = { speed: 45, height: 22, offset: [26, 40], half: 700, seen: 420, sound: 4 };
+        // A Seahawk from somewhere in the group, low down one side of us bow to stern. Within
+        // lock.range m of abeam the mount takes an interest: it tracks her (without firing) while no
+        // threat is due within lock.clear s, and the crew scold it ('no-bad')
+        const FLYBY = { speed: 45, height: 22, offset: [26, 40], half: 700, seen: 420, sound: 4, lock: { range: 140, clear: 5 } };
 
         // A smooth body lofted through cross-sections, bow to stern (z falling): stations
         // [z, half-width, top, bottom, top squareness, bottom squareness] (superellipse exponents: 2
@@ -9946,6 +9972,7 @@ Ambient
                     s.rotor.rotation.y += 27 * dt;
                     s.tailRotor.rotation.x += 60 * dt;
                     const z = mesh.position.z;
+                    s.near = Math.abs(z) < F.lock.range;
                     if (-s.dir * z < F.seen && -s.dir * z > 0) sightingSeen(s, 'flyby');
                     if (!s.heard && -s.dir * z < F.speed * F.sound) {
                         s.heard = true;
@@ -9953,9 +9980,16 @@ Ambient
                     }
                     return s.dir * z < F.half;
                 },
+                // Once the mount's taken an interest (FLYBY.lock), a cut to over its far shoulder,
+                // looking out between it and her
                 frame(s, cam, look) {
-                    cam.set(s.side * 6, 11, 4);
-                    look.copy(mesh.position);
+                    if (s.scolded) {
+                        cam.set(-s.side * 8, MOUNT_Y + 4.5, s.dir * 5);
+                        look.lerpVectors(_sightB.set(0, MOUNT_Y + 3, 0), mesh.position, 0.3);
+                    } else {
+                        cam.set(s.side * 6, 11, 4);
+                        look.copy(mesh.position);
+                    }
                 }
             };
         }

@@ -57,7 +57,8 @@ time played and kept for the browser tab's session, so the reboot after a game o
   F-35, half a billion and the price of the ship.
 - A kill mark is stencilled on the back of the radome every 100 kills, and every ten become a gold
   star. Zen mode's camera visits them.
-- Now and then something turns up: a Seahawk flying past, dolphins, a seagull the radar sees, a
+- Now and then something turns up: a Seahawk flying past (the mount tracks her as she comes close
+  aboard, without firing, and the crew tell it off), dolphins, a seagull the radar sees, a
   sailboat that has wandered in, a whale, and (rarely) a rubber duck. Zen mode cuts to it.
 - Holidays: fireworks on the Fourth of July, pumpkins on Halloween and a visitor on Christmas Eve.
   Add `?date=07-04` (or `10-31`, `12-24`) to the URL to see one on another day.

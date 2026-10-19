@@ -319,6 +319,10 @@ LINES = {
         "Sea-whiz, Seahawk six-one, passing close aboard. Nice shooting down there.",
         "Combat, Seahawk six-one, overhead. That's some fine shooting, Sea-whiz.",
         "Seahawk six-one, low pass down your side. Keep it up down there, we'll stay out of your way."], "net", VOICE_PILOT),
+    **variants("no-bad", [
+        "[warning] No. [rising, drawn out] Noooo. [shouting] No! Bad!",
+        "[firmly] No. [pleading, drawn out] Noooo. [scolding] No! Bad!",
+        "[uneasy] No. [alarmed, drawn out] Noooo. [shouting] No! Bad!"], offset=5),
     **variants("bird", [
         "Combat, Sea-whiz: new track, close aboard, low and slow... Negative, disregard. That's a bird.",
         "Sea-whiz has a small contact, close in... Disregard, disregard. It's a seagull.",
