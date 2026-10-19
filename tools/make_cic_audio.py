@@ -14,8 +14,8 @@ The API key is read from the environment only; never put it in a file.
 
 `process` gives each take its character and writes the game's assets, and lists them in
 sounds/callouts.json (the game loads what it lists):
-  net  (CIC tactical net): band-limited 350-3200 Hz, driven and compressed, hiss bed, key-up click
-       and a squelch tail
+  net  (CIC tactical net): band-limited 350-3200 Hz, driven and compressed, hiss bed and key-up
+       click (no squelch tail)
   1mc  (shipboard announcing system): horn-speaker band, a metallic resonance and a slap echo
        down the passageways; "1mc-hurried" is the same chain on eleven_v3 takes directed to sound
        rushed (general quarters, damage control and rescue calls)
@@ -493,12 +493,6 @@ def net_chain(x, seed):
     click[int(0.01 * SR)] = 0.6
     click[int(0.01 * SR) + 1] = -0.45
     y += signal.sosfilt(sos("bandpass", [600, 5000], 1), click) * 3
-    # Squelch tail: a short burst of open-channel noise as the key is released
-    burst_at = lead + len(x) + int(0.03 * SR)
-    burst = np.zeros(n)
-    m = n - burst_at
-    burst[burst_at:] = rng_noise(m, seed + 1) * np.exp(-np.arange(m) / (0.05 * SR)) * np.clip(np.arange(m) / (0.004 * SR), 0, 1)
-    y += signal.sosfilt(sos("bandpass", [1200, 6500], 2), burst) * 0.55
     return y
 
 
