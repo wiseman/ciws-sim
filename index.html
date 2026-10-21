@@ -1817,7 +1817,10 @@
             // any of them. decodeAll: fetch, decode and keep the lot (offline renders)
             loadCallouts: async function (decodeAll = false) {
                 if (decodeAll) this.lazySeconds = Infinity;
-                this.listed = fetch('sounds/callouts.json')
+                // no-cache: check with the server each load (a 304 when unchanged), so a redeploy's
+                // clips are heard at once; the server sends no Cache-Control for them, and browsers
+                // otherwise reuse a copy for a while on a guess
+                this.listed = fetch('sounds/callouts.json', { cache: 'no-cache' })
                     .then(res => res.json())
                     .catch(err => {
                         console.info('CIC callout list unavailable', err.message);
@@ -1847,7 +1850,7 @@
                     try {
                         await this.listed;
                         if (!this.calloutNames.has(name)) throw new Error('not listed');
-                        const bytes = await (this.calloutBytes[name] ??= fetch(`sounds/${name}.mp3`).then(res => {
+                        const bytes = await (this.calloutBytes[name] ??= fetch(`sounds/${name}.mp3`, { cache: 'no-cache' }).then(res => {
                             if (!res.ok) throw new Error(res.status);
                             this.debugState.cic.fetched++;
                             return res.arrayBuffer();
