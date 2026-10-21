@@ -1,0 +1,148 @@
+# "Close-In" — the trailer's score. Render: uv run tools/score.py trailer/score.txt trailer/music.wav
+#
+# D minor, 128 bpm, 16 bars = 30 s. The cut is built on these bars (trailer/edit.txt):
+#    1-2  cold open: drone, sonar pings, a heartbeat        ("Vampire, vampire, vampire!")
+#    3-5  build: a hit as the gun opens up, taiko and string ostinato, Dm Bb C
+#    6-7  riser: strings up the octave, a snare roll, Gm A, then a beat of nothing
+#    8-10 the drop: braams, half-time drums, brass stabs, Dm Bb C
+#   11-13 the gag: a record scratch and silence            (the mount and the Seahawk)
+#   14    back in, harder: the title
+#   15-16 the last hit, ringing out under the end card     ("And there goes my tax refund.")
+
+tempo 128
+bars 16
+
+voice kick     kick     gain=0.85
+voice taiko    taiko    gain=0.75 verb=0.35 pitch=58
+voice taikohi  taiko    gain=0.4  verb=0.3  pitch=96 pan=0.3
+voice snare    snare    gain=0.5  verb=0.3
+voice roll     snare    gain=0.32 verb=0.25 decay=0.07 pan=-0.15
+voice hat      hat      gain=0.16 pan=0.3
+voice crash    crash    gain=0.38 verb=0.3
+voice rev      revcrash gain=0.4  verb=0.2
+voice boom     boom     gain=0.9  verb=0.15
+voice bass     bass     gain=0.4  cutoff=520 duck=0.55
+voice ost      strings  gain=0.3  verb=0.25 pan=-0.3 duck=0.35 cutoff=2600
+voice osthi    strings  gain=0.17 verb=0.35 pan=0.35 duck=0.35 cutoff=4200
+voice brass    brass    gain=0.34 verb=0.35 duck=0.25 cutoff=1700
+voice braam    braam    gain=0.62 verb=0.45
+voice pad      pad      gain=0.4  verb=0.45 cutoff=190 attack=1.2
+voice ping     ping     gain=0.24 verb=0.7  pan=0.15
+voice riser    riser    gain=0.32 verb=0.3
+voice scratch  scratch  gain=0.75
+voice whoosh   whoosh   gain=0.3  verb=0.2
+
+# ---- cold open (2 bars)
+pattern open
+  pad:   D1+A1+D2 -*31
+  ping:  A5 -*15 | A5 -*15
+  kick:  x.o. .... x.o. .... | x.o. .... x.o. ....
+  hat:   .... .... .... .... | o... o... o.o. o.oo
+  rev:   .... .... .... .... | .... .... .... X---
+
+# ---- hits
+pattern hit
+  boom:  X... .... .... ....
+  crash: X... .... .... ....
+  taiko: X... .... .... ....
+
+pattern bighit
+  boom:  X... .... .... ....
+  crash: X... .... .... ....
+  taiko: X... .... .... ....
+  taikohi: X... .... .... ....
+  kick:  X... .... .... ....
+
+# ---- the build's drums (a bar)
+pattern build
+  taiko:   X... ..x. X... x.x.
+  taikohi: .... x... ..o. x..o
+  kick:    X... .... X... ....
+  hat:     o.x. o.x. o.x. o.x.
+
+# ---- the ostinato and bass, one bar per chord (16ths)
+pattern dm
+  ost:   D3 D3 A3 D3 | D3 F3 D3 A3 | D3 D3 A3 D3 | E3 F3 E3 C3
+  bass:  D2 . D2 . | D2 . D2 D2 | D2 . D2 . | D2 . C2 .
+pattern bb
+  ost:   Bb2 Bb2 F3 Bb2 | Bb2 D3 Bb2 F3 | Bb2 Bb2 F3 Bb2 | C3 D3 C3 A2
+  bass:  Bb1 . Bb1 . | Bb1 . Bb1 Bb1 | Bb1 . Bb1 . | Bb1 . A1 .
+pattern c
+  ost:   C3 C3 G3 C3 | C3 E3 C3 G3 | C3 C3 G3 C3 | D3 E3 D3 B2
+  bass:  C2 . C2 . | C2 . C2 C2 | C2 . C2 . | C2 . D2 .
+pattern gm
+  ost:   G2 G2 D3 G2 | G2 Bb2 G2 D3 | G2 G2 D3 G2 | A2 Bb2 A2 F2
+  osthi: G3 G3 D4 G3 | G3 Bb3 G3 D4 | G3 G3 D4 G3 | A3 Bb3 A3 F3
+  bass:  G1 G1 G1 G1 | G1 G1 G1 G1 | G1 G1 G1 G1 | G1 G1 G1 G1
+pattern a
+  ost:   A2 A2 E3 A2 | A2 C#3 A2 E3 | A2 A2 E3 A2 | .  .  .  .
+  osthi: A3 A3 E4 A3 | A3 C#4 A3 E4 | A3 A3 E4 A3 | .  .  .  .
+  bass:  A1 A1 A1 A1 | A1 A1 A1 A1 | A1 A1 A1 A1 | .  .  .  .
+
+# ---- the riser's drums and swell (2 bars; it all stops for the last beat)
+pattern rise
+  roll:  x.x. x.x. x.x. x.x. | xxxx xxxx XXXX ....
+  taiko: X... .... X... .... | X... X... X.X. ....
+  kick:  X... .... X... .... | X... X... X.X. ....
+  brass: G2+D3+G3 -*15 | A2+E3+A3 -*11 . . . .
+  riser: X--- ---- ---- ---- | ---- ---- ---- ....
+
+# ---- the drop (a bar of drums, the chords on top)
+pattern drop
+  kick:    X... ..X. .... ..x.
+  snare:   .... .... X... ....
+  taiko:   X... x... X..x ..x.
+  taikohi: ..o. ..o. ..o. x.xx
+  hat:     x.o. x.o. x.o. x.oo
+pattern dropfill
+  kick:    X... ..X. .... ..x.
+  snare:   .... .... X... x.xx
+  taiko:   X... x... X..x xxxx
+  taikohi: ..o. ..o. xxxx XXXX
+  hat:     x.o. x.o. x.o. x.oo
+pattern stab_dm
+  braam: D1+D2+A2 -*7 . . . . . . . .
+  brass: D3+F3+A3! - . . | . . D3+F3+A3 - | . . . D3+F3+A3 | - . . .
+  bass:  D2! D2 D2 D2 | D2 D2 D2 D2 | D2 D2 D2 D2 | D2 D2 C2 C2
+pattern stab_bb
+  braam: Bb1+F2+Bb2 -*7 . . . . . . . .
+  brass: Bb2+D3+F3! - . . | . . Bb2+D3+F3 - | . . . Bb2+D3+F3 | - . . .
+  bass:  Bb1! Bb1 Bb1 Bb1 | Bb1 Bb1 Bb1 Bb1 | Bb1 Bb1 Bb1 Bb1 | Bb1 Bb1 A1 A1
+pattern stab_c
+  braam: C2+G2+C3 -*7 . . . . . . . .
+  brass: C3+E3+G3! - . . | . . C3+E3+G3 - | . . . C3+E3+G3 | - . . .
+  bass:  C2! C2 C2 C2 | C2 C2 C2 C2 | C2 C2 C2 C2 | D2 D2 E2 E2
+
+# ---- the gag: the needle comes off; a reversed swell leads back in
+pattern scratch
+  scratch: X... .... .... ....
+pattern backin
+  rev:   ..X-
+
+# ---- the title and the end
+pattern final
+  braam: D1+D2+A2 -*15
+  brass: D3+F3+A3+D4! -*15
+  boom:  X... .... .... ....
+  crash: X... .... .... ....
+  taiko: X... .... .... ....
+  taikohi: X... .... .... ....
+  kick:  X... .... .... ....
+
+song
+  1-2      open
+  3        hit dm build
+  4        bb build
+  5        c build
+  6-7      rise
+  6        gm
+  7        a
+  8        bighit dm drop stab_dm
+  9        bb drop stab_bb
+  10       c dropfill stab_c
+  11       cut
+  11       scratch
+  14       cut
+  13.4     backin
+  14       bighit dm drop stab_dm
+  15       final
