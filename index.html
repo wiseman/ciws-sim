@@ -567,6 +567,10 @@
                 <span>ZEN</span>
                 <span id="zen-status">OFF</span>
             </div>
+            <div id="vr-toggle" class="toggle-btn" onclick="toggleVR()" style="display: none" title="Stand on deck in a headset">
+                <span>VR</span>
+                <span id="vr-status">OFF</span>
+            </div>
         </div>
 
         <div id="audio-debug" class="panel">
@@ -843,6 +847,28 @@
             net: { ...RADIO, line: 'net', stale: 3 },
             '1mc': { ...RADIO, line: 'pa', stale: 8 },
             crew: { line: 'crew', level: 1, duck: 0.75, gap: 0.3, stale: 3 }
+        };
+        // Where the voices come from in VR, around the station on the 01 level (XR_STATION, to
+        // starboard of the mount): the CIC net from a squawk box on the bridge front behind us, the
+        // 1MC (and its alarms) from a loudspeaker on the bridge front under the windows, and each of
+        // the crew (CREW in tools/make_cic_audio.py, by sounds/speakers.json) standing about us.
+        // refDistance: how near before a voice is at full level
+        const VOICE_POSITIONS = {
+            net: new THREE.Vector3(3.2, MOUNT_Y + 1.6, 9.4),
+            '1mc': new THREE.Vector3(-1, MOUNT_Y + 2.8, 9.7),
+            crew: [[5.2, 5.5], [2.2, 4.8], [5.3, 1.5], [3.0, 6.8], [4.9, -0.8], [1.2, 7.2], [5.1, 8.0], [-1.5, 7.5]]
+                .map(([x, z]) => new THREE.Vector3(x, MOUNT_Y + 1.55, z)),
+            refDistance: { net: 6, '1mc': 8, crew: 4 }
+        };
+        // VR: what makes a blast felt. A big one adds a centred thump (low frequencies carry and
+        // don't seem to come from anywhere), at thumpGain within thumpRef units and falling off beyond.
+        // Within `range` its pressure wave, `onset` s after the sound arrives, muffles everything
+        // (down to minHz, and `duck` quieter, at full strength), holds, and recovers over `recover`
+        // (a time constant), under a ringing in the ears (ring, at ringHz) that fades over ringFade.
+        // shakeScale: the view's jitter against the screen camera's (makeShake), arriving with the sound
+        const BLAST_FEEL = {
+            thumpGain: 1.4, thumpRef: 60, range: 140, onset: 0.12, minHz: 450, duck: 0.5, hold: 0.25, recover: 0.6,
+            ring: 0.03, ringHz: 3900, ringFade: 2.5, shakeScale: 0.15
         };
         // Seconds of lazily decoded callouts kept; past that the least recently used are dropped
         // (and decoded again if they're needed). ~190 KB of PCM per second at 48 kHz.
@@ -1185,8 +1211,15 @@
                 safety.connect(ctx.destination);
                 this.output = safety; // tap point for recording
 
+                // Everything but the ringing ears passes through a muffle stage that a close blast
+                // closes down for a moment (concuss)
+                this.earFilter = this.filter('lowpass', 20000);
+                this.earGain = this.gain(1);
+                this.earFilter.connect(this.earGain);
+                this.earGain.connect(this.masterGain);
+
                 this.mixBus = this.gain(1);
-                this.mixBus.connect(this.masterGain);
+                this.mixBus.connect(this.earFilter);
 
                 // Outdoor "space": a few early reflections off the ship plus a short sparse tail.
                 // Sends arrive through a stereo panner; each input channel convolves with its own
@@ -1317,9 +1350,11 @@
             _segClosest: new THREE.Vector3(),
             _seg: new THREE.Vector3(),
 
-            // Camera orientation used by every spatializer this frame
+            // Camera orientation used by every spatializer this frame. In VR, the station's facing
+            // instead of the head's: visionOS plays Safari's output from a fixed place in the room and
+            // tracks the head itself, so cues that turned with the head too would be turned twice.
             refreshListener: function () {
-                this._invCam.copy(camera.quaternion).invert();
+                this._invCam.copy(xrView.on ? xrView.facing : camera.quaternion).invert();
             },
 
             // Direction and distance cues for a source at `position`, under the current profile.
@@ -1516,6 +1551,20 @@
                             + rumbleLP(brown()) * 2.2 * (0.3 + 0.7 * wander()) * Math.min(1, t / 0.08) * Math.exp(-t / 1.1)
                             + crackleBP(crackle) * 0.8
                         );
+                    }
+                }));
+
+                // A blast's pressure thump in VR (BLAST_FEEL): a falling low sine and a burst of low noise
+                B.thump = variants(2, () => this.makeStereoBufferFrom(1.2, (d, sr) => {
+                    const bodyLP = DSP.biquad('lowpass', 220, 0.8, sr);
+                    let phase = 0;
+                    for (let i = 0; i < d.length; i++) {
+                        const t = i / sr;
+                        const attack = Math.min(1, t / 0.003);
+                        const f = 42 + 78 * Math.exp(-t / 0.06);
+                        phase += 2 * Math.PI * f / sr;
+                        d[i] = Math.tanh(1.6 * attack * (Math.sin(phase) * Math.exp(-t / 0.22)
+                            + bodyLP(Math.random() * 2 - 1) * 2.5 * Math.exp(-t / 0.09)));
                     }
                 }));
 
@@ -1776,11 +1825,13 @@
             },
 
             // Inside the ship: the alarms, the CIC net and the 1MC, and the crew around us. Not
-            // positioned, and it skips the mix bus so ducking the battle under a voice leaves the
-            // voice alone.
+            // positioned (except in VR: voiceOut), and it skips the mix bus so ducking the battle
+            // under a voice leaves the voice alone.
             buildCIC: function () {
                 this.cicBus = this.gain(0.8);
-                this.cicBus.connect(this.masterGain);
+                this.cicBus.connect(this.earFilter);
+                this.speakers = {};        // VR: where voices come from -> its spatializer (voiceOut)
+                this.speakerOf = {};       // crew line -> which of the crew says it (sounds/speakers.json)
                 this.callouts = {};        // name -> decoded clip (null: unavailable)
                 this.calloutNames = new Set(); // the clips sounds/callouts.json lists (loadCallouts)
                 this.calloutBytes = {};    // name -> promise of its compressed bytes, once fetched (getCallout)
@@ -1827,6 +1878,10 @@
                         return [];
                     })
                     .then(names => { this.calloutNames = new Set(names); });
+                fetch('sounds/speakers.json', { cache: 'no-cache' })
+                    .then(res => res.json())
+                    .then(speakers => { this.speakerOf = speakers; })
+                    .catch(() => { /* the crew all stand in one place */ });
                 await this.listed;
                 const names = [...this.calloutNames].filter(name => decodeAll || URGENT_CALLOUTS.has(name));
                 await Promise.all(names.map(name => this.getCallout(name)));
@@ -1907,11 +1962,27 @@
             speak: function (name, buffer, when, channel) {
                 const mix = VOICE[channel];
                 this.spokenAt[name] = when;
-                const { end } = this.playBuffer(buffer, when, mix.level, this.cicBus);
+                const { end } = this.playBuffer(buffer, when, mix.level, this.voiceOut(channel, name));
                 this.duckFor(when, end, mix.duck);
                 this.busy[mix.line] = Math.max(this.busy[mix.line], end);
                 this.debugState.cic.last = name;
                 return end;
+            },
+
+            // Where a voice on `channel` (a VOICE key; for the crew, saying clip `name`) goes: the CIC
+            // bus, or in VR a spatializer at where it comes from (VOICE_POSITIONS), built on first use
+            voiceOut: function (channel, name) {
+                if (!xrView.on) return this.cicBus;
+                const crew = channel === 'crew', i = (this.speakerOf[name] ?? 0) % VOICE_POSITIONS.crew.length;
+                const key = crew ? `crew-${i}` : channel;
+                let sp = this.speakers[key];
+                if (!sp) {
+                    sp = this.speakers[key] = this.makeSpatializer(VOICE_POSITIONS.refDistance[crew ? 'crew' : channel]);
+                    sp.position = crew ? VOICE_POSITIONS.crew[i] : VOICE_POSITIONS[channel];
+                    sp.output.connect(this.cicBus);
+                    this.updateSpatializer(sp, sp.position, 0);
+                }
+                return sp.input;
             },
 
             // True if bucket `name`'s cooldown has run out at time t
@@ -2049,7 +2120,7 @@
                 const called = CALLED_BEARINGS[Math.round(bearing / 30) % 12]; // as the callouts say it
                 if (this.play('vampire', { bearing: called }, t, ring ? alarm.lead : undefined) === null || !ring) return;
                 this.alarmAt = t;
-                const bell = this.playBuffer(this.buffers.alarm, t, 0.32, this.cicBus);
+                const bell = this.playBuffer(this.buffers.alarm, t, 0.32, this.voiceOut('1mc'));
                 // The alarm keeps ringing under the voice, quieter
                 bell.g.gain.setTargetAtTime(0.12, t + alarm.lead - 0.05, 0.08);
             },
@@ -2151,7 +2222,7 @@
                 if (!this.isInit || this.isMuted) return 0;
                 const now = this.ctx.currentTime, alarmAt = Math.max(now, this.bucketState.vampire.voice[1]);
                 const call = routine && this.play('missile-launch', {}, alarmAt);
-                const alarm = this.playBuffer(this.buffers.launchAlarm, call ? call + LAUNCH_ALARM.lead : alarmAt, 0.22, this.cicBus);
+                const alarm = this.playBuffer(this.buffers.launchAlarm, call ? call + LAUNCH_ALARM.lead : alarmAt, 0.22, this.voiceOut('1mc'));
                 const fires = alarm.end + VLS_HATCH_LEAD / timeScale;
                 this.holdRadio(this.ready('birds-away', fires) ? fires + 2 : alarm.end);
                 return alarm.end - now;
@@ -2347,10 +2418,36 @@
                     if (water) {
                         this.playAt(pick(B.splash), position, { gain: 1.0, refDistance: 30, rate: vary(), wet: 0.2, delay: delay + 0.05, spread: 0.38 });
                     }
+                    if (xrView.on) this.blast(distance, this.ctx.currentTime + delay);
                 }
                 this.debugState.explosions.lastKind = kind;
                 this.debugState.explosions.lastDistance = distance;
                 this.soundArrivals.push(this.ctx.currentTime + delay);
+            },
+
+            // VR: a big blast `distance` away whose sound arrives at audio-clock time `at`: its thump,
+            // and if it's close, for a moment everything muffled and quieter under ringing ears
+            blast: function (distance, at) {
+                const F = BLAST_FEEL;
+                const thump = this.playBuffer(pick(this.buffers.thump), at, F.thumpGain * Math.pow(F.thumpRef / Math.max(F.thumpRef, distance), 1.5), this.mixBus);
+                thump.src.playbackRate.value = 0.9 + Math.random() * 0.2;
+                const strength = Math.pow(Math.max(0, 1 - distance / F.range), 1.5);
+                if (strength <= 0) return;
+                const t = at + F.onset, cutoff = 20000 * Math.pow(F.minHz / 20000, strength);
+                for (const [param, low] of [[this.earFilter.frequency, cutoff], [this.earGain.gain, 1 - F.duck * strength]]) {
+                    param.cancelScheduledValues(t);
+                    param.setTargetAtTime(low, t, 0.015);
+                    param.setTargetAtTime(param === this.earGain.gain ? 1 : 20000, t + F.hold, F.recover * (1 + strength));
+                }
+                const ring = this.ctx.createOscillator(), g = this.gain(0);
+                ring.frequency.value = F.ringHz * (0.95 + Math.random() * 0.1);
+                ring.connect(g);
+                g.connect(this.masterGain);
+                g.gain.setTargetAtTime(F.ring * strength, t, 0.05);
+                g.gain.setTargetAtTime(0, t + 0.3, F.ringFade / 3);
+                ring.start(t);
+                ring.stop(t + 0.3 + F.ringFade * 1.5);
+                ring.onended = () => { ring.disconnect(); g.disconnect(); };
             },
 
             // Called for every round fired. Shots are re-timed onto the audio clock so frame
@@ -2580,6 +2677,7 @@
                 this.refreshListener();
                 if (barrels) this.updateSpatializer(this.gunSpatial, getMuzzlePosition(this._muzzle), 0.02);
                 this.updateSpatializer(this.mountSpatial, MOUNT_AUDIO_POSITION, 0.02);
+                if (xrView.on) for (const sp of Object.values(this.speakers)) this.updateSpatializer(sp, sp.position);
                 this.updateThreats(missileList);
                 this.updateNearMisses();
                 this.updateAmbient();
@@ -3483,6 +3581,7 @@ Ambient
         });
 
         function updateOutlineThickness() {
+            if (xrView.on) return; // the ink keeps the width it had on screen, as an angle
             setOutlineScale(camera.fov, window.innerHeight);
         }
 
@@ -4357,6 +4456,7 @@ Ambient
             renderer.shadowMap.type = THREE.PCFShadowMap;
             document.getElementById('canvas-container').appendChild(renderer.domElement);
             updateOutlineThickness();
+            initXR();
 
             // Controls
             controls = new OrbitControls(camera, renderer.domElement);
@@ -4534,7 +4634,7 @@ Ambient
             } catch (err) { /* no storage: start normally */ }
             if (zenOnLoad) setZenMode(true);
 
-            animate();
+            renderer.setAnimationLoop(animate); // not requestAnimationFrame: a headset's frames come through here
         }
 
         // Phalanx Block 1B, at about 1.9 units to the metre (hero scale). +z is the gun's forward
@@ -7202,6 +7302,7 @@ Ambient
         }
 
         function addShake(position, amount, range) {
+            if (xrView.on) xrView.blasts.push({ at: clock.elapsedTime + position.distanceTo(camera.position) / SPEED_OF_SOUND / timeScale, position: position.clone(), amount, range });
             viewShake.add(position, camera.position, amount, range);
             // In split screen the chase camera, often right by the blast, shakes on its own
             if (cameraMode === CAMERA_SPLIT) splitView.shake.add(position, splitView.chase.position, amount, range);
@@ -8751,7 +8852,7 @@ Ambient
         function setCameraMode(mode) {
             if (typeof mode === 'string') mode = CAMERA_MODES.indexOf(mode.toUpperCase());
             if (!CAMERA_MODES[mode]) throw new Error(`no camera mode ${mode}`);
-            if (mode === cameraMode) return;
+            if (mode === cameraMode || xrView.on) return; // in VR the headset has the camera
             // The orbit view comes back where it was left, not wherever the follow camera got to
             if (cameraMode === 0) {
                 orbitPose.position.copy(camera.position);
@@ -8827,6 +8928,7 @@ Ambient
         window.toggleMLPanel = toggleMLPanel;
         window.rebootSystem = rebootSystem;
         window.toggleZenMode = toggleZenMode;
+        window.toggleVR = toggleVR;
 
         // The missile camera holds for a moment on a kill it was following, watching the fireball
         // carry on along the threat's path, before it moves on. Sim seconds, so slow motion holds longer.
@@ -10449,7 +10551,8 @@ Ambient
         }
 
         function animate() {
-            requestAnimationFrame(animate);
+            // In VR, the head's pose this frame before anything reads the camera (the listener does)
+            if (xrView.on) renderer.xr.updateCamera(camera);
 
             // Revert shake from previous frame so logic/aiming is clean
             if (turretPitch) {
@@ -10468,10 +10571,10 @@ Ambient
             updateRadar();
             updateAudioDebugOverlay();
             updateMLPanel();
-            if (zen.on) updateZenDirector(realDt);
+            if (zen.on && !xrView.on) updateZenDirector(realDt);
             updateCameraFollow();
 
-            if (cameraMode === 0) {
+            if (cameraMode === 0 && !xrView.on) {
                 controls.update();
             }
 
@@ -10481,7 +10584,8 @@ Ambient
 
             waterMaterial.uniforms.time.value = clock.elapsedTime;
             skyDome.position.copy(camera.position);
-            const shake = viewShake.offset(_shakeOffset);
+            if (xrView.on) updateXRShake(realDt);
+            const shake = !xrView.on && viewShake.offset(_shakeOffset);
             if (shake) camera.position.add(shake);
             if (cameraMode === CAMERA_SPLIT) renderSplitView();
             else renderer.render(scene, camera);
@@ -10489,6 +10593,100 @@ Ambient
         }
 
         const _shakeOffset = new THREE.Vector3();
+
+        // --- VR (WebXR) ---
+        // Standing on the 01 level to starboard of the mount, just forward of the bridge, facing the
+        // gun. The headset has the camera: the camera modes, the zen director and view shake stand
+        // down, and the listener goes where the head does but keeps the station's facing (visionOS
+        // turns Safari's sound with the head itself). It plays as zen mode, an endless battle with no UI.
+        const XR_STATION = { position: new THREE.Vector3(4.5, MOUNT_Y, 3.5), facing: new THREE.Vector3(0, MOUNT_Y, -2) };
+        const XR_EYE_HEIGHT = 1.6; // above the deck, when the headset has no floor-level space
+        // blasts: shakes on their way at the speed of sound ({ at: clock time, position, amount,
+        // range }); station: the reference space for standing at XR_STATION, unshaken
+        // facing: the station's facing, which the listener keeps in VR (refreshListener)
+        const xrView = { on: false, eyeHeight: 0, saved: null, blasts: [], shake: makeShake(), station: null, shaking: false,
+            facing: new THREE.Quaternion() };
+
+        // The VR button shows if the browser can open an immersive session
+        function initXR() {
+            renderer.xr.enabled = true;
+            renderer.xr.addEventListener('sessionstart', onXRSessionStart);
+            renderer.xr.addEventListener('sessionend', onXRSessionEnd);
+            navigator.xr?.isSessionSupported('immersive-vr')
+                .then(ok => { if (ok) ui('vr-toggle').style.display = ''; })
+                .catch(() => { /* no VR */ });
+        }
+
+        async function toggleVR() {
+            const current = renderer.xr.getSession();
+            if (current) return current.end();
+            // The click is the gesture that lets the audio start; there's no AUDIO button in there
+            AudioController.init();
+            if (AudioController.isMuted) toggleMute();
+            const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+            let floor = true;
+            try { await session.requestReferenceSpace('local-floor'); } catch (err) { floor = false; }
+            renderer.xr.setReferenceSpaceType(floor ? 'local-floor' : 'local');
+            xrView.eyeHeight = floor ? 0 : XR_EYE_HEIGHT;
+            await renderer.xr.setSession(session);
+        }
+
+        function onXRSessionStart() {
+            xrView.saved = { fov: camera.fov, zen: zen.on };
+            if (!isGameOver) setZenMode(true);
+            setCameraMode(0);
+            xrView.saved.view = { position: camera.position.clone(), target: controls.target.clone() };
+            xrView.on = true;
+            controls.enabled = false;
+            ui('vr-toggle').classList.add('active');
+            setText(ui('vr-status'), 'ON');
+            // The station as an offset on the headset's space, so a pose in the new space is the
+            // head's pose on deck: the inverse of the station's own pose
+            const { position, facing } = XR_STATION;
+            const yaw = Math.atan2(position.x - facing.x, position.z - facing.z);
+            xrView.facing.setFromAxisAngle(_yAxis, yaw);
+            const station = new THREE.Matrix4().compose(
+                position.clone().setY(position.y + xrView.eyeHeight),
+                xrView.facing,
+                new THREE.Vector3(1, 1, 1)
+            ).invert();
+            const p = new THREE.Vector3(), q = new THREE.Quaternion();
+            station.decompose(p, q, new THREE.Vector3());
+            const base = renderer.xr.getReferenceSpace();
+            xrView.station = base.getOffsetReferenceSpace(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }));
+            renderer.xr.setReferenceSpace(xrView.station);
+            xrView.blasts.length = 0;
+            xrView.shake.value = 0;
+            xrView.shaking = false;
+        }
+
+        // Each frame in VR: the blasts whose shake has reached us, and the view jittered by it (as
+        // an offset on the station's space, so it moves the world, not the head; a frame late)
+        function updateXRShake(realDt) {
+            const now = clock.elapsedTime, shake = xrView.shake;
+            xrView.blasts = xrView.blasts.filter(b => b.at > now || (shake.add(b.position, camera.position, b.amount, b.range), false));
+            shake.decay(realDt);
+            const o = shake.offset(_shakeOffset, BLAST_FEEL.shakeScale);
+            if (!o && !xrView.shaking) return;
+            xrView.shaking = !!o;
+            renderer.xr.setReferenceSpace(o ? xrView.station.getOffsetReferenceSpace(new XRRigidTransform({ x: o.x, y: o.y, z: o.z })) : xrView.station);
+        }
+
+        // Out of zen mode if VR turned it on (back to the view before it), or else a fresh shot from
+        // the director; after a game over, the orbit view as it was
+        function onXRSessionEnd() {
+            const saved = xrView.saved;
+            xrView.on = false;
+            controls.enabled = true;
+            ui('vr-toggle').classList.remove('active');
+            setText(ui('vr-status'), 'OFF');
+            camera.fov = saved.fov;
+            camera.zoom = 1;
+            applyMainViewport();
+            if (zen.on && !saved.zen) setZenMode(false);
+            else if (zen.on) zenNextShot();
+            else setOrbitView(saved.view);
+        }
 
         function onWindowResize() {
             renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));

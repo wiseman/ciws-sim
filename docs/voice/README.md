@@ -61,6 +61,14 @@ none is heard over and over.
   decoded again from their kept bytes. A clip that's missing from `sounds/callouts.json` or fails to
   load silences that line. `makeOffline({ decodeAll: true })` fetches and decodes the lot.
 
+## In VR
+
+On screen the voices aren't positioned. In VR each comes from a place on deck (`VOICE_POSITIONS`,
+through `voiceOut`): the CIC net from a squawk box on the bridge front behind the station, the 1MC
+and its alarms from a loudspeaker higher on the bridge front, and each crew member from where they
+stand around the station. Which crew member says a line comes from `sounds/speakers.json` (an index
+into `CREW` in `make_cic_audio.py`), which `process` writes, or `speakers` on its own.
+
 ## Long runs
 
 `updateLongRun` (game code) drives the long-run lines from the real time played (`longRun.played`):

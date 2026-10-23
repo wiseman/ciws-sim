@@ -7,6 +7,7 @@
 Usage:
   ELEVENLABS_API_KEY=... uv run tools/make_cic_audio.py generate [line ...]   # TTS -> sounds/src/*.mp3
   uv run tools/make_cic_audio.py process                                    # sounds/src -> sounds/*.mp3
+  uv run tools/make_cic_audio.py speakers                                   # sounds/speakers.json only
 
 `generate` calls ElevenLabs text-to-speech for each line (all lines, or only the named ones) and
 keeps the raw takes in sounds/src/ so the radio processing can be re-tuned without regenerating.
@@ -21,6 +22,8 @@ sounds/callouts.json (the game loads what it lists):
        rushed (general quarters, damage control and rescue calls)
   dry  (crew right next to us): no radio, just trimmed and evened out; eleven_v3 takes, whose
        [bracketed] audio tags direct the delivery and aren't spoken
+`process` also writes sounds/speakers.json, which of the crew (an index into CREW) voices each crew
+line, so in VR each crew member's lines come from where they stand; `speakers` writes only that.
 Needs ffmpeg on PATH (decode and mp3 encode).
 """
 import json
@@ -595,6 +598,19 @@ def process():
     # The game loads the clips this lists (index.html, loadCallouts)
     (OUT / "callouts.json").write_text(json.dumps(names, indent=1) + "\n")
     print(f"wrote sounds/callouts.json  {len(names)} clips")
+    speakers()
+
+
+def speakers():
+    """sounds/speakers.json: line -> index into CREW, for every crew line (the dry chain; some net
+    lines are voiced by one of CREW too)"""
+    out = {}
+    for name, (_, chain, *voice) in LINES.items():
+        voice = voice[0] if voice else CHAINS[chain]["voice"]
+        if chain == "dry" and voice in CREW:
+            out[name] = CREW.index(voice)
+    (OUT / "speakers.json").write_text(json.dumps(out, indent=1) + "\n")
+    print(f"wrote sounds/speakers.json  {len(out)} lines")
 
 
 if __name__ == "__main__":
@@ -603,6 +619,8 @@ if __name__ == "__main__":
         generate(sys.argv[2:] or list(LINES))
     elif cmd == "process":
         process()
+    elif cmd == "speakers":
+        speakers()
     elif cmd == "list":
         for name, (text, *_) in LINES.items():
             print(f"{name:20s} {text}")

@@ -75,8 +75,9 @@ Chromium for screenshots, frame strips, audio captures, soak tests and the demo 
 To deploy to caprover:
 
 ```sh
-tar cf deploy.tar captain-definition index.html sounds/*.mp3 sounds/callouts.json
+tar cf deploy.tar captain-definition index.html sounds/*.mp3 sounds/callouts.json sounds/speakers.json
 ```
 
 Then upload the tar file to the caprover instance. The game needs `sounds/callouts.json` to find its
-voice clips; without it, it runs silently.
+voice clips; without it, it runs silently. `sounds/speakers.json` says which crew member speaks each
+line, so in VR each one's lines come from where they stand.

@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XR Audio Test</title>
+<style>
+    body { margin: 0; background: #1d2a30; color: #dfe8ea; font: 18px/1.5 -apple-system, system-ui, sans-serif; }
+    main { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+    h1 { font-size: 26px; margin: 0 0 8px; }
+    h2 { font-size: 20px; margin: 24px 0 8px; }
+    button { font: inherit; font-weight: 600; padding: 14px 22px; margin: 4px 6px 4px 0; border-radius: 12px; border: 2px solid #56676e;
+             background: #263238; color: #dfe8ea; }
+    button.primary { background: #9df2b5; color: #13221a; border-color: #9df2b5; }
+    button.picked { background: #79b8ff; color: #0b1a2b; border-color: #79b8ff; }
+    button:disabled { opacity: 0.4; }
+    #status { color: #ffb86b; min-height: 1.5em; }
+    .hidden { display: none; }
+    pre { white-space: pre-wrap; background: #263238; padding: 12px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<main>
+    <h1>XR audio test</h1>
+
+    <section id="nowplaying">
+        <h2>First: Safari's Spatial Audio setting</h2>
+        <p>Tap this to play a soft tone as ordinary media, so Safari counts as "Now Playing". Then open Control Center,
+            pinch and hold the volume control, and look for <b>Spatial Audio</b>. If it's there, choose <b>Off</b>.</p>
+        <button id="media">Play media tone</button>
+        <button id="media-stop">Stop it</button>
+        <h2>Which did you find?</h2>
+        <div data-q="setting">
+            <button>Set it to Off</button><button>Set it to Fixed</button><button>Not there</button>
+        </div>
+    </section>
+
+    <p id="progress"></p>
+
+    <section id="play">
+        <p>Tap the button. In VR, face the white marker straight ahead and listen. Then slowly turn your head left and
+            right while it plays. When you're done, press the Digital Crown to come back here and answer.</p>
+        <button id="go" class="primary">Play sound in VR</button>
+    </section>
+
+    <section id="ask" class="hidden">
+        <h2>Facing straight ahead, where did it come from?</h2>
+        <div data-q="where">
+            <button>Left</button><button>Right</button><button>Ahead</button><button>Behind</button>
+            <button>Inside my head</button><button>Can't tell</button>
+        </div>
+        <h2>When you turned your head, the sound…</h2>
+        <div data-q="turn">
+            <button>Stayed put in the room</button><button>Turned with my head</button><button>Can't tell</button>
+        </div>
+        <p><button id="next" class="primary" disabled>Next</button> <button id="again">Play it again</button></p>
+    </section>
+
+    <section id="done" class="hidden">
+        <h2>Done, thanks!</h2>
+        <p id="sent"></p>
+        <pre id="summary"></pre>
+    </section>
+
+    <p id="status"></p>
+</main>
+<script>
+    // Before the module, so a failure to load it still shows
+    const status = text => { document.getElementById('status').textContent = text; };
+    window.addEventListener('error', e => status('Error: ' + e.message));
+    window.addEventListener('unhandledrejection', e => status('Error: ' + (e.reason?.message || e.reason)));
+    if (!navigator.xr) status('No WebXR on this page');
+</script>
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// The trials, in this order; the page doesn't say which is which. at: where a panner puts the
+// sound (metres; you stand at the origin facing -z)
+const TRIALS = [
+    { id: 'stereo-left', kind: 'stereo', pan: -1 },           // the game's way: its own stereo, hard left
+    { id: 'panner-left', kind: 'panner', at: [-3, 1.6, 0] },  // Web Audio PannerNode (HRTF), 90° left
+    { id: 'panner-behind', kind: 'panner', at: [0, 1.6, 3] },
+    { id: 'mono', kind: 'mono' },                              // no panning at all
+    { id: 'stereo-right', kind: 'stereo', pan: 1 },
+    { id: 'panner-right', kind: 'panner', at: [3, 1.6, 0] }
+];
+const answers = [];
+let trial = 0, setting = null; // setting: what they found in Control Center
+
+const ui = id => document.getElementById(id);
+const show = (...ids) => ['play', 'ask', 'done'].forEach(id => ui(id).classList.toggle('hidden', !ids.includes(id)));
+const progress = () => { ui('progress').textContent = `Sound ${trial + 1} of ${TRIALS.length}`; };
+progress();
+
+// A quiet tone as an <audio> element with Media Session metadata: ordinary media, so visionOS may
+// list Safari as Now Playing and offer its Spatial Audio setting
+function toneWav() {
+    const sr = 22050, n = sr * 4, data = new DataView(new ArrayBuffer(44 + n * 2));
+    const text = (o, t) => [...t].forEach((c, i) => data.setUint8(o + i, c.charCodeAt(0)));
+    text(0, 'RIFF'); data.setUint32(4, 36 + n * 2, true); text(8, 'WAVEfmt ');
+    data.setUint32(16, 16, true); data.setUint16(20, 1, true); data.setUint16(22, 1, true);
+    data.setUint32(24, sr, true); data.setUint32(28, sr * 2, true); data.setUint16(32, 2, true); data.setUint16(34, 16, true);
+    text(36, 'data'); data.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) data.setInt16(44 + i * 2, Math.sin(2 * Math.PI * 220 * i / sr) * 2500, true);
+    return URL.createObjectURL(new Blob([data], { type: 'audio/wav' }));
+}
+const media = new Audio();
+media.loop = true;
+ui('media').onclick = () => {
+    media.src ||= toneWav();
+    media.play().catch(err => status('Media tone failed: ' + err.message));
+    if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: 'CIWS audio test', artist: 'ciws-sim' });
+};
+ui('media-stop').onclick = () => media.pause();
+
+// Answer buttons: one pick per question
+const picked = {};
+document.querySelectorAll('[data-q]').forEach(group => {
+    group.querySelectorAll('button').forEach(b => b.onclick = () => {
+        group.querySelectorAll('button').forEach(o => o.classList.toggle('picked', o === b));
+        if (group.dataset.q === 'setting') {
+            setting = b.textContent;
+            return;
+        }
+        picked[group.dataset.q] = b.textContent;
+        ui('next').disabled = !(picked.where && picked.turn);
+    });
+});
+
+let ctx = null, buffer = null, renderer = null, source = null;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x10181c);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 2));
+scene.add(new THREE.GridHelper(12, 12, 0x56676e, 0x2c3a40));
+const marker = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 2), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+marker.position.set(0, 1, -4);
+scene.add(marker);
+const camera = new THREE.PerspectiveCamera(70, 1, 0.1, 100);
+
+// Clicks over noise, six a second: broadband and easy to place. Loops seamlessly.
+function makeBuffer() {
+    const sr = ctx.sampleRate, b = ctx.createBuffer(1, sr, sr), d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) {
+        const beat = (i / sr * 6) % 1;
+        d[i] = (Math.random() * 2 - 1) * (0.2 + 0.8 * Math.exp(-beat * 25));
+    }
+    return b;
+}
+
+function startSound(t) {
+    source = ctx.createBufferSource();
+    source.buffer = buffer;
+    source.loop = true;
+    const g = ctx.createGain();
+    g.gain.value = 0.5;
+    source.connect(g);
+    if (t.kind === 'stereo') {
+        g.connect(new StereoPannerNode(ctx, { pan: t.pan })).connect(ctx.destination);
+    } else if (t.kind === 'panner') {
+        const p = new PannerNode(ctx, { panningModel: 'HRTF', distanceModel: 'inverse', refDistance: 3 });
+        const [x, y, z] = t.at;
+        if (p.positionX) { p.positionX.value = x; p.positionY.value = y; p.positionZ.value = z; } else p.setPosition(x, y, z);
+        g.connect(p).connect(ctx.destination);
+    } else {
+        g.connect(ctx.destination);
+    }
+    source.start();
+}
+
+function stopSound() {
+    source?.stop();
+    source = null;
+}
+
+// The listener follows the head (it matters only to the panner trials)
+const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _f = new THREE.Vector3(), _u = new THREE.Vector3();
+function frame() {
+    if (!renderer.xr.isPresenting) return;
+    renderer.xr.getCamera().matrixWorld.decompose(_p, _q, _s);
+    _f.set(0, 0, -1).applyQuaternion(_q);
+    _u.set(0, 1, 0).applyQuaternion(_q);
+    const L = ctx.listener;
+    if (L.positionX) {
+        L.positionX.value = _p.x; L.positionY.value = _p.y; L.positionZ.value = _p.z;
+        L.forwardX.value = _f.x; L.forwardY.value = _f.y; L.forwardZ.value = _f.z;
+        L.upX.value = _u.x; L.upY.value = _u.y; L.upZ.value = _u.z;
+    } else {
+        L.setPosition(_p.x, _p.y, _p.z);
+        L.setOrientation(_f.x, _f.y, _f.z, _u.x, _u.y, _u.z);
+    }
+    renderer.render(scene, camera);
+}
+
+// WebGL, or null with the reason shown (another tab, such as the game, may be holding the GPU)
+function makeRenderer() {
+    const probe = document.createElement('canvas').getContext('webgl2');
+    if (!probe || probe.isContextLost()) {
+        status('No WebGL on this page. Close the game\'s tab (and other 3D tabs) and reload.');
+        return null;
+    }
+    probe.getExtension('WEBGL_lose_context')?.loseContext();
+    const r = new THREE.WebGLRenderer({ antialias: true });
+    r.xr.enabled = true;
+    r.setAnimationLoop(frame);
+    return r;
+}
+
+async function playInVR() {
+    status('');
+    media.pause();
+    ui('nowplaying').classList.add('hidden');
+    renderer ??= makeRenderer();
+    if (!renderer) return;
+    ctx ??= new AudioContext();
+    ctx.resume(); // not awaited: the session has to be asked for in the tap itself
+    buffer ??= makeBuffer();
+    const session = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor'] });
+    let floor = true;
+    try { await session.requestReferenceSpace('local-floor'); } catch (err) { floor = false; }
+    renderer.xr.setReferenceSpaceType(floor ? 'local-floor' : 'local');
+    session.addEventListener('end', () => {
+        stopSound();
+        show('ask');
+    });
+    await renderer.xr.setSession(session);
+    if (ctx.state !== 'running') await ctx.resume(); // Safari can suspend it on entering VR
+    startSound(TRIALS[trial]);
+}
+
+ui('go').onclick = playInVR;
+ui('again').onclick = playInVR;
+
+ui('next').onclick = () => {
+    answers.push({ trial: TRIALS[trial].id, ...picked });
+    delete picked.where;
+    delete picked.turn;
+    document.querySelectorAll('.picked').forEach(b => b.classList.remove('picked'));
+    ui('next').disabled = true;
+    trial++;
+    if (trial < TRIALS.length) {
+        progress();
+        show('play');
+        return;
+    }
+    ui('progress').textContent = '';
+    show('done');
+    const report = { at: new Date().toISOString(), userAgent: navigator.userAgent, setting, answers };
+    ui('summary').textContent = answers.map((a, i) => `Sound ${i + 1}: ${a.where}; turning: ${a.turn}`).join('\n');
+    fetch('/xr-audio-results', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(report) })
+        .then(res => { ui('sent').textContent = res.ok ? 'Your answers were sent; nothing more to do.' : 'Couldn\'t send them; please read these out.'; })
+        .catch(() => { ui('sent').textContent = 'Couldn\'t send them; please read these out.'; });
+};
+</script>
+</body>
+</html>
