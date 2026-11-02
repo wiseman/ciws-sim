@@ -814,7 +814,8 @@
         const SPATIAL_MODES = Object.keys(SPATIAL_PROFILES);
         const GUN_SPATIAL_LIMITS = { maxPan: 0.2, cueScale: 0.25 };
         // The gun's level over a session: full for `start` s, then a linear ease to `floor` of it by `end` s
-        const GUN_FATIGUE = { start: 10, end: 120, floor: 0.5 };
+        // (0.3: from the mount the gun's stream is tiring, and at half it covered the explosions)
+        const GUN_FATIGUE = { start: 10, end: 120, floor: 0.3 };
         const MOUNT_AUDIO_POSITION = new THREE.Vector3(0, MOUNT_Y + 4, 0);
         const AUDIBLE_FLOOR = 0.006; // ≈ -44 dB: one-shot parts quieter than this aren't played
         const MAX_ONE_SHOTS = 32;    // concurrent one-shot sounds; more are dropped
@@ -868,7 +869,20 @@
         // shakeScale: the view's jitter against the screen camera's (makeShake), arriving with the sound
         const BLAST_FEEL = {
             thumpGain: 1.4, thumpRef: 60, range: 140, onset: 0.12, minHz: 450, duck: 0.5, hold: 0.25, recover: 0.6,
-            ring: 0.03, ringHz: 3900, ringFade: 2.5, shakeScale: 0.15
+            ring: 0.1, ringHz: 3900, ringFade: 2.5, shakeScale: 0.15
+        };
+        // Explosions as small speakers play them (laptops, phones, a headset's). 85% of a big blast's
+        // energy is under 120 Hz, and nearly all of the thump's, so each gets a body an octave or two
+        // up (addBlastBody): a falling whump (noise under a closing filter: a tone there sounds
+        // pitched), a fireball roar and a rolling debris rumble, in the amounts given, added at `mix`.
+        // Each built explosion is voiced `variations` ways, each part's level and the body's length
+        // and tone moved by up to `spread`'s factors, so repeats are hard to hear. Explosions are at
+        // full level within `reference` units, and the gun dips by up to gunDip dB as one arrives:
+        // from the mount the gun's stream otherwise covers all but the closest.
+        const BLAST_BODY = {
+            big: { whump: 1, roar: 1, rumble: 1, mix: 1 }, thump: { whump: 1, roar: 0.4, rumble: 0.2, mix: 0.8 },
+            variations: 4, spread: { whump: 1.4, roar: 1.6, rumble: 1.6, length: 1.25, tone: 1.2 },
+            reference: 80, gunDip: 9
         };
         // Seconds of lazily decoded callouts kept; past that the least recently used are dropped
         // (and decoded again if they're needed). ~190 KB of PCM per second at 48 kHz.
@@ -1079,6 +1093,20 @@
                     return out * 0.11;
                 };
             },
+            // A lowpass whose cutoff can move: (x, cutoff) => y, taking up a new cutoff every 32 samples
+            sweptLowpass(q, sr) {
+                let x1 = 0, x2 = 0, y1 = 0, y2 = 0, b0 = 0, a1 = 0, a2 = 0, n = 0;
+                return (x, freq) => {
+                    if (n-- <= 0) {
+                        n = 31;
+                        const w = 2 * Math.PI * freq / sr, cos = Math.cos(w), alpha = Math.sin(w) / (2 * q);
+                        b0 = (1 - cos) / 2 / (1 + alpha); a1 = -2 * cos / (1 + alpha); a2 = (1 - alpha) / (1 + alpha);
+                    }
+                    const y = b0 * (x + 2 * x1 + x2) - a1 * y1 - a2 * y2;
+                    x2 = x1; x1 = x; y2 = y1; y1 = y;
+                    return y;
+                };
+            },
             // Smoothed random envelope (values ~0..1) for rumbles and gusts
             wander(rate, sr) {
                 const lp = DSP.onePole(rate, sr);
@@ -1142,6 +1170,7 @@
             lastWhizzTime: 0,
             frameId: 0,
             soundArrivals: [], // audio-clock times when delayed explosion sounds reach the listener
+            gunDips: [],       // [arrival time, dB]: the gun dipping under each blast (BLAST_BODY.gunDip)
             debugState: {
                 gun: { firing: false, shots: 0 },
                 drive: { spin: 0, freq: 0 },
@@ -1158,7 +1187,7 @@
                 this.buildGraph(new AudioContext());
                 this.masterGain.gain.value = this.isMuted ? 0 : 1;
                 // The gun is tiring to hear nonstop: full level for the first few seconds of play, then
-                // easing down to half over the first couple of minutes, and holding there
+                // easing down over the first couple of minutes (GUN_FATIGUE), and holding there
                 const gun = this.gunBus.gain, t = this.ctx.currentTime, level = gun.value;
                 gun.setValueAtTime(level, t + GUN_FATIGUE.start);
                 gun.linearRampToValueAtTime(level * GUN_FATIGUE.floor, t + GUN_FATIGUE.end);
@@ -1168,6 +1197,8 @@
                 const buildRoar = () => this.buildVLSRoar();
                 if (window.requestIdleCallback) requestIdleCallback(buildRoar, { timeout: 5000 });
                 else setTimeout(buildRoar, 1000);
+                // Likewise the explosions' voicings, one at a time; until they're done the built ones play
+                this.voiceBlasts(voice => window.requestIdleCallback ? requestIdleCallback(voice, { timeout: 2000 }) : setTimeout(voice, 50));
                 console.log("Audio Initialized");
             },
 
@@ -1179,10 +1210,11 @@
                 const A = Object.create(this);
                 Object.assign(A, {
                     isMuted: false, isInit: true, spatialMode, slowPitch: 1, activeOneShots: 0,
-                    lastFlakTime: -Infinity, soundArrivals: [], threatVoices: new Map(), buffers: {},
+                    lastFlakTime: -Infinity, soundArrivals: [], gunDips: [], threatVoices: new Map(), buffers: {},
                     debugState: JSON.parse(JSON.stringify(this.debugState)), holdRadio() {}
                 });
                 A.buildGraph(ctx);
+                A.voiceBlasts();
                 A.buildVLSRoar();
                 await A.loadCallouts(decodeAll);
                 return A;
@@ -1496,6 +1528,63 @@
                 return buf;
             },
 
+            // `d` with a blast body (BLAST_BODY) added; peaks may pass 1, for the limiter. All of it is
+            // under 1.4 kHz, so it's rendered at a quarter of the rate and interpolated up.
+            addBlastBody: function (d, sr, { whump, roar, rumble, length, tone }, mix) {
+                const down = 4, rate = sr / down, body = new Float32Array(Math.ceil(d.length / down) + 1);
+                const q = Math.SQRT1_2;
+                const whumpHP = DSP.biquad('highpass', 90 * tone, q, rate), whumpLP = DSP.sweptLowpass(0.9, rate);
+                const roarHP = DSP.biquad('highpass', 300 * tone, q, rate), roarLP = DSP.biquad('lowpass', 1100 * tone, q, rate);
+                const rumbleHP = DSP.biquad('highpass', 120 * tone, q, rate), rumbleLP = DSP.biquad('lowpass', 320 * tone, q, rate);
+                const flicker = DSP.wander(9, rate), roll = DSP.wander(4, rate);
+                // White noise as loud per Hz as it is at the full rate
+                const noise = () => (Math.random() * 2 - 1) / Math.sqrt(down);
+                // Each decay, exp(-t / time), as a running product
+                const step = time => Math.exp(-1 / (time * length * rate));
+                const sweepStep = step(0.1), whumpStep = step(0.28), roarStep = step(0.45), rumbleStep = step(1.2);
+                let sweep = 1, w = mix * whump * 9.7, r = mix * roar * 3, b = mix * rumble * 3.5;
+                for (let j = 0; j < body.length; j++) {
+                    const t = j / rate;
+                    body[j] = whumpHP(whumpLP(noise(), (150 + 550 * sweep) * tone)) * w * Math.min(1, t / 0.006)
+                        + roarLP(roarHP(noise())) * r * Math.min(1, t / 0.015) * (0.6 + 0.4 * flicker())
+                        + rumbleLP(rumbleHP(noise())) * b * Math.min(1, t / 0.06) * (0.35 + 0.65 * roll());
+                    sweep *= sweepStep; w *= whumpStep; r *= roarStep; b *= rumbleStep;
+                }
+                const fade = Math.floor(sr * 0.1); // the rumble can outlast a short buffer
+                for (let i = 0; i < d.length; i++) {
+                    const j = Math.floor(i / down), u = (i % down) / down;
+                    d[i] += (body[j] + (body[j + 1] - body[j]) * u) * Math.min(1, (d.length - i) / fade);
+                }
+            },
+
+            // Swaps the built explosions for BLAST_BODY's voicings of them, `variations` of each, the
+            // body rendered independently into the mid and side. `later` runs each voicing in turn
+            // (the game spreads them over idle moments; by default they're all done now), and each
+            // kind is swapped in once all of its voicings are done.
+            voiceBlasts: function (later = voice => voice()) {
+                const B = this.buffers, V = BLAST_BODY, by = spread => Math.pow(spread, Math.random() * 2 - 1);
+                for (const name of ['big', 'thump']) {
+                    const p = V[name], s = V.spread, built = B[name], voiced = [];
+                    const voice = () => {
+                        const source = built[Math.floor(voiced.length / V.variations)];
+                        const body = {
+                            whump: p.whump * by(s.whump), roar: p.roar * by(s.roar), rumble: p.rumble * by(s.rumble),
+                            length: by(s.length), tone: by(s.tone)
+                        };
+                        const buf = this.ctx.createBuffer(2, source.length, source.sampleRate);
+                        for (let c = 0; c < 2; c++) {
+                            const d = buf.getChannelData(c);
+                            d.set(source.getChannelData(c));
+                            this.addBlastBody(d, source.sampleRate, body, p.mix);
+                        }
+                        voiced.push(buf);
+                        if (voiced.length < built.length * V.variations) later(voice);
+                        else B[name] = voiced;
+                    };
+                    later(voice);
+                }
+            },
+
             buildBuffers: function () {
                 const B = this.buffers;
                 const variants = (n, f) => Array.from({ length: n }, (_, i) => f(i));
@@ -1725,8 +1814,11 @@
                 // The gun (and the mount below) only lean toward their side: in the PHALANX follow
                 // camera the gun sits right beside the listener and full panning puts it in one ear
                 this.gunSpatial = this.makeSpatializer(14, GUN_SPATIAL_LIMITS);
+                // Then the dip under each arriving blast (gunDips), so the gun doesn't cover it
+                this.gunDip = this.gain(1);
+                this.gunBus.connect(this.gunDip);
                 const split = ctx.createChannelSplitter(2);
-                this.gunBus.connect(split);
+                this.gunDip.connect(split);
                 split.connect(shaper, 0);
                 shaper.connect(this.gunSpatial.input);
                 this.gunSpatial.output.connect(this.mixBus);
@@ -2320,6 +2412,7 @@
                 }
                 this.debugState.gun.firing = false;
                 this.soundArrivals.length = 0;
+                this.gunDips.length = 0;
                 if (this.paQueue) this.paQueue.length = 0;
             },
 
@@ -2410,11 +2503,13 @@
                 } else if (kind === 'hit') {
                     this.playAt(pick(B.hit), position, { gain: 0.6, refDistance: 18, rate: vary(), wet: 0.15, delay, spread: 0.18 });
                 } else {
-                    const big = kind === 'airburst';
+                    const big = kind === 'airburst', gain = (big ? 1.5 : 2.0) * (0.8 + Math.random() * 0.32);
+                    const { reference, gunDip } = BLAST_BODY;
                     this.playAt(pick(B.big), position, {
-                        gain: big ? 1.5 : 2.0, refDistance: big ? 40 : 45, rate: big ? vary() : vary() * 0.85, wet: 0.35, delay,
-                        spread: 0.42
+                        gain, refDistance: reference, rate: big ? vary() : vary() * 0.85, wet: 0.35, delay, spread: 0.42
                     });
+                    const heard = gain * this.spatialCues(position, reference).distanceGain;
+                    this.gunDips.push([this.ctx.currentTime + delay, gunDip * Math.min(1, heard / 0.5)]);
                     if (water) {
                         this.playAt(pick(B.splash), position, { gain: 1.0, refDistance: 30, rate: vary(), wet: 0.2, delay: delay + 0.05, spread: 0.38 });
                     }
@@ -2429,7 +2524,8 @@
             // and if it's close, for a moment everything muffled and quieter under ringing ears
             blast: function (distance, at) {
                 const F = BLAST_FEEL;
-                const thump = this.playBuffer(pick(this.buffers.thump), at, F.thumpGain * Math.pow(F.thumpRef / Math.max(F.thumpRef, distance), 1.5), this.mixBus);
+                const level = F.thumpGain * (0.85 + Math.random() * 0.25) * Math.pow(F.thumpRef / Math.max(F.thumpRef, distance), 1.5);
+                const thump = this.playBuffer(pick(this.buffers.thump), at, level, this.mixBus);
                 thump.src.playbackRate.value = 0.9 + Math.random() * 0.2;
                 const strength = Math.pow(Math.max(0, 1 - distance / F.range), 1.5);
                 if (strength <= 0) return;
@@ -2687,6 +2783,16 @@
             update: function (barrelSpeed, servoSpeed) {
                 if (!this.isInit) return;
                 this.scheduleGun();
+
+                // The gun's dip under each blast: down just before it arrives, held, then back over about a second
+                const now = this.ctx.currentTime;
+                const dips = this.gunDips;
+                for (let i = dips.length - 1; i >= 0; i--) if (now - dips[i][0] > 2) dips.splice(i, 1);
+                const dip = dips.reduce((dB, [at, depth]) => {
+                    const t = now - at + 0.03;
+                    return t < 0 ? dB : Math.max(dB, depth * (t < 0.15 ? 1 : Math.exp(-(t - 0.15) / 0.35)));
+                }, 0);
+                this.setParam(this.gunDip.gain, Math.pow(10, -dip / 20), 0.01);
 
                 // Barrel drive whine follows the spin of the cluster
                 const driveFreq = (160 + barrelSpeed * 620) * this.slowPitch;
