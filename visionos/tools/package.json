@@ -1,0 +1,10 @@
+{
+  "name": "ciws-native-asset-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "export": "node export_visual_assets.mjs && node export_shaders.mjs && node export_audio.mjs",
+    "check": "node export_visual_assets.mjs --check && node export_shaders.mjs --check && node export_audio.mjs --check"
+  },
+  "dependencies": { "@napi-rs/canvas": "1.0.13" }
+}

@@ -1,0 +1,5450 @@
+#usda 1.0
+(defaultPrim = "Shaders")
+def Xform "Shaders" {
+def Material "Toon" {
+color3f inputs:baseColor = (1,1,1)
+float2 inputs:uvRepeat = (1,1)
+float2 inputs:uvOffset = (0,0)
+asset inputs:image = @web-white.png@
+float3 inputs:sunDirection = (-0.354,0.798,0.488)
+color3f inputs:emissive = (0,0,0)
+float inputs:distanceScale = 1
+float inputs:opacity = 1
+ token outputs:mtlx:surface.connect = </Shaders/Toon/n35.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Toon/n0.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Toon.inputs:uvRepeat>
+ float2 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Toon/n1.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Toon.inputs:uvOffset>
+ float2 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_image_color4"
+ asset inputs:file.connect = </Shaders/Toon.inputs:image>
+ float2 inputs:texcoord.connect = </Shaders/Toon/n2.outputs:out>
+ color4f outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_convert_color4_color3"
+ color4f inputs:in.connect = </Shaders/Toon/n3.outputs:out>
+ color3f outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_color3"
+ color3f inputs:in1.connect = </Shaders/Toon.inputs:baseColor>
+ color3f inputs:in2.connect = </Shaders/Toon/n4.outputs:out>
+ color3f outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_normal_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_dotproduct_vector3"
+ float3 inputs:in1.connect = </Shaders/Toon/n6.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Toon.inputs:sunDirection>
+ float outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Toon/n7.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Toon/n8.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Toon/n9.outputs:out>
+ float inputs:value2 = 0.3333333333333333
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Toon/n10.outputs:out>
+ float inputs:in2 = 0.3137254901960784
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Toon/n9.outputs:out>
+ float inputs:value2 = 0.6666666666666666
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Toon/n12.outputs:out>
+ float inputs:in2 = 0.27450980392156865
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Toon/n11.outputs:out>
+ float inputs:in2.connect = </Shaders/Toon/n13.outputs:out>
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.4117647058823529
+ float inputs:in2.connect = </Shaders/Toon/n14.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_extract_vector3"
+ float3 inputs:in.connect = </Shaders/Toon/n6.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Toon/n16.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Toon/n17.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.158960835050774,0.26225065751888765,0.31854677811435356)
+ color3f inputs:fg = (0.775822218312646,0.8796223968851662,0.9559733532482866)
+ float inputs:mix.connect = </Shaders/Toon/n18.outputs:out>
+ color3f outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_multiply_color3FA"
+ color3f inputs:in1 = (2.6,2.4405828939869094,2.1808774305167753)
+ float inputs:in2.connect = </Shaders/Toon/n15.outputs:out>
+ color3f outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_multiply_color3FA"
+ color3f inputs:in1.connect = </Shaders/Toon/n19.outputs:out>
+ float inputs:in2 = 1.5
+ color3f outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_add_color3"
+ color3f inputs:in1.connect = </Shaders/Toon/n20.outputs:out>
+ color3f inputs:in2.connect = </Shaders/Toon/n21.outputs:out>
+ color3f outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_multiply_color3FA"
+ color3f inputs:in1.connect = </Shaders/Toon/n22.outputs:out>
+ float inputs:in2 = 0.3183098861837907
+ color3f outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_multiply_color3"
+ color3f inputs:in1.connect = </Shaders/Toon/n5.outputs:out>
+ color3f inputs:in2.connect = </Shaders/Toon/n23.outputs:out>
+ color3f outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_add_color3"
+ color3f inputs:in1.connect = </Shaders/Toon/n24.outputs:out>
+ color3f inputs:in2.connect = </Shaders/Toon.inputs:emissive>
+ color3f outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Toon/n27.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Toon/n26.outputs:out>
+ float3 outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/Toon/n28.outputs:out>
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Toon/n29.outputs:out>
+ float inputs:in2.connect = </Shaders/Toon.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Toon/n30.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Toon/n25.outputs:out>
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/Toon/n31.outputs:out>
+ color3f outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_extract_color4"
+ color4f inputs:in.connect = </Shaders/Toon/n3.outputs:out>
+ int inputs:index = 3
+ float outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Toon/n33.outputs:out>
+ float inputs:in2.connect = </Shaders/Toon.inputs:opacity>
+ float outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Toon/n32.outputs:out>
+ float inputs:opacity.connect = </Shaders/Toon/n34.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Basic" {
+color3f inputs:baseColor = (1,1,1)
+float2 inputs:uvRepeat = (1,1)
+float2 inputs:uvOffset = (0,0)
+asset inputs:image = @web-white.png@
+float inputs:distanceScale = 1
+float inputs:opacity = 1
+ token outputs:mtlx:surface.connect = </Shaders/Basic/n15.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Basic/n0.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Basic.inputs:uvRepeat>
+ float2 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Basic/n1.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Basic.inputs:uvOffset>
+ float2 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_image_color4"
+ asset inputs:file.connect = </Shaders/Basic.inputs:image>
+ float2 inputs:texcoord.connect = </Shaders/Basic/n2.outputs:out>
+ color4f outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_convert_color4_color3"
+ color4f inputs:in.connect = </Shaders/Basic/n3.outputs:out>
+ color3f outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_color3"
+ color3f inputs:in1.connect = </Shaders/Basic.inputs:baseColor>
+ color3f inputs:in2.connect = </Shaders/Basic/n4.outputs:out>
+ color3f outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Basic/n7.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Basic/n6.outputs:out>
+ float3 outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/Basic/n8.outputs:out>
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Basic/n9.outputs:out>
+ float inputs:in2.connect = </Shaders/Basic.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Basic/n10.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Basic/n5.outputs:out>
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/Basic/n11.outputs:out>
+ color3f outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_extract_color4"
+ color4f inputs:in.connect = </Shaders/Basic/n3.outputs:out>
+ int inputs:index = 3
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Basic/n13.outputs:out>
+ float inputs:in2.connect = </Shaders/Basic.inputs:opacity>
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Basic/n12.outputs:out>
+ float inputs:opacity.connect = </Shaders/Basic/n14.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Sky" {
+
+ token outputs:mtlx:surface.connect = </Shaders/Sky/n6.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "object"
+ float3 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/Sky/n0.outputs:out>
+ float3 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_extract_vector3"
+ float3 inputs:in.connect = </Shaders/Sky/n1.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Sky/n2.outputs:out>
+ float inputs:low = 0
+ float inputs:high = 0.5
+ float outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_power_float"
+ float inputs:in1.connect = </Shaders/Sky/n3.outputs:out>
+ float inputs:in2 = 0.8
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ color3f inputs:fg = (0.34670405634441115,0.5972017883558645,0.7912979403281551)
+ float inputs:mix.connect = </Shaders/Sky/n4.outputs:out>
+ color3f outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Sky/n5.outputs:out>
+ float inputs:opacity = 1
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Ocean" {
+float inputs:time = 0
+float inputs:distanceScale = 1
+ token outputs:mtlx:surface.connect = </Shaders/Ocean/n291.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "object"
+ float3 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_extract_vector3"
+ float3 inputs:in.connect = </Shaders/Ocean/n0.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_extract_vector3"
+ float3 inputs:in.connect = </Shaders/Ocean/n0.outputs:out>
+ int inputs:index = 2
+ float outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n1.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n2.outputs:out>
+ float2 outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n3.outputs:out>
+ float inputs:in2 = 0.045
+ float2 outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1 = (0.05,0.015)
+ float inputs:in2.connect = </Shaders/Ocean.inputs:time>
+ float2 outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n4.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n5.outputs:out>
+ float2 outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n6.outputs:out>
+ float2 outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n6.outputs:out>
+ float2 outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n6.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n8.outputs:out>
+ float2 outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n9.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n9.outputs:out>
+ float2 outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n9.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Ocean/n11.outputs:out>
+ float2 outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n10.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n12.outputs:out>
+ float2 outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n7.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n14.outputs:out>
+ float2 outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n14.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n15.outputs:out>
+ float2 outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n16.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n16.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n17.outputs:out>
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n18.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n18.outputs:out>
+ float2 outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n16.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n19.outputs:out>
+ float2 outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n20.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n20.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n21.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n22.outputs:out>
+ float outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n23.outputs:out>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n23.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n24.outputs:out>
+ float outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n7.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n26.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n27.outputs:out>
+ float2 outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n27.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n28.outputs:out>
+ float2 outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n29.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n29.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n30.outputs:out>
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n31.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n31.outputs:out>
+ float2 outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n29.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n32.outputs:out>
+ float2 outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n33.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n33.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n36" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n34.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n35.outputs:out>
+ float outputs:out
+}
+def Shader "n37" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n36.outputs:out>
+ float outputs:out
+}
+def Shader "n38" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n36.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n37.outputs:out>
+ float outputs:out
+}
+def Shader "n39" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n13.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n40" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n25.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n38.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n39.outputs:out>
+ float outputs:out
+}
+def Shader "n41" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n7.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n42" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n41.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n43" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n42.outputs:out>
+ float2 outputs:out
+}
+def Shader "n44" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n42.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n43.outputs:out>
+ float2 outputs:out
+}
+def Shader "n45" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n44.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n46" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n44.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n45.outputs:out>
+ float outputs:out
+}
+def Shader "n47" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n46.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n46.outputs:out>
+ float2 outputs:out
+}
+def Shader "n48" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n44.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n47.outputs:out>
+ float2 outputs:out
+}
+def Shader "n49" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n48.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n50" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n48.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n51" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n49.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n50.outputs:out>
+ float outputs:out
+}
+def Shader "n52" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n51.outputs:out>
+ float outputs:out
+}
+def Shader "n53" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n51.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n52.outputs:out>
+ float outputs:out
+}
+def Shader "n54" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n7.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n55" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n54.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n56" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n55.outputs:out>
+ float2 outputs:out
+}
+def Shader "n57" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n55.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n56.outputs:out>
+ float2 outputs:out
+}
+def Shader "n58" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n57.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n59" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n57.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n58.outputs:out>
+ float outputs:out
+}
+def Shader "n60" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n59.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n59.outputs:out>
+ float2 outputs:out
+}
+def Shader "n61" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n57.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n60.outputs:out>
+ float2 outputs:out
+}
+def Shader "n62" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n61.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n63" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n61.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n64" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n62.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n63.outputs:out>
+ float outputs:out
+}
+def Shader "n65" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n64.outputs:out>
+ float outputs:out
+}
+def Shader "n66" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n64.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n65.outputs:out>
+ float outputs:out
+}
+def Shader "n67" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n13.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n68" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n53.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n66.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n67.outputs:out>
+ float outputs:out
+}
+def Shader "n69" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n13.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n70" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n40.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n68.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n69.outputs:out>
+ float outputs:out
+}
+def Shader "n71" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n70.outputs:out>
+ float inputs:in2 = 0.6
+ float outputs:out
+}
+def Shader "n72" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n3.outputs:out>
+ float inputs:in2 = 0.11
+ float2 outputs:out
+}
+def Shader "n73" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1 = (0.03,0.06)
+ float inputs:in2.connect = </Shaders/Ocean.inputs:time>
+ float2 outputs:out
+}
+def Shader "n74" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n72.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n73.outputs:out>
+ float2 outputs:out
+}
+def Shader "n75" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n74.outputs:out>
+ float2 outputs:out
+}
+def Shader "n76" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n74.outputs:out>
+ float2 outputs:out
+}
+def Shader "n77" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n74.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n76.outputs:out>
+ float2 outputs:out
+}
+def Shader "n78" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n77.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n77.outputs:out>
+ float2 outputs:out
+}
+def Shader "n79" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n77.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n80" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Ocean/n79.outputs:out>
+ float2 outputs:out
+}
+def Shader "n81" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n78.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n80.outputs:out>
+ float2 outputs:out
+}
+def Shader "n82" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n75.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n83" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n82.outputs:out>
+ float2 outputs:out
+}
+def Shader "n84" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n82.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n83.outputs:out>
+ float2 outputs:out
+}
+def Shader "n85" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n84.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n86" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n84.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n85.outputs:out>
+ float outputs:out
+}
+def Shader "n87" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n86.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n86.outputs:out>
+ float2 outputs:out
+}
+def Shader "n88" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n84.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n87.outputs:out>
+ float2 outputs:out
+}
+def Shader "n89" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n88.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n90" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n88.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n91" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n89.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n90.outputs:out>
+ float outputs:out
+}
+def Shader "n92" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n91.outputs:out>
+ float outputs:out
+}
+def Shader "n93" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n91.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n92.outputs:out>
+ float outputs:out
+}
+def Shader "n94" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n75.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n95" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n94.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n96" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n95.outputs:out>
+ float2 outputs:out
+}
+def Shader "n97" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n95.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n96.outputs:out>
+ float2 outputs:out
+}
+def Shader "n98" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n97.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n99" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n97.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n98.outputs:out>
+ float outputs:out
+}
+def Shader "n100" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n99.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n99.outputs:out>
+ float2 outputs:out
+}
+def Shader "n101" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n97.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n100.outputs:out>
+ float2 outputs:out
+}
+def Shader "n102" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n101.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n103" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n101.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n104" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n102.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n103.outputs:out>
+ float outputs:out
+}
+def Shader "n105" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n104.outputs:out>
+ float outputs:out
+}
+def Shader "n106" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n104.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n105.outputs:out>
+ float outputs:out
+}
+def Shader "n107" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n81.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n108" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n93.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n106.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n107.outputs:out>
+ float outputs:out
+}
+def Shader "n109" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n75.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n110" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n109.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n111" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n110.outputs:out>
+ float2 outputs:out
+}
+def Shader "n112" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n110.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n111.outputs:out>
+ float2 outputs:out
+}
+def Shader "n113" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n112.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n114" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n112.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n113.outputs:out>
+ float outputs:out
+}
+def Shader "n115" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n114.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n114.outputs:out>
+ float2 outputs:out
+}
+def Shader "n116" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n112.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n115.outputs:out>
+ float2 outputs:out
+}
+def Shader "n117" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n116.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n118" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n116.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n119" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n117.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n118.outputs:out>
+ float outputs:out
+}
+def Shader "n120" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n119.outputs:out>
+ float outputs:out
+}
+def Shader "n121" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n119.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n120.outputs:out>
+ float outputs:out
+}
+def Shader "n122" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n75.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n123" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n122.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n124" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n123.outputs:out>
+ float2 outputs:out
+}
+def Shader "n125" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n123.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n124.outputs:out>
+ float2 outputs:out
+}
+def Shader "n126" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n125.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n127" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n125.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n126.outputs:out>
+ float outputs:out
+}
+def Shader "n128" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n127.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n127.outputs:out>
+ float2 outputs:out
+}
+def Shader "n129" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n125.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n128.outputs:out>
+ float2 outputs:out
+}
+def Shader "n130" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n129.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n131" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n129.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n132" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n130.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n131.outputs:out>
+ float outputs:out
+}
+def Shader "n133" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n132.outputs:out>
+ float outputs:out
+}
+def Shader "n134" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n132.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n133.outputs:out>
+ float outputs:out
+}
+def Shader "n135" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n81.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n136" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n121.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n134.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n135.outputs:out>
+ float outputs:out
+}
+def Shader "n137" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n81.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n138" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n108.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n136.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n137.outputs:out>
+ float outputs:out
+}
+def Shader "n139" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n138.outputs:out>
+ float inputs:in2 = 0.4
+ float outputs:out
+}
+def Shader "n140" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Ocean/n71.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n139.outputs:out>
+ float outputs:out
+}
+def Shader "n141" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Ocean/n140.outputs:out>
+ float inputs:value2 = 0.72
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n142" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.07818742179702069,0.2704977910022518,0.3813260114221238)
+ color3f inputs:fg = (0.181164244239483,0.407240211891531,0.5209955731953768)
+ float inputs:mix.connect = </Shaders/Ocean/n141.outputs:out>
+ color3f outputs:out
+}
+def Shader "n143" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n3.outputs:out>
+ float2 inputs:in2 = (0.42,1.1)
+ float2 outputs:out
+}
+def Shader "n144" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1 = (0.6,0.2)
+ float inputs:in2.connect = </Shaders/Ocean.inputs:time>
+ float2 outputs:out
+}
+def Shader "n145" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n143.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n144.outputs:out>
+ float2 outputs:out
+}
+def Shader "n146" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n145.outputs:out>
+ float2 outputs:out
+}
+def Shader "n147" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n145.outputs:out>
+ float2 outputs:out
+}
+def Shader "n148" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n145.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n147.outputs:out>
+ float2 outputs:out
+}
+def Shader "n149" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n148.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n148.outputs:out>
+ float2 outputs:out
+}
+def Shader "n150" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n148.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n151" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Ocean/n150.outputs:out>
+ float2 outputs:out
+}
+def Shader "n152" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n149.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n151.outputs:out>
+ float2 outputs:out
+}
+def Shader "n153" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n146.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n154" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n153.outputs:out>
+ float2 outputs:out
+}
+def Shader "n155" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n153.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n154.outputs:out>
+ float2 outputs:out
+}
+def Shader "n156" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n155.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n157" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n155.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n156.outputs:out>
+ float outputs:out
+}
+def Shader "n158" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n157.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n157.outputs:out>
+ float2 outputs:out
+}
+def Shader "n159" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n155.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n158.outputs:out>
+ float2 outputs:out
+}
+def Shader "n160" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n159.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n161" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n159.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n162" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n160.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n161.outputs:out>
+ float outputs:out
+}
+def Shader "n163" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n162.outputs:out>
+ float outputs:out
+}
+def Shader "n164" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n162.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n163.outputs:out>
+ float outputs:out
+}
+def Shader "n165" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n146.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n166" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n165.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n167" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n166.outputs:out>
+ float2 outputs:out
+}
+def Shader "n168" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n166.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n167.outputs:out>
+ float2 outputs:out
+}
+def Shader "n169" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n168.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n170" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n168.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n169.outputs:out>
+ float outputs:out
+}
+def Shader "n171" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n170.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n170.outputs:out>
+ float2 outputs:out
+}
+def Shader "n172" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n168.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n171.outputs:out>
+ float2 outputs:out
+}
+def Shader "n173" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n172.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n174" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n172.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n175" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n173.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n174.outputs:out>
+ float outputs:out
+}
+def Shader "n176" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n175.outputs:out>
+ float outputs:out
+}
+def Shader "n177" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n175.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n176.outputs:out>
+ float outputs:out
+}
+def Shader "n178" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n152.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n179" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n164.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n177.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n178.outputs:out>
+ float outputs:out
+}
+def Shader "n180" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n146.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n181" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n180.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n182" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n181.outputs:out>
+ float2 outputs:out
+}
+def Shader "n183" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n181.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n182.outputs:out>
+ float2 outputs:out
+}
+def Shader "n184" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n183.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n185" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n183.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n184.outputs:out>
+ float outputs:out
+}
+def Shader "n186" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n185.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n185.outputs:out>
+ float2 outputs:out
+}
+def Shader "n187" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n183.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n186.outputs:out>
+ float2 outputs:out
+}
+def Shader "n188" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n187.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n189" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n187.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n190" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n188.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n189.outputs:out>
+ float outputs:out
+}
+def Shader "n191" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n190.outputs:out>
+ float outputs:out
+}
+def Shader "n192" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n190.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n191.outputs:out>
+ float outputs:out
+}
+def Shader "n193" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n146.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n194" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n193.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n195" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n194.outputs:out>
+ float2 outputs:out
+}
+def Shader "n196" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n194.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n195.outputs:out>
+ float2 outputs:out
+}
+def Shader "n197" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n196.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n198" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n196.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n197.outputs:out>
+ float outputs:out
+}
+def Shader "n199" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n198.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n198.outputs:out>
+ float2 outputs:out
+}
+def Shader "n200" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n196.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n199.outputs:out>
+ float2 outputs:out
+}
+def Shader "n201" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n200.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n202" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n200.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n203" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n201.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n202.outputs:out>
+ float outputs:out
+}
+def Shader "n204" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n203.outputs:out>
+ float outputs:out
+}
+def Shader "n205" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n203.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n204.outputs:out>
+ float outputs:out
+}
+def Shader "n206" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n152.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n207" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n192.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n205.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n206.outputs:out>
+ float outputs:out
+}
+def Shader "n208" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n152.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n209" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n179.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n207.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n208.outputs:out>
+ float outputs:out
+}
+def Shader "n210" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n209.outputs:out>
+ float inputs:in2 = 0.55
+ float outputs:out
+}
+def Shader "n211" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n143.outputs:out>
+ float inputs:in2 = 1.9
+ float2 outputs:out
+}
+def Shader "n212" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1 = (0.3,0.7)
+ float inputs:in2.connect = </Shaders/Ocean.inputs:time>
+ float2 outputs:out
+}
+def Shader "n213" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n211.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n212.outputs:out>
+ float2 outputs:out
+}
+def Shader "n214" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n213.outputs:out>
+ float2 outputs:out
+}
+def Shader "n215" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n213.outputs:out>
+ float2 outputs:out
+}
+def Shader "n216" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n213.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n215.outputs:out>
+ float2 outputs:out
+}
+def Shader "n217" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n216.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n216.outputs:out>
+ float2 outputs:out
+}
+def Shader "n218" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ocean/n216.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n219" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Ocean/n218.outputs:out>
+ float2 outputs:out
+}
+def Shader "n220" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n217.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n219.outputs:out>
+ float2 outputs:out
+}
+def Shader "n221" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n214.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n222" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n221.outputs:out>
+ float2 outputs:out
+}
+def Shader "n223" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n221.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n222.outputs:out>
+ float2 outputs:out
+}
+def Shader "n224" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n223.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n225" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n223.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n224.outputs:out>
+ float outputs:out
+}
+def Shader "n226" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n225.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n225.outputs:out>
+ float2 outputs:out
+}
+def Shader "n227" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n223.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n226.outputs:out>
+ float2 outputs:out
+}
+def Shader "n228" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n227.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n229" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n227.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n230" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n228.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n229.outputs:out>
+ float outputs:out
+}
+def Shader "n231" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n230.outputs:out>
+ float outputs:out
+}
+def Shader "n232" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n230.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n231.outputs:out>
+ float outputs:out
+}
+def Shader "n233" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n214.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n234" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n233.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n235" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n234.outputs:out>
+ float2 outputs:out
+}
+def Shader "n236" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n234.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n235.outputs:out>
+ float2 outputs:out
+}
+def Shader "n237" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n236.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n238" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n236.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n237.outputs:out>
+ float outputs:out
+}
+def Shader "n239" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n238.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n238.outputs:out>
+ float2 outputs:out
+}
+def Shader "n240" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n236.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n239.outputs:out>
+ float2 outputs:out
+}
+def Shader "n241" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n240.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n242" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n240.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n243" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n241.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n242.outputs:out>
+ float outputs:out
+}
+def Shader "n244" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n243.outputs:out>
+ float outputs:out
+}
+def Shader "n245" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n243.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n244.outputs:out>
+ float outputs:out
+}
+def Shader "n246" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n220.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n247" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n232.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n245.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n246.outputs:out>
+ float outputs:out
+}
+def Shader "n248" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n214.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n249" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n248.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n250" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n249.outputs:out>
+ float2 outputs:out
+}
+def Shader "n251" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n249.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n250.outputs:out>
+ float2 outputs:out
+}
+def Shader "n252" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n251.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n253" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n251.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n252.outputs:out>
+ float outputs:out
+}
+def Shader "n254" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n253.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n253.outputs:out>
+ float2 outputs:out
+}
+def Shader "n255" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n251.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n254.outputs:out>
+ float2 outputs:out
+}
+def Shader "n256" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n255.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n257" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n255.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n258" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n256.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n257.outputs:out>
+ float outputs:out
+}
+def Shader "n259" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n258.outputs:out>
+ float outputs:out
+}
+def Shader "n260" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n258.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n259.outputs:out>
+ float outputs:out
+}
+def Shader "n261" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n214.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n262" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n261.outputs:out>
+ float2 inputs:in2 = (123.34,456.21)
+ float2 outputs:out
+}
+def Shader "n263" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n262.outputs:out>
+ float2 outputs:out
+}
+def Shader "n264" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n262.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n263.outputs:out>
+ float2 outputs:out
+}
+def Shader "n265" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n264.outputs:out>
+ float2 inputs:in2 = (45.32,45.32)
+ float2 outputs:out
+}
+def Shader "n266" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n264.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n265.outputs:out>
+ float outputs:out
+}
+def Shader "n267" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Ocean/n266.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n266.outputs:out>
+ float2 outputs:out
+}
+def Shader "n268" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Ocean/n264.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Ocean/n267.outputs:out>
+ float2 outputs:out
+}
+def Shader "n269" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n268.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n270" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n268.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n271" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n269.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n270.outputs:out>
+ float outputs:out
+}
+def Shader "n272" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Ocean/n271.outputs:out>
+ float outputs:out
+}
+def Shader "n273" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ocean/n271.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n272.outputs:out>
+ float outputs:out
+}
+def Shader "n274" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n220.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n275" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n260.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n273.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n274.outputs:out>
+ float outputs:out
+}
+def Shader "n276" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ocean/n220.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n277" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Ocean/n247.outputs:out>
+ float inputs:fg.connect = </Shaders/Ocean/n275.outputs:out>
+ float inputs:mix.connect = </Shaders/Ocean/n276.outputs:out>
+ float outputs:out
+}
+def Shader "n278" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n277.outputs:out>
+ float inputs:in2 = 0.45
+ float outputs:out
+}
+def Shader "n279" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Ocean/n210.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean/n278.outputs:out>
+ float outputs:out
+}
+def Shader "n280" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n281" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n282" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Ocean/n281.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Ocean/n280.outputs:out>
+ float3 outputs:out
+}
+def Shader "n283" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/Ocean/n282.outputs:out>
+ float outputs:out
+}
+def Shader "n284" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ocean/n283.outputs:out>
+ float inputs:in2.connect = </Shaders/Ocean.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n285" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Ocean/n284.outputs:out>
+ float inputs:low = 60
+ float inputs:high = 600
+ float outputs:out
+}
+def Shader "n286" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg = 0.8
+ float inputs:fg = 0.97
+ float inputs:mix.connect = </Shaders/Ocean/n285.outputs:out>
+ float outputs:out
+}
+def Shader "n287" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Ocean/n279.outputs:out>
+ float inputs:value2.connect = </Shaders/Ocean/n286.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n288" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Ocean/n142.outputs:out>
+ color3f inputs:fg = (0.6653872982754769,0.8148465722120952,0.8713671191959567)
+ float inputs:mix.connect = </Shaders/Ocean/n287.outputs:out>
+ color3f outputs:out
+}
+def Shader "n289" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Ocean/n284.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n290" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Ocean/n288.outputs:out>
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/Ocean/n289.outputs:out>
+ color3f outputs:out
+}
+def Shader "n291" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Ocean/n290.outputs:out>
+ float inputs:opacity = 1
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Ink" {
+float inputs:distanceScale = 1
+float inputs:thickness = 0.003
+ token outputs:mtlx:surface.connect = </Shaders/Ink/n11.outputs:out>
+token outputs:realitykit:vertex.connect = </Shaders/Ink/n8.outputs:out>
+def Shader "n0" {
+ uniform token info:id = "ND_normal_vector3"
+ string inputs:space = "object"
+ float3 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Ink/n2.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Ink/n1.outputs:out>
+ float3 outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/Ink/n3.outputs:out>
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ink/n4.outputs:out>
+ float inputs:in2.connect = </Shaders/Ink.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ink/n5.outputs:out>
+ float inputs:in2.connect = </Shaders/Ink.inputs:thickness>
+ float outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Ink/n0.outputs:out>
+ float inputs:in2.connect = </Shaders/Ink/n6.outputs:out>
+ float3 outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_realitykit_geometrymodifier_2_0_vertexshader"
+ float3 inputs:modelPositionOffset.connect = </Shaders/Ink/n7.outputs:out>
+ token outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Ink/n5.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.008023192982520563,0.010960094003125918,0.014443843592229466)
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/Ink/n9.outputs:out>
+ color3f outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Ink/n10.outputs:out>
+ float inputs:opacity = 1
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Puff" {
+float inputs:seed = 0
+float inputs:boil = 0
+float inputs:heat = 1
+float inputs:dissolve = 0
+float3 inputs:sunDirection = (-0.354,0.798,0.488)
+color3f inputs:smoke = (0.13563332964548108,0.11953842797895521,0.10461648408208657)
+float inputs:distanceScale = 1
+ token outputs:mtlx:surface.connect = </Shaders/Puff/n79.outputs:out>
+token outputs:realitykit:vertex.connect = </Shaders/Puff/n71.outputs:out>
+def Shader "n0" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "object"
+ float3 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/Puff/n0.outputs:out>
+ float3 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1.connect = </Shaders/Puff.inputs:seed>
+ float inputs:in2.connect = </Shaders/Puff.inputs:seed>
+ float inputs:in3.connect = </Shaders/Puff.inputs:seed>
+ float3 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1 = 0
+ float inputs:in2.connect = </Shaders/Puff.inputs:boil>
+ float inputs:in3 = 0
+ float3 outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Puff/n1.outputs:out>
+ float inputs:in2 = 1.7
+ float3 outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n2.outputs:out>
+ float3 inputs:in2 = (7.13,3.71,5.29)
+ float3 outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n5.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n3.outputs:out>
+ float3 outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n4.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n6.outputs:out>
+ float3 outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/Puff/n7.outputs:out>
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Puff/n1.outputs:out>
+ float inputs:in2 = 3.9
+ float3 outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_multiply_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n2.outputs:out>
+ float3 inputs:in2 = (1.9,8.3,0)
+ float3 outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1.connect = </Shaders/Puff.inputs:boil>
+ float inputs:in2.connect = </Shaders/Puff.inputs:boil>
+ float inputs:in3.connect = </Shaders/Puff.inputs:boil>
+ float3 outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_multiply_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n11.outputs:out>
+ float3 inputs:in2 = (-0.6,0,0.4)
+ float3 outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n10.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n12.outputs:out>
+ float3 outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n9.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n13.outputs:out>
+ float3 outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/Puff/n14.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n8.outputs:out>
+ float inputs:in2 = 0.7
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n15.outputs:out>
+ float inputs:in2 = 0.3
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff/n16.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n17.outputs:out>
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n18.outputs:out>
+ float inputs:in2 = 0.32
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Puff/n19.outputs:out>
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Puff/n1.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n20.outputs:out>
+ float3 outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n21.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n0.outputs:out>
+ float3 outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_normal_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_dotproduct_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n23.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff.inputs:sunDirection>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Puff/n1.outputs:out>
+ float inputs:in2 = 2.6
+ float3 outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Puff/n2.outputs:out>
+ float inputs:in2 = 13.7
+ float3 outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n25.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n26.outputs:out>
+ float3 outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/Puff/n27.outputs:out>
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n28.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff/n29.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n30.outputs:out>
+ float inputs:value2.connect = </Shaders/Puff.inputs:dissolve>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n32.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n33.outputs:out>
+ float3 outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/Puff/n34.outputs:out>
+ float3 outputs:out
+}
+def Shader "n36" {
+ uniform token info:id = "ND_dotproduct_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n23.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n35.outputs:out>
+ float outputs:out
+}
+def Shader "n37" {
+ uniform token info:id = "ND_clamp_float"
+ float inputs:in.connect = </Shaders/Puff/n36.outputs:out>
+ float inputs:low = 0
+ float inputs:high = 1
+ float outputs:out
+}
+def Shader "n38" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Puff/n37.outputs:out>
+ float inputs:in2 = 0.6
+ float outputs:out
+}
+def Shader "n39" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n38.outputs:out>
+ float inputs:in2 = 0.6
+ float outputs:out
+}
+def Shader "n40" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n28.outputs:out>
+ float inputs:in2 = 0.12
+ float outputs:out
+}
+def Shader "n41" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n24.outputs:out>
+ float inputs:in2 = 0.06
+ float outputs:out
+}
+def Shader "n42" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff/n40.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n41.outputs:out>
+ float outputs:out
+}
+def Shader "n43" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff/n39.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n42.outputs:out>
+ float outputs:out
+}
+def Shader "n44" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff.inputs:heat>
+ float inputs:in2.connect = </Shaders/Puff/n43.outputs:out>
+ float outputs:out
+}
+def Shader "n45" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n24.outputs:out>
+ float inputs:value2 = -0.35
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n46" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n45.outputs:out>
+ float inputs:in2 = 0.19
+ float outputs:out
+}
+def Shader "n47" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n24.outputs:out>
+ float inputs:value2 = 0.1
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n48" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n47.outputs:out>
+ float inputs:in2 = 0.26
+ float outputs:out
+}
+def Shader "n49" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n24.outputs:out>
+ float inputs:value2 = 0.55
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n50" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n49.outputs:out>
+ float inputs:in2 = 0.22
+ float outputs:out
+}
+def Shader "n51" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff/n48.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n50.outputs:out>
+ float outputs:out
+}
+def Shader "n52" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Puff/n46.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n51.outputs:out>
+ float outputs:out
+}
+def Shader "n53" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.55
+ float inputs:in2.connect = </Shaders/Puff/n52.outputs:out>
+ float outputs:out
+}
+def Shader "n54" {
+ uniform token info:id = "ND_multiply_color3FA"
+ color3f inputs:in1.connect = </Shaders/Puff.inputs:smoke>
+ float inputs:in2.connect = </Shaders/Puff/n53.outputs:out>
+ color3f outputs:out
+}
+def Shader "n55" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n44.outputs:out>
+ float inputs:value2 = 0.29
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n56" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Puff/n54.outputs:out>
+ color3f inputs:fg = (0.06847816983662762,0.019382360952473074,0.009134058699157796)
+ float inputs:mix.connect = </Shaders/Puff/n55.outputs:out>
+ color3f outputs:out
+}
+def Shader "n57" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n44.outputs:out>
+ float inputs:value2 = 0.38
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n58" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Puff/n56.outputs:out>
+ color3f inputs:fg = (0.5394794890033748,0.023153366173251363,0.008568125615105716)
+ float inputs:mix.connect = </Shaders/Puff/n57.outputs:out>
+ color3f outputs:out
+}
+def Shader "n59" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n44.outputs:out>
+ float inputs:value2 = 0.56
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n60" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Puff/n58.outputs:out>
+ color3f inputs:fg = (1,0.174647403645279,0.008568125615105716)
+ float inputs:mix.connect = </Shaders/Puff/n59.outputs:out>
+ color3f outputs:out
+}
+def Shader "n61" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n44.outputs:out>
+ float inputs:value2 = 0.78
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n62" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Puff/n60.outputs:out>
+ color3f inputs:fg = (1,0.6444796819634361,0.04970656597728775)
+ float inputs:mix.connect = </Shaders/Puff/n61.outputs:out>
+ color3f outputs:out
+}
+def Shader "n63" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n44.outputs:out>
+ float inputs:value2 = 1
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n64" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Puff/n62.outputs:out>
+ color3f inputs:fg = (1,0.9646862478936612,0.7912979403281551)
+ float inputs:mix.connect = </Shaders/Puff/n63.outputs:out>
+ color3f outputs:out
+}
+def Shader "n65" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Puff/n44.outputs:out>
+ float inputs:value2 = 0.29
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n66" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = -0.4
+ float inputs:value2.connect = </Shaders/Puff/n24.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n67" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n65.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n66.outputs:out>
+ float outputs:out
+}
+def Shader "n68" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n67.outputs:out>
+ float inputs:in2 = 0.18
+ float outputs:out
+}
+def Shader "n69" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Puff/n68.outputs:out>
+ float outputs:out
+}
+def Shader "n70" {
+ uniform token info:id = "ND_multiply_color3FA"
+ color3f inputs:in1.connect = </Shaders/Puff/n64.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff/n69.outputs:out>
+ color3f outputs:out
+}
+def Shader "n71" {
+ uniform token info:id = "ND_realitykit_geometrymodifier_2_0_vertexshader"
+ float3 inputs:modelPositionOffset.connect = </Shaders/Puff/n22.outputs:out>
+ token outputs:out
+}
+def Shader "n72" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n73" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n74" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Puff/n73.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Puff/n72.outputs:out>
+ float3 outputs:out
+}
+def Shader "n75" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/Puff/n74.outputs:out>
+ float outputs:out
+}
+def Shader "n76" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Puff/n75.outputs:out>
+ float inputs:in2.connect = </Shaders/Puff.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n77" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Puff/n76.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n78" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Puff/n70.outputs:out>
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/Puff/n77.outputs:out>
+ color3f outputs:out
+}
+def Shader "n79" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Puff/n78.outputs:out>
+ float inputs:opacity.connect = </Shaders/Puff/n31.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "PuffInk" {
+float inputs:seed = 0
+float inputs:boil = 0
+float inputs:heat = 1
+float inputs:dissolve = 0
+float3 inputs:sunDirection = (-0.354,0.798,0.488)
+float inputs:distanceScale = 1
+float inputs:thickness = 0.003
+ token outputs:mtlx:surface.connect = </Shaders/PuffInk/n45.outputs:out>
+token outputs:realitykit:vertex.connect = </Shaders/PuffInk/n42.outputs:out>
+def Shader "n0" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "object"
+ float3 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/PuffInk/n0.outputs:out>
+ float3 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1.connect = </Shaders/PuffInk.inputs:seed>
+ float inputs:in2.connect = </Shaders/PuffInk.inputs:seed>
+ float inputs:in3.connect = </Shaders/PuffInk.inputs:seed>
+ float3 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1 = 0
+ float inputs:in2.connect = </Shaders/PuffInk.inputs:boil>
+ float inputs:in3 = 0
+ float3 outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n1.outputs:out>
+ float inputs:in2 = 1.7
+ float3 outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n2.outputs:out>
+ float3 inputs:in2 = (7.13,3.71,5.29)
+ float3 outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n5.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n3.outputs:out>
+ float3 outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n4.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n6.outputs:out>
+ float3 outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/PuffInk/n7.outputs:out>
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n1.outputs:out>
+ float inputs:in2 = 3.9
+ float3 outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_multiply_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n2.outputs:out>
+ float3 inputs:in2 = (1.9,8.3,0)
+ float3 outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1.connect = </Shaders/PuffInk.inputs:boil>
+ float inputs:in2.connect = </Shaders/PuffInk.inputs:boil>
+ float inputs:in3.connect = </Shaders/PuffInk.inputs:boil>
+ float3 outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_multiply_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n11.outputs:out>
+ float3 inputs:in2 = (-0.6,0,0.4)
+ float3 outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n10.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n12.outputs:out>
+ float3 outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n9.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n13.outputs:out>
+ float3 outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/PuffInk/n14.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n8.outputs:out>
+ float inputs:in2 = 0.7
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n15.outputs:out>
+ float inputs:in2 = 0.3
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n16.outputs:out>
+ float inputs:in2.connect = </Shaders/PuffInk/n17.outputs:out>
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n18.outputs:out>
+ float inputs:in2 = 0.32
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/PuffInk/n19.outputs:out>
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n1.outputs:out>
+ float inputs:in2.connect = </Shaders/PuffInk/n20.outputs:out>
+ float3 outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n21.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n0.outputs:out>
+ float3 outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_normal_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_dotproduct_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n23.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk.inputs:sunDirection>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n1.outputs:out>
+ float inputs:in2 = 2.6
+ float3 outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n2.outputs:out>
+ float inputs:in2 = 13.7
+ float3 outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n25.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n26.outputs:out>
+ float3 outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/PuffInk/n27.outputs:out>
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n28.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n29.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/PuffInk/n30.outputs:out>
+ float inputs:value2.connect = </Shaders/PuffInk.inputs:dissolve>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/PuffInk.inputs:heat>
+ float inputs:value2 = 0.45
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.010329823026364548,0.009134058699157796,0.008568125615105716)
+ color3f inputs:fg = (0.15592646369776456,0.010329823026364548,0.0033465357620980074)
+ float inputs:mix.connect = </Shaders/PuffInk/n32.outputs:out>
+ color3f outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n36" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n35.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n34.outputs:out>
+ float3 outputs:out
+}
+def Shader "n37" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/PuffInk/n36.outputs:out>
+ float outputs:out
+}
+def Shader "n38" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n37.outputs:out>
+ float inputs:in2.connect = </Shaders/PuffInk.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n39" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/PuffInk/n38.outputs:out>
+ float inputs:in2.connect = </Shaders/PuffInk.inputs:thickness>
+ float outputs:out
+}
+def Shader "n40" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n1.outputs:out>
+ float inputs:in2.connect = </Shaders/PuffInk/n39.outputs:out>
+ float3 outputs:out
+}
+def Shader "n41" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/PuffInk/n22.outputs:out>
+ float3 inputs:in2.connect = </Shaders/PuffInk/n40.outputs:out>
+ float3 outputs:out
+}
+def Shader "n42" {
+ uniform token info:id = "ND_realitykit_geometrymodifier_2_0_vertexshader"
+ float3 inputs:modelPositionOffset.connect = </Shaders/PuffInk/n41.outputs:out>
+ token outputs:out
+}
+def Shader "n43" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/PuffInk/n38.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n44" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/PuffInk/n33.outputs:out>
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/PuffInk/n43.outputs:out>
+ color3f outputs:out
+}
+def Shader "n45" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/PuffInk/n44.outputs:out>
+ float inputs:opacity.connect = </Shaders/PuffInk/n31.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Ring" {
+float inputs:seed = 0
+float inputs:age = 0
+color3f inputs:color = (1,0.7991027380100881,0.4910208498384856)
+ token outputs:mtlx:surface.connect = </Shaders/Ring/n33.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Ring/n0.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Ring/n1.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ring/n2.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Ring/n2.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_magnitude_vector2"
+ float2 inputs:in.connect = </Shaders/Ring/n2.outputs:out>
+ float outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_atan2_float"
+ float inputs:iny.connect = </Shaders/Ring/n4.outputs:out>
+ float inputs:inx.connect = </Shaders/Ring/n3.outputs:out>
+ float outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Ring.inputs:age>
+ float outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_power_float"
+ float inputs:in1.connect = </Shaders/Ring/n7.outputs:out>
+ float inputs:in2 = 3
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Ring/n8.outputs:out>
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg = 0.045
+ float inputs:fg = 0.008
+ float inputs:mix.connect = </Shaders/Ring.inputs:age>
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n6.outputs:out>
+ float inputs:in2 = 7
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Ring/n11.outputs:out>
+ float inputs:in2.connect = </Shaders/Ring.inputs:seed>
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Ring/n12.outputs:out>
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n13.outputs:out>
+ float inputs:in2 = 0.3
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n6.outputs:out>
+ float inputs:in2 = 13
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring.inputs:seed>
+ float inputs:in2 = 2
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ring/n15.outputs:out>
+ float inputs:in2.connect = </Shaders/Ring/n16.outputs:out>
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Ring/n17.outputs:out>
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n18.outputs:out>
+ float inputs:in2 = 0.2
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Ring/n14.outputs:out>
+ float inputs:in2.connect = </Shaders/Ring/n19.outputs:out>
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Ring/n20.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ring/n5.outputs:out>
+ float inputs:in2.connect = </Shaders/Ring/n9.outputs:out>
+ float outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Ring/n22.outputs:out>
+ float outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n10.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Ring/n24.outputs:out>
+ float inputs:value2.connect = </Shaders/Ring/n23.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring.inputs:age>
+ float inputs:in2 = 1.1
+ float outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Ring/n26.outputs:out>
+ float inputs:in2 = 0.25
+ float outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Ring/n21.outputs:out>
+ float inputs:value2.connect = </Shaders/Ring/n27.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring.inputs:age>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Ring/n29.outputs:out>
+ float outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n28.outputs:out>
+ float inputs:in2.connect = </Shaders/Ring/n30.outputs:out>
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Ring/n25.outputs:out>
+ float inputs:in2.connect = </Shaders/Ring/n31.outputs:out>
+ float outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Ring.inputs:color>
+ float inputs:opacity.connect = </Shaders/Ring/n32.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "MuzzleJet" {
+float inputs:seed = 0
+float inputs:age = 0
+ token outputs:mtlx:surface.connect = </Shaders/MuzzleJet/n32.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/MuzzleJet/n0.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/MuzzleJet/n1.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/MuzzleJet/n2.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/MuzzleJet/n2.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_magnitude_vector2"
+ float2 inputs:in.connect = </Shaders/MuzzleJet/n2.outputs:out>
+ float outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_atan2_float"
+ float inputs:iny.connect = </Shaders/MuzzleJet/n4.outputs:out>
+ float inputs:inx.connect = </Shaders/MuzzleJet/n3.outputs:out>
+ float outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/MuzzleJet/n0.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/MuzzleJet/n3.outputs:out>
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n7.outputs:out>
+ float inputs:in2 = 7
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/MuzzleJet/n9.outputs:out>
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet.inputs:seed>
+ float inputs:in2 = 13.7
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n10.outputs:out>
+ float inputs:in2.connect = </Shaders/MuzzleJet/n11.outputs:out>
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/MuzzleJet/n12.outputs:out>
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n13.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/MuzzleJet/n14.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n14.outputs:out>
+ float inputs:in2.connect = </Shaders/MuzzleJet/n15.outputs:out>
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_power_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n7.outputs:out>
+ float inputs:in2 = 0.55
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n17.outputs:out>
+ float inputs:in2 = 3.141592653589793
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/MuzzleJet/n18.outputs:out>
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n16.outputs:out>
+ float inputs:in2 = 0.4
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.6
+ float inputs:in2.connect = </Shaders/MuzzleJet/n20.outputs:out>
+ float outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n19.outputs:out>
+ float inputs:in2.connect = </Shaders/MuzzleJet/n21.outputs:out>
+ float outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_max_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n22.outputs:out>
+ float inputs:in2 = 0.0001
+ float outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_divide_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n8.outputs:out>
+ float inputs:in2.connect = </Shaders/MuzzleJet/n23.outputs:out>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 0.7
+ float inputs:value2.connect = </Shaders/MuzzleJet/n24.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (1,0.174647403645279,0.008568125615105716)
+ color3f inputs:fg = (1,0.6444796819634361,0.04970656597728775)
+ float inputs:mix.connect = </Shaders/MuzzleJet/n25.outputs:out>
+ color3f outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 0.35
+ float inputs:value2.connect = </Shaders/MuzzleJet/n24.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 0.75
+ float inputs:value2.connect = </Shaders/MuzzleJet/n7.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/MuzzleJet/n27.outputs:out>
+ float inputs:in2.connect = </Shaders/MuzzleJet/n28.outputs:out>
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/MuzzleJet/n26.outputs:out>
+ color3f inputs:fg = (1,0.9646862478936612,0.7912979403281551)
+ float inputs:mix.connect = </Shaders/MuzzleJet/n29.outputs:out>
+ color3f outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/MuzzleJet/n22.outputs:out>
+ float inputs:value2.connect = </Shaders/MuzzleJet/n8.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/MuzzleJet/n30.outputs:out>
+ float inputs:opacity.connect = </Shaders/MuzzleJet/n31.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Flash" {
+float inputs:seed = 0
+float inputs:age = 0
+float inputs:spikes = 7
+ token outputs:mtlx:surface.connect = </Shaders/Flash/n33.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Flash/n0.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Flash/n1.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Flash/n2.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Flash/n2.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_magnitude_vector2"
+ float2 inputs:in.connect = </Shaders/Flash/n2.outputs:out>
+ float outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_atan2_float"
+ float inputs:iny.connect = </Shaders/Flash/n4.outputs:out>
+ float inputs:inx.connect = </Shaders/Flash/n3.outputs:out>
+ float outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Flash/n6.outputs:out>
+ float inputs:in2.connect = </Shaders/Flash.inputs:seed>
+ float outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_divide_float"
+ float inputs:in1.connect = </Shaders/Flash/n7.outputs:out>
+ float inputs:in2 = 6.283185307179586
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash/n8.outputs:out>
+ float inputs:in2.connect = </Shaders/Flash.inputs:spikes>
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Flash/n9.outputs:out>
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Flash/n9.outputs:out>
+ float inputs:in2.connect = </Shaders/Flash/n10.outputs:out>
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Flash/n11.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Flash/n12.outputs:out>
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash/n13.outputs:out>
+ float inputs:in2 = 2
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Flash/n9.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash/n15.outputs:out>
+ float inputs:in2 = 17.31
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash.inputs:seed>
+ float inputs:in2 = 3.1
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Flash/n16.outputs:out>
+ float inputs:in2.connect = </Shaders/Flash/n17.outputs:out>
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Flash/n18.outputs:out>
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash/n19.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Flash/n20.outputs:out>
+ float outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Flash/n20.outputs:out>
+ float inputs:in2.connect = </Shaders/Flash/n21.outputs:out>
+ float outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash/n22.outputs:out>
+ float inputs:in2 = 0.65
+ float outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.35
+ float inputs:in2.connect = </Shaders/Flash/n23.outputs:out>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_power_float"
+ float inputs:in1.connect = </Shaders/Flash/n14.outputs:out>
+ float inputs:in2 = 0.3
+ float outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Flash/n24.outputs:out>
+ float inputs:fg = 0.3
+ float inputs:mix.connect = </Shaders/Flash/n25.outputs:out>
+ float outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Flash/n26.outputs:out>
+ float inputs:value2.connect = </Shaders/Flash/n5.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Flash/n26.outputs:out>
+ float inputs:in2 = 0.7
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Flash/n28.outputs:out>
+ float inputs:value2.connect = </Shaders/Flash/n5.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (1,0.174647403645279,0.008568125615105716)
+ color3f inputs:fg = (1,0.6444796819634361,0.04970656597728775)
+ float inputs:mix.connect = </Shaders/Flash/n29.outputs:out>
+ color3f outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 0.2
+ float inputs:value2.connect = </Shaders/Flash/n5.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Flash/n30.outputs:out>
+ color3f inputs:fg = (1,0.9646862478936612,0.7912979403281551)
+ float inputs:mix.connect = </Shaders/Flash/n31.outputs:out>
+ color3f outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Flash/n32.outputs:out>
+ float inputs:opacity.connect = </Shaders/Flash/n27.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Trail" {
+float inputs:width = 1
+float inputs:seed = 0
+float3 inputs:sunDirection = (-0.354,0.798,0.488)
+float inputs:hot = 1
+color3f inputs:smoke = (0.5840784178830671,0.5583403896257968,0.508881320845802)
+float inputs:distanceScale = 1
+ token outputs:mtlx:surface.connect = </Shaders/Trail/n73.outputs:out>
+token outputs:realitykit:vertex.connect = </Shaders/Trail/n65.outputs:out>
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Trail/n0.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Trail/n0.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n4.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail/n3.outputs:out>
+ float3 outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/Trail/n5.outputs:out>
+ float3 outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_tangent_vector3"
+ string inputs:space = "world"
+ int inputs:index = 0
+ float3 outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_crossproduct_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n7.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail/n6.outputs:out>
+ float3 outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/Trail/n8.outputs:out>
+ float3 outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_sqrt_float"
+ float inputs:in.connect = </Shaders/Trail/n2.outputs:out>
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1 = 1.2
+ float inputs:in2.connect = </Shaders/Trail/n10.outputs:out>
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.3
+ float inputs:in2.connect = </Shaders/Trail/n11.outputs:out>
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail.inputs:width>
+ float inputs:in2.connect = </Shaders/Trail/n12.outputs:out>
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n1.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n13.outputs:out>
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Trail/n9.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n14.outputs:out>
+ float3 outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_transformvector_vector3"
+ float3 inputs:in.connect = </Shaders/Trail/n15.outputs:out>
+ string inputs:fromspace = "world"
+ string inputs:tospace = "object"
+ float3 outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_combine3_vector3"
+ float inputs:in1.connect = </Shaders/Trail.inputs:seed>
+ float inputs:in2.connect = </Shaders/Trail.inputs:seed>
+ float inputs:in3.connect = </Shaders/Trail.inputs:seed>
+ float3 outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Trail/n3.outputs:out>
+ float inputs:in2 = 0.7
+ float3 outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n18.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail/n17.outputs:out>
+ float3 outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/Trail/n19.outputs:out>
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Trail/n3.outputs:out>
+ float inputs:in2 = 1.6
+ float3 outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Trail/n17.outputs:out>
+ float inputs:in2 = 1.3
+ float3 outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n21.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail/n22.outputs:out>
+ float3 outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_noise3d_float"
+ float3 inputs:position.connect = </Shaders/Trail/n23.outputs:out>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n24.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Trail/n25.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n26.outputs:out>
+ float inputs:in2 = 0.3
+ float outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Trail/n27.outputs:out>
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Trail/n1.outputs:out>
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n28.outputs:out>
+ float inputs:value2.connect = </Shaders/Trail/n29.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Trail/n2.outputs:out>
+ float inputs:in2 = 0.35
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n31.outputs:out>
+ float inputs:in2 = 1.5
+ float outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n20.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Trail/n33.outputs:out>
+ float inputs:in2 = 0.5
+ float outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n34.outputs:out>
+ float inputs:value2.connect = </Shaders/Trail/n32.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n36" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n30.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n35.outputs:out>
+ float outputs:out
+}
+def Shader "n37" {
+ uniform token info:id = "ND_divide_float"
+ float inputs:in1.connect = </Shaders/Trail/n1.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n28.outputs:out>
+ float outputs:out
+}
+def Shader "n38" {
+ uniform token info:id = "ND_clamp_float"
+ float inputs:in.connect = </Shaders/Trail/n37.outputs:out>
+ float inputs:low = -1
+ float inputs:high = 1
+ float outputs:out
+}
+def Shader "n39" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Trail/n9.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n38.outputs:out>
+ float3 outputs:out
+}
+def Shader "n40" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n38.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n38.outputs:out>
+ float outputs:out
+}
+def Shader "n41" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Trail/n40.outputs:out>
+ float outputs:out
+}
+def Shader "n42" {
+ uniform token info:id = "ND_max_float"
+ float inputs:in1 = 0
+ float inputs:in2.connect = </Shaders/Trail/n41.outputs:out>
+ float outputs:out
+}
+def Shader "n43" {
+ uniform token info:id = "ND_sqrt_float"
+ float inputs:in.connect = </Shaders/Trail/n42.outputs:out>
+ float outputs:out
+}
+def Shader "n44" {
+ uniform token info:id = "ND_multiply_vector3FA"
+ float3 inputs:in1.connect = </Shaders/Trail/n6.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n43.outputs:out>
+ float3 outputs:out
+}
+def Shader "n45" {
+ uniform token info:id = "ND_add_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n39.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail/n44.outputs:out>
+ float3 outputs:out
+}
+def Shader "n46" {
+ uniform token info:id = "ND_normalize_vector3"
+ float3 inputs:in.connect = </Shaders/Trail/n45.outputs:out>
+ float3 outputs:out
+}
+def Shader "n47" {
+ uniform token info:id = "ND_dotproduct_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n46.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail.inputs:sunDirection>
+ float outputs:out
+}
+def Shader "n48" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n47.outputs:out>
+ float inputs:value2 = -0.35
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n49" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n48.outputs:out>
+ float inputs:in2 = 0.18
+ float outputs:out
+}
+def Shader "n50" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n47.outputs:out>
+ float inputs:value2 = 0.15
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n51" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n50.outputs:out>
+ float inputs:in2 = 0.22
+ float outputs:out
+}
+def Shader "n52" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Trail/n49.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail/n51.outputs:out>
+ float outputs:out
+}
+def Shader "n53" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.6
+ float inputs:in2.connect = </Shaders/Trail/n52.outputs:out>
+ float outputs:out
+}
+def Shader "n54" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1 = 0.1
+ float inputs:in2.connect = </Shaders/Trail.inputs:hot>
+ float outputs:out
+}
+def Shader "n55" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n54.outputs:out>
+ float inputs:value2.connect = </Shaders/Trail/n2.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n56" {
+ uniform token info:id = "ND_multiply_color3FA"
+ color3f inputs:in1.connect = </Shaders/Trail.inputs:smoke>
+ float inputs:in2.connect = </Shaders/Trail/n53.outputs:out>
+ color3f outputs:out
+}
+def Shader "n57" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Trail/n56.outputs:out>
+ color3f inputs:fg = (1,0.174647403645279,0.008568125615105716)
+ float inputs:mix.connect = </Shaders/Trail/n55.outputs:out>
+ color3f outputs:out
+}
+def Shader "n58" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1 = 0.045
+ float inputs:in2.connect = </Shaders/Trail.inputs:hot>
+ float outputs:out
+}
+def Shader "n59" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n58.outputs:out>
+ float inputs:value2.connect = </Shaders/Trail/n2.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n60" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Trail/n57.outputs:out>
+ color3f inputs:fg = (1,0.6444796819634361,0.04970656597728775)
+ float inputs:mix.connect = </Shaders/Trail/n59.outputs:out>
+ color3f outputs:out
+}
+def Shader "n61" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.010329823026364548,0.009134058699157796,0.008568125615105716)
+ color3f inputs:fg = (0.15592646369776456,0.010329823026364548,0.0033465357620980074)
+ float inputs:mix.connect = </Shaders/Trail/n55.outputs:out>
+ color3f outputs:out
+}
+def Shader "n62" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Trail/n28.outputs:out>
+ float inputs:in2 = 0.17
+ float outputs:out
+}
+def Shader "n63" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Trail/n29.outputs:out>
+ float inputs:value2.connect = </Shaders/Trail/n62.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n64" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Trail/n60.outputs:out>
+ color3f inputs:fg.connect = </Shaders/Trail/n61.outputs:out>
+ float inputs:mix.connect = </Shaders/Trail/n63.outputs:out>
+ color3f outputs:out
+}
+def Shader "n65" {
+ uniform token info:id = "ND_realitykit_geometrymodifier_2_0_vertexshader"
+ float3 inputs:modelPositionOffset.connect = </Shaders/Trail/n16.outputs:out>
+ token outputs:out
+}
+def Shader "n66" {
+ uniform token info:id = "ND_realitykit_cameraposition_vector3"
+
+ float3 outputs:out
+}
+def Shader "n67" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "world"
+ float3 outputs:out
+}
+def Shader "n68" {
+ uniform token info:id = "ND_subtract_vector3"
+ float3 inputs:in1.connect = </Shaders/Trail/n67.outputs:out>
+ float3 inputs:in2.connect = </Shaders/Trail/n66.outputs:out>
+ float3 outputs:out
+}
+def Shader "n69" {
+ uniform token info:id = "ND_magnitude_vector3"
+ float3 inputs:in.connect = </Shaders/Trail/n68.outputs:out>
+ float outputs:out
+}
+def Shader "n70" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Trail/n69.outputs:out>
+ float inputs:in2.connect = </Shaders/Trail.inputs:distanceScale>
+ float outputs:out
+}
+def Shader "n71" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Trail/n70.outputs:out>
+ float inputs:low = 150
+ float inputs:high = 1600
+ float outputs:out
+}
+def Shader "n72" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg.connect = </Shaders/Trail/n64.outputs:out>
+ color3f inputs:fg = (0.7156935005005721,0.8307698767709715,0.8879231178794776)
+ float inputs:mix.connect = </Shaders/Trail/n71.outputs:out>
+ color3f outputs:out
+}
+def Shader "n73" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Trail/n72.outputs:out>
+ float inputs:opacity.connect = </Shaders/Trail/n36.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Plume" {
+float inputs:seed = 0
+float inputs:age = 0
+ token outputs:mtlx:surface.connect = </Shaders/Plume/n50.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_texcoord_vector2"
+ int inputs:index = 0
+ float2 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Plume/n0.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Plume/n0.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n2.outputs:out>
+ float inputs:in2 = 2
+ float outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Plume/n3.outputs:out>
+ float inputs:in2 = 1
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Plume/n4.outputs:out>
+ float outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_power_float"
+ float inputs:in1.connect = </Shaders/Plume/n1.outputs:out>
+ float inputs:in2 = 2.4
+ float outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Plume/n6.outputs:out>
+ float outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n7.outputs:out>
+ float inputs:in2 = 0.85
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Plume/n1.outputs:out>
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n9.outputs:out>
+ float inputs:in2 = 0.15
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Plume/n8.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n10.outputs:out>
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n1.outputs:out>
+ float inputs:in2 = 13
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume.inputs:seed>
+ float inputs:in2 = 6
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Plume/n12.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n13.outputs:out>
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Plume/n14.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n15.outputs:out>
+ float inputs:in2 = 0.12
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n1.outputs:out>
+ float inputs:in2 = 31
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume.inputs:seed>
+ float inputs:in2 = 9
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Plume/n17.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n18.outputs:out>
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Plume/n19.outputs:out>
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n20.outputs:out>
+ float inputs:in2 = 0.08
+ float outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Plume/n16.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n21.outputs:out>
+ float outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.8
+ float inputs:in2.connect = </Shaders/Plume/n22.outputs:out>
+ float outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n11.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n23.outputs:out>
+ float outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n4.outputs:out>
+ float inputs:in2 = 5
+ float outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume.inputs:seed>
+ float inputs:in2 = 13
+ float outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Plume/n25.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n26.outputs:out>
+ float outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Plume/n27.outputs:out>
+ float outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n1.outputs:out>
+ float inputs:in2 = 9
+ float outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume.inputs:seed>
+ float inputs:in2 = 13
+ float outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Plume/n29.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n30.outputs:out>
+ float outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Plume/n31.outputs:out>
+ float outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n28.outputs:out>
+ float inputs:in2 = 127.1
+ float outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n32.outputs:out>
+ float inputs:in2 = 311.7
+ float outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1.connect = </Shaders/Plume/n33.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n34.outputs:out>
+ float outputs:out
+}
+def Shader "n36" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Plume/n35.outputs:out>
+ float outputs:out
+}
+def Shader "n37" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n36.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n38" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Plume/n37.outputs:out>
+ float outputs:out
+}
+def Shader "n39" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Plume/n37.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n38.outputs:out>
+ float outputs:out
+}
+def Shader "n40" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Plume/n24.outputs:out>
+ float inputs:value2.connect = </Shaders/Plume/n5.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n41" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Plume.inputs:age>
+ float inputs:in2 = 0.55
+ float outputs:out
+}
+def Shader "n42" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n41.outputs:out>
+ float inputs:in2 = 2.4
+ float outputs:out
+}
+def Shader "n43" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Plume/n39.outputs:out>
+ float inputs:value2.connect = </Shaders/Plume/n42.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n44" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n40.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n43.outputs:out>
+ float outputs:out
+}
+def Shader "n45" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n24.outputs:out>
+ float inputs:in2 = 0.55
+ float outputs:out
+}
+def Shader "n46" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Plume/n45.outputs:out>
+ float inputs:value2.connect = </Shaders/Plume/n5.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n47" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 0.85
+ float inputs:value2.connect = </Shaders/Plume/n1.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n48" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Plume/n46.outputs:out>
+ float inputs:in2.connect = </Shaders/Plume/n47.outputs:out>
+ float outputs:out
+}
+def Shader "n49" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.82,0.89,0.93)
+ color3f inputs:fg = (1,1,1)
+ float inputs:mix.connect = </Shaders/Plume/n48.outputs:out>
+ color3f outputs:out
+}
+def Shader "n50" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Plume/n49.outputs:out>
+ float inputs:opacity.connect = </Shaders/Plume/n44.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+def Material "Wake" {
+float inputs:scroll = 0
+float inputs:strength = 1
+ token outputs:mtlx:surface.connect = </Shaders/Wake/n169.outputs:out>
+
+def Shader "n0" {
+ uniform token info:id = "ND_position_vector3"
+ string inputs:space = "object"
+ float3 outputs:out
+}
+def Shader "n1" {
+ uniform token info:id = "ND_extract_vector3"
+ float3 inputs:in.connect = </Shaders/Wake/n0.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n2" {
+ uniform token info:id = "ND_extract_vector3"
+ float3 inputs:in.connect = </Shaders/Wake/n0.outputs:out>
+ int inputs:index = 2
+ float outputs:out
+}
+def Shader "n3" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Wake/n1.outputs:out>
+ float outputs:out
+}
+def Shader "n4" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake.inputs:scroll>
+ float outputs:out
+}
+def Shader "n5" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in2 = 0.06
+ float outputs:out
+}
+def Shader "n6" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 4.052
+ float inputs:in2.connect = </Shaders/Wake/n5.outputs:out>
+ float outputs:out
+}
+def Shader "n7" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n3.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n6.outputs:out>
+ float outputs:out
+}
+def Shader "n8" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Wake/n7.outputs:out>
+ float outputs:out
+}
+def Shader "n9" {
+ uniform token info:id = "ND_smoothstep_float"
+ float inputs:in.connect = </Shaders/Wake/n8.outputs:out>
+ float inputs:low = 0
+ float inputs:high = 1.3
+ float outputs:out
+}
+def Shader "n10" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Wake/n9.outputs:out>
+ float outputs:out
+}
+def Shader "n11" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 3
+ float inputs:value2.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n12" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg = 0.75
+ float inputs:fg = 1
+ float inputs:mix.connect = </Shaders/Wake/n11.outputs:out>
+ float outputs:out
+}
+def Shader "n13" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1 = 45.92
+ float inputs:value2.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n14" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n12.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n13.outputs:out>
+ float outputs:out
+}
+def Shader "n15" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n10.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n14.outputs:out>
+ float outputs:out
+}
+def Shader "n16" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in2 = 0.354
+ float outputs:out
+}
+def Shader "n17" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in2 = 0.008
+ float outputs:out
+}
+def Shader "n18" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.35
+ float inputs:in2.connect = </Shaders/Wake/n17.outputs:out>
+ float outputs:out
+}
+def Shader "n19" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n3.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n16.outputs:out>
+ float outputs:out
+}
+def Shader "n20" {
+ uniform token info:id = "ND_absval_float"
+ float inputs:in.connect = </Shaders/Wake/n19.outputs:out>
+ float outputs:out
+}
+def Shader "n21" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n18.outputs:out>
+ float inputs:value2.connect = </Shaders/Wake/n20.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n22" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n4.outputs:out>
+ float inputs:in2 = 0.35
+ float outputs:out
+}
+def Shader "n23" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n3.outputs:out>
+ float inputs:in2 = 0.1
+ float outputs:out
+}
+def Shader "n24" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Wake/n22.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n23.outputs:out>
+ float2 outputs:out
+}
+def Shader "n25" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n24.outputs:out>
+ float2 outputs:out
+}
+def Shader "n26" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n24.outputs:out>
+ float2 outputs:out
+}
+def Shader "n27" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n24.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n26.outputs:out>
+ float2 outputs:out
+}
+def Shader "n28" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n27.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n27.outputs:out>
+ float2 outputs:out
+}
+def Shader "n29" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Wake/n27.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n30" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Wake/n29.outputs:out>
+ float2 outputs:out
+}
+def Shader "n31" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n28.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n30.outputs:out>
+ float2 outputs:out
+}
+def Shader "n32" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n25.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n33" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n32.outputs:out>
+ float outputs:out
+}
+def Shader "n34" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n33.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n35" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n34.outputs:out>
+ float outputs:out
+}
+def Shader "n36" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n34.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n35.outputs:out>
+ float outputs:out
+}
+def Shader "n37" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n25.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n38" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n37.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n39" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n38.outputs:out>
+ float outputs:out
+}
+def Shader "n40" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n39.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n41" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n40.outputs:out>
+ float outputs:out
+}
+def Shader "n42" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n40.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n41.outputs:out>
+ float outputs:out
+}
+def Shader "n43" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n31.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n44" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n36.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n42.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n43.outputs:out>
+ float outputs:out
+}
+def Shader "n45" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n25.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n46" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n45.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n47" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n46.outputs:out>
+ float outputs:out
+}
+def Shader "n48" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n47.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n49" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n48.outputs:out>
+ float outputs:out
+}
+def Shader "n50" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n48.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n49.outputs:out>
+ float outputs:out
+}
+def Shader "n51" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n25.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n52" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n51.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n53" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n52.outputs:out>
+ float outputs:out
+}
+def Shader "n54" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n53.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n55" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n54.outputs:out>
+ float outputs:out
+}
+def Shader "n56" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n54.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n55.outputs:out>
+ float outputs:out
+}
+def Shader "n57" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n31.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n58" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n50.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n56.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n57.outputs:out>
+ float outputs:out
+}
+def Shader "n59" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n31.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n60" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n44.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n58.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n59.outputs:out>
+ float outputs:out
+}
+def Shader "n61" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n60.outputs:out>
+ float inputs:value2 = 0.42
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n62" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n21.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n61.outputs:out>
+ float outputs:out
+}
+def Shader "n63" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n62.outputs:out>
+ float inputs:in2 = 0.8
+ float outputs:out
+}
+def Shader "n64" {
+ uniform token info:id = "ND_max_float"
+ float inputs:in1.connect = </Shaders/Wake/n15.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n63.outputs:out>
+ float outputs:out
+}
+def Shader "n65" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in2 = 45.92
+ float outputs:out
+}
+def Shader "n66" {
+ uniform token info:id = "ND_max_float"
+ float inputs:in1.connect = </Shaders/Wake/n65.outputs:out>
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n67" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n66.outputs:out>
+ float inputs:in2 = 0.05
+ float outputs:out
+}
+def Shader "n68" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 2.1912
+ float inputs:in2.connect = </Shaders/Wake/n67.outputs:out>
+ float outputs:out
+}
+def Shader "n69" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n65.outputs:out>
+ float inputs:value2 = -2
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n70" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n68.outputs:out>
+ float inputs:value2.connect = </Shaders/Wake/n3.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n71" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n66.outputs:out>
+ float inputs:in2 = 0.004
+ float outputs:out
+}
+def Shader "n72" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.38
+ float inputs:in2.connect = </Shaders/Wake/n71.outputs:out>
+ float outputs:out
+}
+def Shader "n73" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n1.outputs:out>
+ float inputs:in2 = 0.45
+ float outputs:out
+}
+def Shader "n74" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n4.outputs:out>
+ float inputs:in2 = 0.18
+ float outputs:out
+}
+def Shader "n75" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Wake/n73.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n74.outputs:out>
+ float2 outputs:out
+}
+def Shader "n76" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n75.outputs:out>
+ float2 outputs:out
+}
+def Shader "n77" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n75.outputs:out>
+ float2 outputs:out
+}
+def Shader "n78" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n75.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n77.outputs:out>
+ float2 outputs:out
+}
+def Shader "n79" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n78.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n78.outputs:out>
+ float2 outputs:out
+}
+def Shader "n80" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Wake/n78.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n81" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Wake/n80.outputs:out>
+ float2 outputs:out
+}
+def Shader "n82" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n79.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n81.outputs:out>
+ float2 outputs:out
+}
+def Shader "n83" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n76.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n84" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n83.outputs:out>
+ float outputs:out
+}
+def Shader "n85" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n84.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n86" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n85.outputs:out>
+ float outputs:out
+}
+def Shader "n87" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n85.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n86.outputs:out>
+ float outputs:out
+}
+def Shader "n88" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n76.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n89" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n88.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n90" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n89.outputs:out>
+ float outputs:out
+}
+def Shader "n91" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n90.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n92" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n91.outputs:out>
+ float outputs:out
+}
+def Shader "n93" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n91.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n92.outputs:out>
+ float outputs:out
+}
+def Shader "n94" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n82.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n95" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n87.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n93.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n94.outputs:out>
+ float outputs:out
+}
+def Shader "n96" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n76.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n97" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n96.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n98" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n97.outputs:out>
+ float outputs:out
+}
+def Shader "n99" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n98.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n100" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n99.outputs:out>
+ float outputs:out
+}
+def Shader "n101" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n99.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n100.outputs:out>
+ float outputs:out
+}
+def Shader "n102" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n76.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n103" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n102.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n104" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n103.outputs:out>
+ float outputs:out
+}
+def Shader "n105" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n104.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n106" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n105.outputs:out>
+ float outputs:out
+}
+def Shader "n107" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n105.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n106.outputs:out>
+ float outputs:out
+}
+def Shader "n108" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n82.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n109" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n101.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n107.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n108.outputs:out>
+ float outputs:out
+}
+def Shader "n110" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n82.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n111" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n95.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n109.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n110.outputs:out>
+ float outputs:out
+}
+def Shader "n112" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n111.outputs:out>
+ float inputs:value2.connect = </Shaders/Wake/n72.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n113" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n70.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n112.outputs:out>
+ float outputs:out
+}
+def Shader "n114" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n69.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n113.outputs:out>
+ float outputs:out
+}
+def Shader "n115" {
+ uniform token info:id = "ND_max_float"
+ float inputs:in1.connect = </Shaders/Wake/n64.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n114.outputs:out>
+ float outputs:out
+}
+def Shader "n116" {
+ uniform token info:id = "ND_divide_float"
+ float inputs:in1.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in2 = 220
+ float outputs:out
+}
+def Shader "n117" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1 = 1
+ float inputs:in2.connect = </Shaders/Wake/n116.outputs:out>
+ float outputs:out
+}
+def Shader "n118" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n117.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake.inputs:strength>
+ float outputs:out
+}
+def Shader "n119" {
+ uniform token info:id = "ND_min_float"
+ float inputs:in1 = 220
+ float inputs:in2.connect = </Shaders/Wake.inputs:scroll>
+ float outputs:out
+}
+def Shader "n120" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n119.outputs:out>
+ float inputs:value2.connect = </Shaders/Wake/n2.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n121" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n115.outputs:out>
+ float inputs:value2 = 0.0001
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n122" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n1.outputs:out>
+ float inputs:in2 = 0.7
+ float outputs:out
+}
+def Shader "n123" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n4.outputs:out>
+ float inputs:in2 = 0.7
+ float outputs:out
+}
+def Shader "n124" {
+ uniform token info:id = "ND_combine2_vector2"
+ float inputs:in1.connect = </Shaders/Wake/n122.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n123.outputs:out>
+ float2 outputs:out
+}
+def Shader "n125" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n124.outputs:out>
+ float2 outputs:out
+}
+def Shader "n126" {
+ uniform token info:id = "ND_floor_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n124.outputs:out>
+ float2 outputs:out
+}
+def Shader "n127" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n124.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n126.outputs:out>
+ float2 outputs:out
+}
+def Shader "n128" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n127.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n127.outputs:out>
+ float2 outputs:out
+}
+def Shader "n129" {
+ uniform token info:id = "ND_multiply_vector2FA"
+ float2 inputs:in1.connect = </Shaders/Wake/n127.outputs:out>
+ float inputs:in2 = 2
+ float2 outputs:out
+}
+def Shader "n130" {
+ uniform token info:id = "ND_subtract_vector2"
+ float2 inputs:in1 = (3,3)
+ float2 inputs:in2.connect = </Shaders/Wake/n129.outputs:out>
+ float2 outputs:out
+}
+def Shader "n131" {
+ uniform token info:id = "ND_multiply_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n128.outputs:out>
+ float2 inputs:in2.connect = </Shaders/Wake/n130.outputs:out>
+ float2 outputs:out
+}
+def Shader "n132" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n125.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n133" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n132.outputs:out>
+ float outputs:out
+}
+def Shader "n134" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n133.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n135" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n134.outputs:out>
+ float outputs:out
+}
+def Shader "n136" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n134.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n135.outputs:out>
+ float outputs:out
+}
+def Shader "n137" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n125.outputs:out>
+ float2 inputs:in2 = (1,0)
+ float2 outputs:out
+}
+def Shader "n138" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n137.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n139" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n138.outputs:out>
+ float outputs:out
+}
+def Shader "n140" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n139.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n141" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n140.outputs:out>
+ float outputs:out
+}
+def Shader "n142" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n140.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n141.outputs:out>
+ float outputs:out
+}
+def Shader "n143" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n131.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n144" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n136.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n142.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n143.outputs:out>
+ float outputs:out
+}
+def Shader "n145" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n125.outputs:out>
+ float2 inputs:in2 = (0,1)
+ float2 outputs:out
+}
+def Shader "n146" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n145.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n147" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n146.outputs:out>
+ float outputs:out
+}
+def Shader "n148" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n147.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n149" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n148.outputs:out>
+ float outputs:out
+}
+def Shader "n150" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n148.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n149.outputs:out>
+ float outputs:out
+}
+def Shader "n151" {
+ uniform token info:id = "ND_add_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n125.outputs:out>
+ float2 inputs:in2 = (1,1)
+ float2 outputs:out
+}
+def Shader "n152" {
+ uniform token info:id = "ND_dotproduct_vector2"
+ float2 inputs:in1.connect = </Shaders/Wake/n151.outputs:out>
+ float2 inputs:in2 = (127.1,311.7)
+ float outputs:out
+}
+def Shader "n153" {
+ uniform token info:id = "ND_sin_float"
+ float inputs:in.connect = </Shaders/Wake/n152.outputs:out>
+ float outputs:out
+}
+def Shader "n154" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n153.outputs:out>
+ float inputs:in2 = 43758.5453
+ float outputs:out
+}
+def Shader "n155" {
+ uniform token info:id = "ND_floor_float"
+ float inputs:in.connect = </Shaders/Wake/n154.outputs:out>
+ float outputs:out
+}
+def Shader "n156" {
+ uniform token info:id = "ND_subtract_float"
+ float inputs:in1.connect = </Shaders/Wake/n154.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n155.outputs:out>
+ float outputs:out
+}
+def Shader "n157" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n131.outputs:out>
+ int inputs:index = 0
+ float outputs:out
+}
+def Shader "n158" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n150.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n156.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n157.outputs:out>
+ float outputs:out
+}
+def Shader "n159" {
+ uniform token info:id = "ND_extract_vector2"
+ float2 inputs:in.connect = </Shaders/Wake/n131.outputs:out>
+ int inputs:index = 1
+ float outputs:out
+}
+def Shader "n160" {
+ uniform token info:id = "ND_mix_float"
+ float inputs:bg.connect = </Shaders/Wake/n144.outputs:out>
+ float inputs:fg.connect = </Shaders/Wake/n158.outputs:out>
+ float inputs:mix.connect = </Shaders/Wake/n159.outputs:out>
+ float outputs:out
+}
+def Shader "n161" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n160.outputs:out>
+ float inputs:in2 = 0.6
+ float outputs:out
+}
+def Shader "n162" {
+ uniform token info:id = "ND_add_float"
+ float inputs:in1 = 0.2
+ float inputs:in2.connect = </Shaders/Wake/n161.outputs:out>
+ float outputs:out
+}
+def Shader "n163" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n115.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n118.outputs:out>
+ float outputs:out
+}
+def Shader "n164" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n163.outputs:out>
+ float inputs:value2.connect = </Shaders/Wake/n162.outputs:out>
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n165" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n121.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n164.outputs:out>
+ float outputs:out
+}
+def Shader "n166" {
+ uniform token info:id = "ND_multiply_float"
+ float inputs:in1.connect = </Shaders/Wake/n120.outputs:out>
+ float inputs:in2.connect = </Shaders/Wake/n165.outputs:out>
+ float outputs:out
+}
+def Shader "n167" {
+ uniform token info:id = "ND_ifgreatereq_float"
+ float inputs:value1.connect = </Shaders/Wake/n115.outputs:out>
+ float inputs:value2 = 0.9
+ float inputs:in1 = 1
+ float inputs:in2 = 0
+ float outputs:out
+}
+def Shader "n168" {
+ uniform token info:id = "ND_mix_color3"
+ color3f inputs:bg = (0.84,0.92,0.95)
+ color3f inputs:fg = (1,1,1)
+ float inputs:mix.connect = </Shaders/Wake/n167.outputs:out>
+ color3f outputs:out
+}
+def Shader "n169" {
+ uniform token info:id = "ND_realitykit_unlit_surfaceshader"
+ color3f inputs:color.connect = </Shaders/Wake/n168.outputs:out>
+ float inputs:opacity.connect = </Shaders/Wake/n166.outputs:out>
+ float inputs:opacityThreshold = 0.01
+ bool inputs:applyPostProcessToneMap = false
+ token outputs:out
+}
+}
+}

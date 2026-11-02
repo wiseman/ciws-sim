@@ -24,6 +24,15 @@ python3 -m http.server 8000
 
 Then open http://localhost:8000. Click or press a key to start the audio, and use the AUDIO button to unmute.
 
+## Native visionOS app
+
+The [native visionOS version](visionos/README.md) lives in `visionos/`. Open
+`visionos/CIWSSim.xcodeproj` in Xcode to run the SwiftUI + RealityKit app on a Vision Pro
+or simulator. It launches into an immersive ship-deck view, with native positional
+audio and an optional tabletop overview. The game logic is translated into Swift;
+the models are exported directly from the web app’s original builders. See the
+visionOS README for validation commands and remaining renderer/audio differences.
+
 ## Controls
 
 | Key | Action |

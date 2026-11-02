@@ -99,10 +99,11 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 
 @contextmanager
 def game_page(width=1280, height=760, dpr=1, extra_args=(), console_levels=("error",), page_path="index.html",
-              audio=False):
+              audio=False, init_script=None):
     """Yields (page, errors) with the game loaded (page_path: the page, relative to the repo, say a
     saved copy of an older build); errors collects page errors and console messages. audio: let the
-    page play sound without a user gesture (then call enable_audio)."""
+    page play sound without a user gesture (then call enable_audio). init_script: JavaScript run
+    before the page's own scripts."""
     from playwright.sync_api import sync_playwright
 
     server = socketserver.TCPServer(("127.0.0.1", 0), partial(_QuietHandler, directory=str(ROOT)))
@@ -114,6 +115,8 @@ def game_page(width=1280, height=760, dpr=1, extra_args=(), console_levels=("err
             errors = []
             page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
             page.on("console", lambda m: m.type in console_levels and errors.append(f"{m.type}: {m.text}"))
+            if init_script:
+                page.add_init_script(init_script)
             page.goto(f"http://127.0.0.1:{server.server_address[1]}/{page_path}")
             try:
                 yield page, errors

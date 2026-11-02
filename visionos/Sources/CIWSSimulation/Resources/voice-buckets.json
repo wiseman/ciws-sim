@@ -1,0 +1,813 @@
+{
+  "sourceSHA256": "33f663872910d4b8ded65dc4b9c88cf65b57aa60e2d76a4a1aa81562fb7a29dd",
+  "buckets": [
+    {
+      "name": "vampire",
+      "clips": [
+        "vampire-{bearing}",
+        "vampire-{bearing}-b",
+        "vampire-{bearing}-c"
+      ],
+      "channel": "net",
+      "urgent": true,
+      "onlyIfClear": true,
+      "hush": "crew",
+      "cooldown": 6,
+      "lead": 0.05,
+      "then": "gq",
+      "once": false
+    },
+    {
+      "name": "gq",
+      "channel": "net",
+      "urgent": true,
+      "repeat": 0,
+      "clips": [
+        "general-quarters",
+        "general-quarters-2",
+        "general-quarters-3"
+      ],
+      "keep": true,
+      "cooldown": 600,
+      "lead": 0.6,
+      "then": "zebra",
+      "once": false
+    },
+    {
+      "name": "zebra",
+      "clips": [
+        "set-zebra",
+        "set-zebra-2",
+        "set-zebra-3"
+      ],
+      "channel": "1mc",
+      "aside": true,
+      "repeat": 0,
+      "lead": 0.8,
+      "once": true
+    },
+    {
+      "name": "weapons-free",
+      "clips": [
+        "weapons-free",
+        "weapons-free-2",
+        "weapons-free-3"
+      ],
+      "channel": "net",
+      "aside": true,
+      "repeat": 0,
+      "lead": 1.5,
+      "once": true
+    },
+    {
+      "name": "raid-size",
+      "clips": [
+        "raid-size",
+        "raid-size-2",
+        "raid-size-3"
+      ],
+      "channel": "net",
+      "aside": true,
+      "cooldown": 90,
+      "lead": 1,
+      "once": false
+    },
+    {
+      "name": "kill",
+      "channel": "net",
+      "urgent": true,
+      "keep": true,
+      "cooldown": 20,
+      "lead": 0.3,
+      "stale": 0,
+      "clips": [
+        "splash",
+        "kill-splash-one",
+        "kill-splashed",
+        "kill-destroyed",
+        "kill-good",
+        "kill-track-1",
+        "kill-track-2",
+        "kill-track-3",
+        "kill-track-4",
+        "kill-track-5"
+      ],
+      "once": false
+    },
+    {
+      "name": "missile-launch",
+      "channel": "net",
+      "urgent": true,
+      "repeat": 0,
+      "clips": [
+        "missile-launch",
+        "missile-launch-2",
+        "missile-launch-3"
+      ],
+      "keep": true,
+      "cooldown": 90,
+      "lead": 0.3,
+      "stale": 8,
+      "once": false
+    },
+    {
+      "name": "birds-away",
+      "channel": "net",
+      "urgent": true,
+      "repeat": 0,
+      "clips": [
+        "birds-away",
+        "birds-away-2",
+        "birds-away-3"
+      ],
+      "keep": true,
+      "cooldown": 10,
+      "lead": 0.4,
+      "stale": 5,
+      "once": false
+    },
+    {
+      "name": "reaction",
+      "clips": [
+        "hit-{ship}-1",
+        "hit-{ship}-2",
+        "hit-{ship}-3",
+        "hit-{ship}-4",
+        "hit-oh-no",
+        "hit-look-at-that",
+        "hit-going-down",
+        "hit-get-out",
+        "hit-no-no-no",
+        "hit-survivors",
+        "hit-god-help",
+        "hit-direct-hit"
+      ],
+      "channel": "crew",
+      "lead": 0.5,
+      "jitter": 0.7,
+      "rank": "reaction",
+      "once": false
+    },
+    {
+      "name": "rescue",
+      "clips": [
+        "rescue-{ship}",
+        "rescue-{ship}-2",
+        "rescue-{ship}-3"
+      ],
+      "channel": "1mc",
+      "cooldown": 20,
+      "lead": 4,
+      "jitter": 0.7,
+      "once": false
+    },
+    {
+      "name": "rescue-followup",
+      "clips": [
+        "rescue-rhib-{side}",
+        "rescue-medical",
+        "rescue-lookouts"
+      ],
+      "channel": "1mc",
+      "cooldown": 45,
+      "lead": 13,
+      "jitter": 0.7,
+      "once": false
+    },
+    {
+      "name": "we-hit",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "we-hit",
+        "we-hit-2",
+        "we-hit-3"
+      ],
+      "cooldown": 10,
+      "lead": 0.1,
+      "then": "dc",
+      "thenAlways": true,
+      "once": false
+    },
+    {
+      "name": "dc",
+      "clips": [
+        "dc-hit-stbd-fwd",
+        "dc-hit",
+        "dc-hit-port",
+        "dc-hit-port-aft",
+        "dc-fire-bravo",
+        "dc-fire-charlie-stbd",
+        "dc-fire-alpha-port",
+        "dc-flooding-port",
+        "dc-fire-bravo-port",
+        "dc-fire-charlie",
+        "dc-flooding"
+      ],
+      "channel": "1mc",
+      "cooldown": 20,
+      "lead": 1,
+      "jitter": 1,
+      "then": "dc-report",
+      "rank": "dc",
+      "once": false
+    },
+    {
+      "name": "dc-report",
+      "clips": [
+        "dc-report",
+        "dc-report-2",
+        "dc-report-3"
+      ],
+      "channel": "1mc",
+      "cooldown": 60,
+      "chance": 0.5,
+      "lead": 0.6,
+      "jitter": 1,
+      "once": false
+    },
+    {
+      "name": "close-call",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "close-call",
+        "close-call-2",
+        "close-call-3",
+        "close-call-4",
+        "close-call-5",
+        "close-call-6"
+      ],
+      "cooldown": 45,
+      "lead": 0.6,
+      "once": false
+    },
+    {
+      "name": "multi-splash",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "multi-splash",
+        "multi-splash-2",
+        "multi-splash-3",
+        "multi-splash-4",
+        "multi-splash-5",
+        "multi-splash-6"
+      ],
+      "cooldown": 45,
+      "lead": 0.4,
+      "once": false
+    },
+    {
+      "name": "shells",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "shells-incoming",
+        "shells-incoming-2",
+        "shells-incoming-3",
+        "shells-incoming-4"
+      ],
+      "cooldown": 75,
+      "lead": 0.5,
+      "once": false
+    },
+    {
+      "name": "shooting",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "shooting-{ship}",
+        "shooting-{ship}-2",
+        "shooting-{ship}-3"
+      ],
+      "cooldown": 30,
+      "chance": 0.5,
+      "lead": 0.8,
+      "once": false
+    },
+    {
+      "name": "gone",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "gone-{ship}",
+        "gone-{ship}-2",
+        "gone-{ship}-3"
+      ],
+      "cooldown": 10,
+      "lead": 1,
+      "once": false
+    },
+    {
+      "name": "arrive",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "arrive-{ship}",
+        "arrive-{ship}-2",
+        "arrive-{ship}-3"
+      ],
+      "cooldown": 10,
+      "lead": 0.3,
+      "once": false
+    },
+    {
+      "name": "joined",
+      "clips": [
+        "joined-{ship}-{side}",
+        "joined-{ship}-{side}-2",
+        "joined-{ship}-{side}-3"
+      ],
+      "channel": "1mc",
+      "aside": true,
+      "cooldown": 10,
+      "lead": 1.5,
+      "once": false
+    },
+    {
+      "name": "chatter",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "chat-launchers",
+        "chat-bearing",
+        "chat-seawhiz",
+        "chat-mikemike",
+        "chat-ears"
+      ],
+      "lead": 0.3,
+      "stale": 10,
+      "once": false
+    },
+    {
+      "name": "is-it-over",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "chat-over",
+        "chat-over-2",
+        "chat-over-3"
+      ],
+      "lead": 0.3,
+      "stale": 10,
+      "then": "is-it-over-reply",
+      "once": false
+    },
+    {
+      "name": "is-it-over-reply",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "chat-jinx",
+        "chat-jinx-2",
+        "chat-jinx-3",
+        "chat-jinx-4"
+      ],
+      "lead": 0.8,
+      "once": false
+    },
+    {
+      "name": "captain",
+      "clips": [
+        "captain",
+        "captain-2",
+        "captain-3"
+      ],
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "once": false
+    },
+    {
+      "name": "captain-medal",
+      "clips": [
+        "captain-medal-1",
+        "captain-medal-2",
+        "captain-medal-3"
+      ],
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "once": false
+    },
+    {
+      "name": "captain-cost",
+      "clips": [
+        "captain-cost-1",
+        "captain-cost-2",
+        "captain-cost-3"
+      ],
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "once": false
+    },
+    {
+      "name": "captain-long",
+      "clips": [
+        "captain-long-1",
+        "captain-long-2",
+        "captain-long-3"
+      ],
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "once": false
+    },
+    {
+      "name": "pa-watch",
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "stale": 20,
+      "clips": [
+        "pa-watch-1",
+        "pa-watch-2",
+        "pa-watch-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "pa-sweepers",
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "stale": 20,
+      "clips": [
+        "pa-sweepers-1",
+        "pa-sweepers-2",
+        "pa-sweepers-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "pa-chow",
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "stale": 20,
+      "clips": [
+        "pa-chow-1",
+        "pa-chow-2",
+        "pa-chow-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "pa-mail",
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "stale": 20,
+      "clips": [
+        "pa-mail-1",
+        "pa-mail-2",
+        "pa-mail-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "pa-taps",
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "stale": 20,
+      "clips": [
+        "pa-taps-1",
+        "pa-taps-2",
+        "pa-taps-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "pa-reveille",
+      "channel": "1mc",
+      "aside": true,
+      "lead": 0.5,
+      "stale": 20,
+      "clips": [
+        "pa-reveille-1",
+        "pa-reveille-2",
+        "pa-reveille-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "tired-1",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "tired-1-1",
+        "tired-1-2",
+        "tired-1-3",
+        "tired-1-4"
+      ],
+      "once": false
+    },
+    {
+      "name": "tired-2",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "tired-2-1",
+        "tired-2-2",
+        "tired-2-3",
+        "tired-2-4"
+      ],
+      "once": false
+    },
+    {
+      "name": "tired-3",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "tired-3-1",
+        "tired-3-2",
+        "tired-3-3",
+        "tired-3-4"
+      ],
+      "once": false
+    },
+    {
+      "name": "tired-4",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "tired-4-1",
+        "tired-4-2",
+        "tired-4-3",
+        "tired-4-4"
+      ],
+      "once": false
+    },
+    {
+      "name": "r2",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "r2-1",
+        "r2-2",
+        "r2-3",
+        "r2-4"
+      ],
+      "once": false
+    },
+    {
+      "name": "cost-1",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "cost-1-1",
+        "cost-1-2",
+        "cost-1-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "cost-2",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "cost-2-1",
+        "cost-2-2",
+        "cost-2-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "cost-3",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "cost-3-1",
+        "cost-3-2",
+        "cost-3-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "cost-4",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 10,
+      "clips": [
+        "cost-4-1",
+        "cost-4-2",
+        "cost-4-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "dolphins",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 6,
+      "clips": [
+        "dolphins-1",
+        "dolphins-2",
+        "dolphins-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "whale",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 6,
+      "clips": [
+        "whale-{side}-1",
+        "whale-{side}-2",
+        "whale-{side}-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "sailboat",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 8,
+      "clips": [
+        "sailboat-1",
+        "sailboat-2",
+        "sailboat-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "duck",
+      "channel": "crew",
+      "aside": true,
+      "lead": 0.4,
+      "stale": 8,
+      "clips": [
+        "duck-1",
+        "duck-2",
+        "duck-3"
+      ],
+      "once": false
+    },
+    {
+      "name": "flyby",
+      "clips": [
+        "flyby-1",
+        "flyby-2",
+        "flyby-3"
+      ],
+      "channel": "net",
+      "aside": true,
+      "lead": 0.3,
+      "stale": 6,
+      "once": false
+    },
+    {
+      "name": "no-bad",
+      "clips": [
+        "no-bad-1",
+        "no-bad-2",
+        "no-bad-3"
+      ],
+      "channel": "crew",
+      "lead": 0.4,
+      "stale": 2,
+      "once": false
+    },
+    {
+      "name": "bird",
+      "clips": [
+        "bird-1",
+        "bird-2",
+        "bird-3"
+      ],
+      "channel": "net",
+      "aside": true,
+      "lead": 0.3,
+      "stale": 4,
+      "once": false
+    },
+    {
+      "name": "july4",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "july4-1",
+        "july4-2",
+        "july4-3"
+      ],
+      "cooldown": 180,
+      "chance": 0.3,
+      "lead": 1,
+      "once": false
+    },
+    {
+      "name": "halloween",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "halloween-1",
+        "halloween-2",
+        "halloween-3"
+      ],
+      "cooldown": 180,
+      "chance": 0.3,
+      "lead": 1,
+      "once": false
+    },
+    {
+      "name": "sleigh",
+      "clips": [
+        "sleigh-1",
+        "sleigh-2",
+        "sleigh-3"
+      ],
+      "channel": "net",
+      "aside": true,
+      "lead": 0.3,
+      "stale": 8,
+      "then": "sleigh-crew",
+      "once": false
+    },
+    {
+      "name": "sleigh-crew",
+      "channel": "crew",
+      "aside": true,
+      "clips": [
+        "sleigh-crew-1",
+        "sleigh-crew-2",
+        "sleigh-crew-3"
+      ],
+      "lead": 1,
+      "once": false
+    }
+  ],
+  "damageCalls": {
+    "dc-hit-stbd-fwd": [
+      1,
+      80,
+      true
+    ],
+    "dc-hit": [
+      1,
+      210,
+      true
+    ],
+    "dc-hit-port": [
+      -1,
+      160,
+      true
+    ],
+    "dc-hit-port-aft": [
+      -1,
+      310,
+      true
+    ],
+    "dc-fire-bravo": [
+      1,
+      120
+    ],
+    "dc-fire-charlie-stbd": [
+      1,
+      150
+    ],
+    "dc-fire-alpha-port": [
+      -1,
+      96
+    ],
+    "dc-flooding-port": [
+      -1,
+      180
+    ],
+    "dc-fire-bravo-port": [
+      -1,
+      220
+    ],
+    "dc-fire-charlie": [
+      -1,
+      240
+    ],
+    "dc-flooding": [
+      0,
+      142
+    ]
+  }
+}
